@@ -12,12 +12,19 @@
 # Использование:
 #   bash scripts/guard-subagents.sh                        # автоопределение последней сессии
 #   bash scripts/guard-subagents.sh path/to/X_session.md   # явный файл сессии
-# Вызывается из: make clean-check, make session-end, scripts/verify-feature.sh.
+#   bash scripts/guard-subagents.sh "" feat-002            # сессия, ведущая фичу feat-002
+# Вызывается из: make clean-check, make session-end, scripts/verify-feature.sh (с F=<id>).
 #
 # Автоопределение: последняя *_session.md в корне solution/sessions/ (sort -V); если там
 # пусто — последняя в solution/sessions/archive/. S00_session.md (канон) и
-# TEMPLATE_session.md исключаются. Сессия в archive/ БЕЗ раздела гейтов — закрыта до
-# введения механизма (legacy): WARN, exit 0. Сессия в корне без раздела — FAIL.
+# TEMPLATE_session.md исключаются. При заданном feature-id ищется файл сессии, ведущий
+# эту фичу (grep по «Фичи»); нет такого файла — FAIL (гейт без сессии невозможен).
+# Сессия в archive/ БЕЗ раздела гейтов — закрыта до введения механизма (legacy):
+# WARN, exit 0. Сессия в корне без раздела — FAIL.
+# Режим фичи (arg2 задан, verify-feature): причина N/A «сессия не начата» невалидна —
+# гейты заполняются ПО ФАКТУ работ, незакрытая сессия не может verify-feature
+# (ревью S02 Important-5). Без фичи (clean-check) «не начата» легальна: сессия
+# запланирована, но не стартовала.
 #
 # Exit: 0 — оба гейта учтены (или legacy), 1 — гейт пропущен/не заполнен.
 
@@ -25,6 +32,10 @@ set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SESSION="${1:-}"
+FEATURE="${2:-}"
+# Строгий режим: гейт привязан к фиче, которая закрывается
+GATE_STRICT=0
+[ -n "$FEATURE" ] && GATE_STRICT=1
 cd "$ROOT"
 
 PASS=0
@@ -38,7 +49,18 @@ report() {
   fi
 }
 
-# --- файл сессии: сначала активные, затем archive/ (legacy-проверка) ---
+# --- файл сессии: явно заданный → по фиче (роль «закрывает») → последняя активная → archive/ ---
+if [ -z "$SESSION" ] && [ -n "$FEATURE" ]; then
+  # ведущая сессия фичи помечена «закрывает feat-XXX»; сессии-зависимости упоминают
+  # фичу как dep — grep по роли, иначе guard возьмёт чужую сессию (урок S02)
+  SESSION="$(grep -l "закрывает $FEATURE" solution/sessions/*_session.md 2>/dev/null | grep -v 'S00_session\|TEMPLATE_session' | sort -V | tail -1)"
+  if [ -z "$SESSION" ]; then
+    SESSION="$(grep -l "$FEATURE" solution/sessions/*_session.md 2>/dev/null | grep -v 'S00_session\|TEMPLATE_session' | sort -V | tail -1)"
+  fi
+  if [ -z "$SESSION" ]; then
+    SESSION="$(grep -l "$FEATURE" solution/sessions/archive/*_session.md 2>/dev/null | sort -V | tail -1)"
+  fi
+fi
 if [ -z "$SESSION" ]; then
   SESSION="$(find solution/sessions -maxdepth 1 -name '*_session.md' \
     ! -name 'S00_session.md' ! -name 'TEMPLATE_session.md' 2>/dev/null | sort -V | tail -1)"
@@ -49,7 +71,11 @@ fi
 
 echo "=== Subagent Gates Guard ($ROOT) ==="
 if [ -z "$SESSION" ] || [ ! -f "$SESSION" ]; then
-  echo "  [FAIL] файл сессии не найден (solution/sessions/*_session.md) — создайте его из TEMPLATE_session.md до старта работ"
+  if [ -n "$FEATURE" ]; then
+    echo "  [FAIL] нет файла сессии, ведущего $FEATURE, — создайте его из TEMPLATE_session.md ДО старта работ (гейт без сессии невозможен)"
+  else
+    echo "  [FAIL] файл сессии не найден (solution/sessions/*_session.md) — создайте его из TEMPLATE_session.md до старта работ"
+  fi
   exit 1
 fi
 echo "  session: $SESSION"
@@ -108,6 +134,13 @@ check_gate() {
   if [ "$na" -ge 1 ]; then
     local reason="${line#*N/A}"
     reason="$(printf '%s' "$reason" | sed -e 's/^[[:space:]—–-]*//')"
+    if [ "$GATE_STRICT" -eq 1 ] && printf '%s' "$reason" | grep -q 'не начата'; then
+      echo "  [FAIL] $name: причина «сессия не начата» невалидна — гейты заполняются ПО ФАКТУ работ;"
+      echo "         незакрытая сессия не может пройти verify-feature (ревью S02 Important-5)."
+      echo "         Замените на evidence или фактическую причину пропуска."
+      FAIL=$((FAIL + 1))
+      return
+    fi
     if [ "${#reason}" -lt 5 ]; then
       echo "  [FAIL] $name: после N/A нет причины"
       FAIL=$((FAIL + 1))

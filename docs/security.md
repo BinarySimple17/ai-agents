@@ -56,17 +56,18 @@ SQL к PostgreSQL уходит **только** через сервисный а
 на scope, не на креды). Соединение держит приложение (порт `SQLExecutor`) — единственный
 клиент data plane; креды — `.env` (дев) / Vault (прод); порты БД наружу не публикуются.
 
-Настройка — один раз в `init.sql`:
+Настройка — миграцией Alembic (`src/migrations/versions/`, прогон `make infra-migrate`;
+S00 правило 5, FIX-007 — не `init.sql`):
 
 ```sql
 CREATE ROLE agent_ro LOGIN PASSWORD '...';
 ALTER ROLE agent_ro SET default_transaction_read_only = on;  -- DML/DDL отклонены на уровне сессии
 ALTER ROLE agent_ro SET statement_timeout = '30s';
 GRANT USAGE ON SCHEMA public TO agent_ro;
-GRANT SELECT ON ALL TABLES IN SCHEMA public TO agent_ro;
-ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO agent_ro;
-REVOKE SELECT ON query_trace FROM agent_ro;  -- трейсы (вопросы всех пользователей)
--- не читаются каналом исполнения: defense-in-depth к рубежу 2 (FIX-005)
+GRANT SELECT ON customers, campaigns, orders, order_items, products, employees, bonuses TO agent_ro;
+-- whitelist, deny-by-default (FIX-007): гранта «по умолчанию» нет —
+-- query_trace (вопросы всех пользователей) и agent_* нечитаемы, потому что грант
+-- не выдавался (defense-in-depth к рубежу 2, FIX-005; ALTER DEFAULT PRIVILEGES исключён)
 -- dblink / file_fdw в демо-БД не устанавливаются вовсе:
 -- иначе FROM dblink(...) обошёл бы табличный whitelist валидатора
 ```

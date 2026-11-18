@@ -11,7 +11,7 @@
 | `domain/` (validate/rbac) | — | — | — | — | feat-005, feat-011 |
 | `services/vector` | — | — | — | — | feat-006 |
 | `services/join_graph` | — | — | — | — | feat-007 |
-| `services/db` (execute/seed) | — | — | — | — | feat-002, feat-012, feat-013 |
+| `services/db` (execute/seed) | A | A | B | A | feat-002 ✅ (миграции 0001–0003, тест 13 passed, чистая комната); B по покрытию: RLS-политики и исполнитель — S13; заявки/ETL-гранты — S07/S10 |
 | `services/cache` | — | — | — | — | feat-016 |
 | `cli/` | — | — | — | — | feat-004 |
 

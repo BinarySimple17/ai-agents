@@ -12,7 +12,7 @@
 > В разделе — ТОЛЬКО статус последней закрытой сессии; подробности исполнения —
 > в файле самой сессии (закрытые переносятся `make archive` в sessions/archive/).
 
-- Последняя ✅: S20 — 2026-11-18: канон docs/ сведён к ревизии hw-01 по ревью-03 (ADR-002 v1.2/003 v2.1/004 v1.2/005 v1.2/006 v1.3/007 v1.2, prd v1.8, security v1.6, диаграммы v1.2–v1.8, model-card v1.1, RISKS v1.1, observability v1.4, S00, feature_list, arch-package v1.8); BL-002 закрыт; `make check` EXIT=0, validate 100/100
+- Последняя ✅: S02 — 2026-11-18: инфраструктура feat-002 закрыта (миграции схемы v1.5: 7 бизнес-таблиц + права/реестр R1/заявки/каталог + query_trace/agent_audit; роли agent_ro/planner/trace/registry_writer — whitelist-гранты + hardening; демо-данные с ловушками; тест 13 passed, чистая комната зелёная, verify-feature passing; ARCH-GATE canon-check + REVIEW-GATE With fixes → fix-волна FIX-007; RLS → S13)
 ## Владельцы треков
 
 | Трек | Владелец | Зона |
@@ -36,7 +36,7 @@
 | S00 | [sessions/S00_session.md](sessions/S00_session.md) | Канон: стек, порты, контракты стыка, запреты, процесс | общий | — | — | 0.5 | P0 | ✅ 2026-11-15 |
 | TPL | [sessions/TEMPLATE_session.md](sessions/TEMPLATE_session.md) | Шаблон сессии (образец оформления) | — | — | — | — | — | Справочник |
 | S01 | sessions/S01_session.md | Скелет проекта + harness-проверки | агент | S00 | feat-001 — закрывает | 1 | P0 | ✅ 2026-11-15 (закрыта harness-сессией: feat-001 → passing) |
-| S02 | sessions/S02_session.md | Инфра: compose (postgres+pgvector, neo4j, valkey), миграции Alembic (схема v1.4 + демо-данные + роли) | агент | S01 | feat-002 — закрывает | 1.5 | P0 | ⬜ |
+| S02 | [sessions/S02_session.md](sessions/S02_session.md) | Инфра: compose (postgres+pgvector, neo4j, valkey), миграции Alembic (схема v1.5 + демо-данные + роли) | агент | S01 | feat-002 — закрывает | 1.5 | P0 | ✅ 2026-11-18 (feat-002 passing; тесты 13; ARCH-GATE + REVIEW-GATE пройдены, FIX-007) |
 | S03 | sessions/S03_session.md | Конфиг + LLM-клиент шлюза (роли, backoff, breaker, бюджет) | агент | S01 | feat-003 — закрывает | 1 | P0 | ⬜ |
 | S04 | sessions/S04_session.md | State machine LangGraph: каркас графа, CLI e2e на заглушках | агент | S01, S03 | feat-004 — закрывает | 1.5 | P0 | ⬜ |
 | S05 | sessions/S05_session.md | resolve_access: права из таблиц настроек | агент | S02, S04 | feat-005 — закрывает | 1 | P0 | ⬜ |

@@ -54,10 +54,10 @@ if [ "$STATE" != "active" ]; then
   exit 2
 fi
 
-# Гейт субагентов: фича закрывается — ARCH-GATE/REVIEW-GATE в файле сессии заполнены
-# (DoD в AGENTS.md; закрыть фичу мимо ревью/архитектурного гейта нельзя).
-echo "=== Subagent gates (scripts/guard-subagents.sh) ==="
-if ! bash "$ROOT/scripts/guard-subagents.sh"; then
+# Гейт субагентов: сессия, ведущая эту фичу, обязана иметь заполненные
+# ARCH-GATE/REVIEW-GATE (DoD в AGENTS.md; закрыть фичу мимо ревью/архгейта нельзя).
+echo "=== Subagent gates (scripts/guard-subagents.sh, feature $ID) ==="
+if ! bash "$ROOT/scripts/guard-subagents.sh" "" "$ID"; then
   echo ""
   echo "BLOCKED: гейты субагентов не закрыты — заполните раздел «Гейты субагентов» в файле сессии (см. вывод выше), затем повторите."
   exit 2
