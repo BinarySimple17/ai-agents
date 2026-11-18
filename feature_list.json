@@ -312,15 +312,15 @@
     {
       "id": "feat-013",
       "name": "SQLExecutor: тул run_sql + узел execute_sql",
-      "description": "Выполнение под read-only ролью agent_ro: LIMIT 1000, statement_timeout 30s. Ошибка SQL или пустой результат при непустых таблицах → diagnose_error. Тул run_sql (function calling, ДЗ-02) доступен сразу после БД; в FSM узел подключается после validate_sql (ДЗ-05). Артефакты ДЗ-02 в объёме фичи (hw-plan §2): JSON-схема тулa (аргументы валидируются кодом), function-calling цикл «вопрос → LLM → run_sql → Observation → ответ» в apps.cli, SOP тулa (когда звать / чего не звать / действие при ошибке).",
-      "behavior": "Тул run_sql выполняет SELECT под read-only ролью agent_ro (LIMIT 1000, timeout 30s) и возвращает ошибку модели как Observation (начало цикла самокоррекции); в FSM узел маршрутизирует ошибку/пустой результат в diagnose_error. Read-only проверен попыткой INSERT (отказ БД — read-only сессии, рубеж 5 ADR-005).",
+      "description": "Выполнение под read-only ролью agent_ro: LIMIT 1000, statement_timeout 30s. Ошибка SQL → diagnose_error, пустой результат → probe COUNT (state-agent v1.4). Тул run_sql (function calling, ДЗ-02) доступен сразу после БД; в FSM узел подключается после validate_sql (ДЗ-05). Артефакты ДЗ-02 в объёме фичи (hw-plan §2): JSON-схема тулa (аргументы валидируются кодом), function-calling цикл «вопрос → LLM → run_sql → Observation → ответ» в apps.cli, SOP тулa (когда звать / чего не звать / действие при ошибке).",
+      "behavior": "Тул run_sql выполняет SELECT под read-only ролью agent_ro (LIMIT 1000, timeout 30s) и возвращает ошибку модели как Observation (начало цикла самокоррекции); в FSM узел маршрутизирует SQL-ошибку в diagnose_error, а 0 строк — в probe COUNT (state-agent v1.4). Read-only проверен попыткой INSERT (отказ БД — read-only сессии, рубеж 5 ADR-005).",
       "verification": "make infra-up && uv run pytest src/tests/integration/test_execute_sql.py -q",
       "dependencies": [
         "feat-002"
       ],
-      "state": "not_started",
-      "status": "not-started",
-      "evidence": "",
+      "state": "passing",
+      "status": "done",
+      "evidence": "command «make infra-up && uv run pytest src/tests/integration/test_execute_sql.py -q» exited 0 at 2026-11-18T23:46:40+03:00 (scripts/verify-feature.sh)",
       "layers": [
         {
           "label": "layer-1-static",
