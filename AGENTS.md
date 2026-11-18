@@ -91,6 +91,7 @@ Do not proceed to the next layer if the previous one fails. Done checklist:
 
 - [ ] Target behavior implemented
 - [ ] Required verification actually ran (tests / lint / type-check)
+- [ ] Code review by the `code-reviewer` subagent passed — Critical/Important findings fixed or parked with a ruling
 - [ ] Evidence recorded in `feature_list.json` and `progress.md`
 - [ ] Repository remains restartable from the standard startup path (`./init.sh`)
 - [ ] App reaches ready state, side effects are correct, no debug artifacts remain
@@ -157,7 +158,7 @@ Before ending a session (session end / clock-out):
 5. Record unresolved risks or blockers in `progress.md` and `DECISIONS.md`; out-of-scope findings → `solution/backlog/` (BL-NN files)
 6. Run the clean-state protocol: `make clean-check` + [templates/clean-state-checklist.md](templates/clean-state-checklist.md) — no debug artifacts remain
 7. Update `docs/quality-document.md` for the module you touched (A/B/C/D per dimension)
-8. Commit once work is in a safe state — commit messages explain WHY, not just what changed
+8. Commit once work is in a safe state — commit messages explain WHY, not just what changed. Before committing a feature (after `make check` is green): dispatch the `code-reviewer` subagent on the change range (BASE = merge-base with `main` or the last reviewed commit, HEAD = `HEAD`), fix Critical/Important findings, re-run tests, then commit; Minor → `solution/backlog/`
 9. Leave the repo clean and restartable: next session runs `./init.sh` immediately
 
 If running low on context, do not rush to finish — stop, update `progress.md`, and commit a clean checkpoint.
