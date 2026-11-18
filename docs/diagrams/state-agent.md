@@ -1,6 +1,6 @@
 # State Diagram — агент Text-to-SQL (FSM)
 
-- **Статус:** каноническая схема v1.3 (2026-11-18 — состав 15 узлов = hw-01 §2.1: +`build_skeleton`, +`compact_result`, +probe `COUNT`; `generate_step` → `generate_step_sql`; ретраи M1 на рёбрах (D-016); два уровня предохранителей (per-node + `recursion_limit`); T2 → async/matview/approximate/отказ (ADR-004 v1.2); clarify — `interrupt()` + checkpointer, TTL 10 мин. v1.2 — валидация JoinPlan + эскалация plan_joins; v1.1 — ревизия 02)
+- **Статус:** каноническая схема v1.4 (2026-11-18 — пост-приёмочный патч по отзыву (D-019): ретрай шага декомпозиции — явное ребро `diagnose_error → generate_step_sql` (ретраится упавший шаг, не весь план); T2: approximate/matview — через `compact_result → interpret_result` с флагом `approximate`, async/отказ — терминал. v1.3 — состав 15 узлов = hw-01 §2.1, M1, recursion_limit, T2 → degraded_out; v1.2 — валидация JoinPlan; v1.1 — ревизия 02)
 - **Требования prd.md:** FR-1…FR-14; переходы контролирует код — модель не может перепрыгнуть валидацию или уйти из цикла (ADR-002)
 - **Связанные:** ADR-002 (recursion_limit — второй предохранитель), ADR-004 (ветка декомпозиции, T2-исходы), ADR-005 (degrade vs diagnose), ADR-006 (JoinPlan по `edge_id`), ADR-007 (политика ретраев M1), ADR-009 (кэш); c4-l3-agent.md (компоненты узлов), sequence-query.md (интерактивный путь целиком)
 
@@ -33,7 +33,8 @@ stateDiagram-v2
     validate_sql --> check_cost: ok (скелет не изменён, mandatory_predicates на месте)
 
     check_cost --> execute_sql: cost в норме
-    check_cost --> degraded_out: T2 тяжёлый одиночный план → async / matview / approximate / отказ с рекомендацией
+    check_cost --> degraded_out: T2 тяжёлый одиночный план → async / отказ с рекомендацией (терминал)
+    check_cost --> compact_result: T2 → approximate / matview - расчёт с флагом approximate идёт в объяснение
     check_cost --> budget_stop: накопленная стоимость превысила кап 2 ₽
 
     execute_sql --> diagnose_error: SQL-ошибка
@@ -49,6 +50,7 @@ stateDiagram-v2
     compact_result --> interpret_result: row_count + ≤ 20 строк + агрегаты
     diagnose_error --> generate_sql: попытка 2 — та же модель + текст ошибки
     diagnose_error --> generate_sql: попытка 3 — эскалация (после проверки бюджета)
+    diagnose_error --> generate_step_sql: ошибка на шаге декомпозиции — ретраится шаг, не весь план (ADR-004)
     diagnose_error --> degrade: лимит попыток / бюджет / дедлайн 90 s
 
     interpret_result --> done: ответ: текст + SQL + meaning рёбер + допущения + флаги + стоимость
@@ -58,7 +60,7 @@ stateDiagram-v2
     overflow --> [*]: кап кардинальности 50 000 превышен → async / уточняющий вопрос / approximate
     fail --> [*]: отказ + уточняющий вопрос
     rejected --> [*]: отказ без вызова LLM
-    degraded_out --> [*]: T2-исход — неполное не выдаётся за полное
+    degraded_out --> [*]: async / отказ с рекомендацией — неполное не выдаётся за полное
 
     done --> [*]
 ```
@@ -109,14 +111,19 @@ stateDiagram-v2
   безопасности, retry не оправдан (модель не должна «уговорить» валидатор) — деградация:
   код фиксирует, чего не хватает, LLM формулирует отказ/вариант бизнес-понятиями,
   без подтверждения существования данных (S9).
-- **Ветка декомпозиции** (ADR-004 v1.2): T1 (≥ 4 таблиц / ≥ 3 хопов) — **основной
+- **Ветка декомпозиции** (ADR-004 v1.3): T1 (≥ 4 таблиц / ≥ 3 хопов) — **основной
   путь на боевом масштабе**; каждый шаг проходит ту же валидацию, что и весь SQL
-  (AST + ACL + граф + скелет + whitelist key-колонок). Промежуточный key-set —
+  (AST + ACL + граф + скелет + whitelist key-колонок). **Ретраится упавший шаг,
+  не весь план** — `diagnose_error → generate_step_sql` с контекстом шага (SQL,
+  ошибка, `purpose`, статистика key-set); перегенерация целого плана дороже и шире
+  по поверхности ошибки. Промежуточный key-set —
   полный, без `LIMIT`; кап кардинальности **50 000** ключей: превышение → `overflow`
   (async / отказ / флаг `approximate`); `short-circuit` — честные остановки.
   `LIMIT 1000` — только финальный результат, с флагом усечения.
-  **T2 (тяжёлый одиночный план) в декомпозицию не ведёт** — `degraded_out`:
-  async / matview / приблизительный расчёт / отказ с рекомендацией.
+  **T2 (тяжёлый одиночный план) в декомпозицию не ведёт**: approximate / matview —
+  через `compact_result → interpret_result` с флагом `approximate` (пользователь
+  получает полноценное объяснение); async / отказ с рекомендацией — терминал
+  `degraded_out`.
 - **Порядок гарантирует код:** SQL не строится без JoinPlan (`plan_joins`) и
   скелета (`build_skeleton` — джойны пишет код), не выполняется без валидации,
   декомпозиция не включается без порога. Переходов «в обход» не существует — это
@@ -126,4 +133,4 @@ stateDiagram-v2
 
 ## Трассировка
 
-Ревизии: v1.3 (15 узлов = hw-01 §2.1, M1, recursion_limit, T2 → degraded_out) · Связанные ADR: ADR-002, ADR-004, ADR-005, ADR-006, ADR-007, ADR-009 · Канон: hw-01/README.md §2, §3.1, §6
+Ревизии: v1.4 (ретрай шага, T2: approximate/matview через interpret_result) · Связанные ADR: ADR-002, ADR-004, ADR-005, ADR-006, ADR-007, ADR-009 · Канон: hw-01/README.md §2, §3.1, §6
