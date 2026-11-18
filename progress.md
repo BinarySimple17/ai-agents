@@ -7,9 +7,9 @@
 ## Current State
 
 **Last Updated:** 2026-11-18
-**Session ID:** … → S02 (feat-002 ✅) → **S03 (feat-003 закрыта: Settings fail-fast + LLMProvider/openai_provider + Tracer; ARCH-GATE violations→rulings; REVIEW-GATE 1C+5I+6M → fix-волна → re-review «С оговорками»)**
-**Active Feature:** — (feat-003 → passing; следующая — S13/feat-013, финальная сессия ДЗ-02)
-**Last commit:** ветка `feat-003-llm-client` (S03); слияние по гигиене веток — PR `feat-003-llm-client` → `dev`; `main` — релизы (v0.1.0 = этап 1)
+**Session ID:** … → S02 (feat-002 ✅) → S03 (feat-003 ✅) → **D-020: LLM-шлюз — локальный LM Studio по умолчанию (`harness/llm-local-default`) → далее S13 (feat-013, финальная сессия ДЗ-02)**
+**Active Feature:** — (следующая — feat-013; WIP=1 не нарушен)
+**Last commit:** ветка `harness/llm-local-default` (D-020); до этого — PR #3 `feat-003-llm-client` → `dev`; `main` — релизы (v0.1.0 = этап 1)
 
 ## Status
 
@@ -44,15 +44,17 @@
 
 - [x] **S03 (2026-11-18): feat-003 закрыта — конфиг + LLM-клиент шлюза** — `Settings` (pydantic-settings, fail-fast с внятным перечнем отсутствующих, ключ/пароли/DSN — SecretStr без дефолтов, gt=0/http-валидации); порт `LLMProvider` (фикс-сигнатура стыка 2 + `model` в ответе — синхрон S00; типизированные CircuitOpen/BudgetExceeded/LLMRequest ошибки); `OpenAIProvider` (роли из Settings, backoff 1→2→4с с jitter на 4 попытках, breaker 5→60с + half-open проба с переоткрытием, таймаут БЕЗ инкремента breaker, temperature 0, `max_retries=0`, `usage`→₽, флаг `usage_missing`, failure-события трейса); бюджетный предохранитель кап-на-запрос (best-effort, reset оркестратором S04, жёсткий контроль — S15/BudgetGuard); `JsonlTracer` best-effort (JSONL вне git, `.harness/traces/`); сборка — `composition/container.py`; 32 unit на моках (герметичные Settings, скриптованный шлюз, инъекция clock/sleep/rng) + 14 infra; **ARCH-GATE: violations→rulings** (W1 backoff с jitter — синхрон S00/feature_list; W2 таймаут ≠ сбой breaker); **REVIEW-GATE: 1 Critical + 5 Important + 6 Minor → fix-волна → scoped re-review «С оговорками»** (все код-находки resolved); verify-feature → passing; ручной smoke шлюза — ждёт `LLM_API_KEY` от куратора (Layer 3)
 
+- [x] **D-020 (2026-11-18): LLM-шлюз — локальный LM Studio по умолчанию** — решение владельца («вместо облачной — локальная qwen3.8-9b в LM Studio; пустой `LLM_BASE_URL` → локальный»): Settings — пустой/незаданный `llm_base_url` → `http://127.0.0.1:1234/v1` (живая проверка: `/v1` — OpenAI-совместимый API LM Studio; его `/api/v1` — REST, chat/completions 404 — дефолт по духу директивы, с рабочим путём; 127.0.0.1, не localhost — IPv6-ловушка, как в DSN), валидатор срезает хвостовой «/» и требует хост; `LLM_API_KEY` — обязательный непустой ASCII без control-символов (кириллический плейсхолдер «ЗАПОЛНИТЬ» ловлен живым smoke'ом как UnicodeEncodeError при сборке заголовка — теперь fail-fast, +9 тестов суммарно); `hide_input_in_errors` — ValidationError не печатает сырое значение ключа; `.env`/`.env.example` — local-first (роли → `qwen3.8-9b`, цены 0, эмбеддер `text-embedding-bge-m3`, timeout 60 под холодную загрузку); синхрон канона: S00 (стек/порты/адаптер + правка в отчёте), security.md v1.7 (§4 ключ, §5 исходящие), model-card v1.2 (локальный контур), AGENTS/README/ARCHITECTURE (стек-строки); **smoke Layer 3 через OpenAIProvider: все три роли → `qwen3.8-9b`, usage на месте, cost 0 ₽**. Наблюдение для S13: reasoning идёт в `content` (текст с `</think>`-хвостом) — узлам нужна очистка
+
 ### What's In Progress
 
-- — (S03 закрыта 2026-11-18). Следующая сессия — S13 (feat-013, тул run_sql + узел execute_sql; RLS-политики + `SET LOCAL app.user_id` — Task 4 S13 по FIX-007) — финальная сессия ДЗ-02; ручной smoke LLM-шлюза — после `LLM_API_KEY` (куратор)
+- **S13 (feat-013)** — тул run_sql + узел execute_sql + RLS-политики + `SET LOCAL app.user_id` (Task 4, FIX-007) + артефакты ДЗ-02 (JSON-схема тулa, function-calling цикл в apps.cli, SOP) — финальная сессия ДЗ-02; старт сразу после слияния D-020
 
 ### Next Steps
 
-1. Ближайшая веха — ДЗ-02 (дедлайн 30.11.2026): **`S13`** (тул run_sql + узел execute_sql; RLS-политики — в Task 4 S13, FIX-007) — финальная сессия ДЗ-02, после неё сдача
-2. Слить `feat-003-llm-client` → `dev` через PR (гигиена веток); при приёмке ДЗ-02 — PR `dev` → `main` + тег
-3. `LLM_API_KEY` — от куратора: ручной smoke OpenAIProvider (Layer 3); в тестах шлюз только моками (S00 правило 7)
+1. Слить `harness/llm-local-default` (D-020) → `dev` через PR
+2. Ближайшая веха — ДЗ-02 (дедлайн 01.12.2026): **`S13`** (тул run_sql + узел execute_sql; RLS-политики — в Task 4 S13, FIX-007) — финальная сессия ДЗ-02, после неё сдача (PR `dev` → `main` + тег); layer-3 feat-013 теперь прогоняется на локальном LM Studio
+3. Облачный `LLM_API_KEY` больше не блокер: smoke Layer 3 выполнен локально (D-020); для облака — заполнить `LLM_BASE_URL` и ключ в `.env`
 4. Веха V2 (ДЗ-03, дедлайн 07.12): S06 → S19
 
 ## Blockers / Risks
@@ -60,7 +62,7 @@
 - [x] ~~Риск: сборка образа apache/age + pgvector на Windows~~ — снят переходом на Neo4j (D-013): оба образа официальные, кастомная сборка удалена
 - [x] **Решено владельцем (2026-11-15, FIX-005):** кэш — без семантической близости, точное совпадение (ADR-009 v1.2; prd FR-13 v1.5, RISKS R-Q5 снят, feat-016, S16)
 - [x] **Решено владельцем (2026-11-15, FIX-005):** источник `/metrics` — Streamlit-демо; CLI — спаны + query_trace (ADR-010 v1.2; observability v1.3, c4-l2 v1.6, feat-018)
-- [ ] Ключ `LLM_API_KEY` не задан (до feat-003 не мешает)
+- [x] ~~Ключ `LLM_API_KEY` не задан~~ — снят D-020 (2026-11-18): локальный LM Studio по умолчанию, smoke Layer 3 выполнен; для облака ключ — по желанию куратора
 - [x] ~~Всё ещё не коммитится по решению куратора~~ — решено (2026-11-18): ДЗ-1-файл закоммичен в `hw-01-agent-architecture` (1022a45), harness/пакет/журналы — в ветке `project-harness` (отпочкована от hw-01-agent-architecture после 1022a45); слить `project-harness` → `hw-01-agent-architecture` (затем в `main` по регламенту вех) после приёмки ДЗ
 - [ ] `.docs/arch/` заморожен как источник пакета (D-007): новые ревизии — только в docs/, иначе расползание копий
 - [x] ~~Канон docs/ расходится с hw-01 по ревью-03~~ — закрыт в S20 (2026-11-18): BL-002 закрыт, grep-сверка чистая (Evidence), er-data-model v1.5 готов под первую миграцию S02
@@ -96,6 +98,7 @@
 - D-018 (патч по отзыву преподавателя): `hw-01/README.md` (7 точек: Reason, §8/§9-ссылки ×5, стартовые пороги), `docs/adr/ADR-002` (v1.3), `docs/diagrams/c4-l3` (v1.5), `docs/arch-package.md` (Состав + История), `DECISIONS.md` (D-018), `progress.md`
 - D-019 (патч-2 по отзыву): `hw-01/README.md` (§3.1: DG→GSS + HEAVY-разбивка, §3.1 ветвления, §4.3 ретрай шага, TODO(confirm)→допущение ×2), `docs/diagrams/state-agent` (v1.4), `docs/diagrams/c4-l3` (v1.6), `docs/diagrams/sequence-query` (v1.4), `docs/adr/ADR-004` (v1.3), `docs/arch-package.md` (Состав + История), `DECISIONS.md` (D-019), `progress.md`
 - S02 (feat-002): `src/migrations/versions/{20261118_0001_schema_v15,20261118_0002_roles_hardening,20261118_0003_demo_data}.py`, `src/tests/conftest.py` (.env-загрузка, neo4j), `src/tests/integration/test_infra_schema.py` (13 тестов), `Makefile` (infra-migrate --env-file), `.env.example` (+пароли ролей, 127.0.0.1), `feature_list.json` (feat-002 v1.5 + feat-013 рубеж), `docs/security.md` (§2.1 — миграции + whitelist), `docs/diagrams/er-data-model.md` (7 строк каталога), `solution/sessions/S00_session.md` (контракт 4 FIX-007), `solution/sessions/{S02,S13,S03? — нет: S02,S13}_session.md`, `solution/FIXES.md` (FIX-007), `solution/backlog/BL-003…` + реестр, `scripts/guard-subagents.sh` (фича-aware + strict), `scripts/verify-feature.sh` (передача F), `solution/sessions/S03_session.md`/`S13_session.md` (батч — ранее)
+- D-020 (локальный LLM-шлюз): `src/text_to_sql_agent/config/settings.py` (`LOCAL_LLM_BASE_URL`, валидаторы base_url/api_key), `src/tests/unit/test_settings.py` (+9 тестов), `src/text_to_sql_agent/infrastructure/llm/openai_provider.py` (docstring), `.env.example`/`.env` (local-first LLM-блок), `solution/sessions/S00_session.md` (стек/порты/отчёт), `docs/security.md` (v1.7), `docs/model-card.md` (v1.2), `DECISIONS.md` (D-020), `AGENTS.md`/`README.md`/`docs/ARCHITECTURE.md` (стек-строки), `progress.md`
 
 ## Evidence of Completion
 
@@ -116,6 +119,7 @@
 - [x] D-018 grep-сверка: «вслух» → 0 в hw-01 и docs/; «§8»/«§9» → 0 в hw-01 (легальные ссылки §2–§7 не тронуты); «краткий план следующего действия» присутствует в hw-01, ADR-002 v1.3, c4-l3 v1.5; «стартовые» пороги — в hw-01 §3.4; `make check` → EXIT=0
 - [x] D-019 grep-сверка: hw-01 — ребро «ретраится шаг» на схеме (1), фраза ретрая шага в §4.3 (1), «TODO(confirm)» → 0, HEAVY без `--> OUT` (approximate/matview → CR — 1, async/отказ → OUT — 1); state-agent v1.4 — «ретраится шаг, не весь план» + «T2 → approximate / matview… идёт в объяснение»; «ретраится упавший шаг» присутствует в hw-01, ADR-004 v1.3, feat-014; `make check` → EXIT=0
 - [x] **S02 Evidence (2026-11-18):** чистая комната — свежая БД → `alembic upgrade head` (3 миграции) → vector/17 объектов/4 роли/ловушки данных на месте; `uv run pytest src/tests/integration/test_infra_schema.py -v` → **13 passed** (идемпотентность, состав, вьюха active, vector, dblink отсутствует, bump-триггеры, whitelist agent_ro, read-only сессии, INSERT-only trace, registry_writer без DELETE, temp-двойник не перехватывает bump, ловушки данных, total=SUM, Neo4j bolt); `make check` → EXIT=0; `make verify-feature F=feat-002` → PASS (гвард гейтов — фича-aware); `make clean-check` → EXIT=0
+- [x] **D-020 Evidence (2026-11-18):** живой smoke: Settings пустой `LLM_BASE_URL` → `http://127.0.0.1:1234/v1` (match True); через `build_container().llm.complete` все три роли → `qwen3.8-9b`, usage `{'tokens_in': 36, 'tokens_out': 313}`, `cost_rub=0`; curl-сверка путей: `/v1/chat/completions` → HTTP 200, `/api/v1/chat/completions` → HTTP 404 («Unexpected endpoint») — обоснование дефолта `/v1`; **REVIEW-GATE D-020: With fixes (0 Critical / 4 Important / 11 Minor) → fix-волна** (hide_input_in_errors, 127.0.0.1-дефолт, синхрон арх-реестра/статусов, харднеж ключ-валидатора) → scoped re-review; `make check` → EXIT=0 (**55 passed**, +9 тестов Settings)
 - [ ] Повторный clean-check — `make clean-check` в конце этой сессии
 - [ ] `make infra-up` + первая миграция — feat-002 (S02)
 
@@ -123,7 +127,7 @@
 
 <!-- Свободные заметки, чтобы следующая сессия продолжила без потери контекста. -->
 
-- **S02 закрыта**: схема v1.5 в БД, роли/гранты готовы. S03 (feat-003) — LLMProvider: порт + адаптер routerai.ru (backoff/breaker/usage), Settings (fail-fast), бюджетный предохранитель; **ключ `LLM_API_KEY` — у куратора**, тесты — моки. Диспетчеризация субагентов: architect canon-check ДО кода (контракт стыка 2 — ADR-007), code-reviewer после зелёного make check; гейты в S03_session.md заполнять ПО ФАКТУ (guard в режиме фичи отвергает «не начата»).
+- **D-020 применён**: локальный LM Studio по умолчанию (`qwen3.8-9b` на все роли, цены 0, таймаут 60, ключ — непустой ASCII `sk-local`). Для S13: reasoning модели приходит в `content` (текст с `</think>`-хвостом) — тул-цикл/парсинг ответа должен это отделять; tool_use capability у модели есть. Тесты шлюза — по-прежнему только моки (S00 правило 7). Диспетчеризация субагентов: architect canon-check ДО кода, code-reviewer после зелёного make check; гейты в S13_session.md заполнять ПО ФАКТУ (guard в strict-режиме отвергает «не начата»).
 - Гигиена веток: работа в рабочих ветках от `dev` → PR → `dev`; `main` — релизы (PR dev → main + тег). Локальные гварды .githooks активны (init.sh подключает); GitHub branch protection — ещё не включён.
 - Роли БД: пароли из .env (AGENT_*_PASSWORD); при смене — миграция идемпотентна (условный CREATE + ALTER PASSWORD), но DSN в .env менять синхронно. DSN — только 127.0.0.1 (Windows/IPv6-ловушка).
 - Пакет v1.8 живёт в docs/ (D-007); `.docs/arch/` — замороженный источник, не править.

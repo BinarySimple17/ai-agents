@@ -7,16 +7,16 @@
 - **Живые прикладные требования**: [docs/prd.md](docs/prd.md) (трекаемый архитектурный пакет — вся работа здесь)
 - **Историческая полная спецификация** (READ ONLY, вне гита): `.docs/hw-01/README.md`
 - **Решение ДЗ-1** (подготовленный к сдаче документ): [hw-01/README.md](hw-01/README.md) — папки `hw-NN/` содержат решения ДЗ NN
-- **Архитектурный пакет v1.7** (11 ADR, C4 L1–L3, FSM, ER, prd, security): [docs/arch-package.md](docs/arch-package.md)
+- **Архитектурный пакет v1.8** (11 ADR, C4 L1–L3, FSM, ER, prd, security): [docs/arch-package.md](docs/arch-package.md)
 - **Краткие свёртки для агента**: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), [docs/PRODUCT.md](docs/PRODUCT.md), канон — [solution/sessions/S00_session.md](solution/sessions/S00_session.md)
 - **Правила работы ИИ-агента**: [AGENTS.md](AGENTS.md) — старт сессии, правило «одна фича за раз», Definition of Done, End of Session
 
-**Стек:** Python 3.13 · LangGraph (граф на коде) · PostgreSQL (pgvector) · Neo4j (граф связей) · Valkey · OpenAI-совместимый шлюз routerai.ru. Зависимости — [uv](https://docs.astral.sh/uv/). Весь код — в `src/`: пакет `text_to_sql_agent`, презентационный слой `src/apps/` (CLI и Streamlit-демо), миграции Alembic `src/migrations/`, тесты `src/tests/`.
+**Стек:** Python 3.13 · LangGraph (граф на коде) · PostgreSQL (pgvector) · Neo4j (граф связей) · Valkey · OpenAI-совместимый шлюз (облако routerai.ru или локальный LM Studio — D-020). Зависимости — [uv](https://docs.astral.sh/uv/). Весь код — в `src/`: пакет `text_to_sql_agent`, презентационный слой `src/apps/` (CLI и Streamlit-демо), миграции Alembic `src/migrations/`, тесты `src/tests/`.
 
 ## Быстрый старт
 
 ```bash
-cp .env.example .env          # заполнить LLM_API_KEY
+cp .env.example .env          # локально ничего; для облака — LLM_BASE_URL + ключ
 ./init.sh                     # установка зависимостей + верификация (make check)
 make infra-up                 # PostgreSQL + Valkey (по требованию)
 make dev Q="Сколько заказов у клиентов из Москвы?"

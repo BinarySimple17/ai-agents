@@ -3,16 +3,25 @@
 Всё из `.env.example`, кроме compose-обвязки (POSTGRES_DB/POSTGRES_USER/POSTGRES_PASSWORD —
 читает docker-compose, Python их не использует). Секреты — SecretStr без дефолтов в коде
 (fail-fast на старте, S00 правило 4); опциональные с дефолтом — только не-секретные
-операционные параметры (таймаут шлюза, путь трейса).
+операционные параметры (базовый URL шлюза — локальный LM Studio при пустом, D-020;
+таймаут шлюза, путь трейса).
 
 Бизнес-код читает env только через Settings: `os.environ`/`os.getenv` вне этого модуля
 запрещены (S00 «Запрещено», самопроверка grep).
 """
 
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from pydantic import Field, SecretStr, ValidationError, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Дефолт пустого LLM_BASE_URL (решение владельца D-020): локальный OpenAI-совместимый
+# шлюз LM Studio. Путь — именно /v1 (OpenAI-совместимый API); /api/v1 у LM Studio —
+# собственный REST, на нём chat/completions отвечает 404 (проверено живым вызовом
+# 2026-11-18). Хост — 127.0.0.1, НЕ localhost: тот же Windows-овощ, что в DSN-правиле
+# S02 — IPv6 ::1 резолвится первым и молча дропается (+60s на коннект).
+LOCAL_LLM_BASE_URL = "http://127.0.0.1:1234/v1"
 
 
 class Settings(BaseSettings):
@@ -20,6 +29,8 @@ class Settings(BaseSettings):
 
     DSN-строки — SecretStr: внутри пароль, repr/redaction не должен его утечь
     (ревью S03 Important-3). Значение — через `.get_secret_value()`.
+    hide_input_in_errors: ValidationError не печатает сырое значение поля —
+    иначе fail-fast на кривом ключе напечатал бы сам секрет (REVIEW-GATE D-020).
     """
 
     model_config = SettingsConfigDict(
@@ -27,21 +38,59 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         extra="ignore",
         case_sensitive=False,
+        hide_input_in_errors=True,  # секрет не попадает в текст ValidationError
     )
 
-    # --- LLM-шлюз (OpenAI-совместимый, routerai.ru) — единственный наружный вызов ---
-    llm_base_url: str
-    llm_api_key: SecretStr
+    # --- LLM-шлюз (OpenAI-совместимый: облако routerai.ru или локальный LM Studio) ---
+    # Пусто или не задано → локальный LM Studio (D-020): dev-контур без облака.
+    llm_base_url: str = ""
+    llm_api_key: SecretStr  # LM Studio ключ не проверяет — любой непустой ASCII-плейсхолдер
     # Правило 9 (S00): потенциально зависающий LLM-вызов — только с таймаутом.
     # Таймаут — отказ узла, НЕ сбой breaker (ARCH-GATE S03 W2, ADR-007 §4.3).
     llm_request_timeout_s: float = Field(default=15.0, gt=0)
 
     @field_validator("llm_base_url")
     @classmethod
-    def _base_url_is_http(cls, value: str) -> str:
-        if not value.lower().startswith(("http://", "https://")):
-            raise ValueError("llm_base_url должен начинаться с http:// или https://")
-        return value
+    def _base_url_default_or_http(cls, value: str) -> str:
+        url = value.strip()
+        if not url:
+            return LOCAL_LLM_BASE_URL
+        if not url.lower().startswith(("http://", "https://")):
+            raise ValueError(
+                "llm_base_url должен начинаться с http:// или https:// "
+                "(или быть пустым — тогда используется локальный LM Studio)"
+            )
+        url = url.rstrip("/")  # хвостовой «/» дал бы «//chat/completions» у SDK
+        if not urlsplit(url).netloc:
+            raise ValueError(
+                f"llm_base_url без хоста: {url!r} (пример: https://routerai.ru/api/v1)"
+            )
+        return url
+
+    @field_validator("llm_api_key")
+    @classmethod
+    def _api_key_is_header_safe(cls, value: SecretStr) -> SecretStr:
+        # Заголовок Authorization кодируется ASCII: кириллица падала не на старте,
+        # а UnicodeEncodeError'ом при сборке HTTP-запроса (живой smoke D-020).
+        raw = value.get_secret_value().strip()
+        if not raw:
+            raise ValueError(
+                "llm_api_key не должен быть пустым "
+                "(LM Studio ключ не проверяет — годится любой непустой ASCII-плейсхолдер)"
+            )
+        try:
+            raw.encode("ascii")
+        except UnicodeEncodeError:
+            raise ValueError(
+                "llm_api_key должен быть ASCII-строкой: кириллица в ключе ломает "
+                "заголовок Authorization (для локального LM Studio — плейсхолдер, "
+                "например sk-local)"
+            ) from None
+        if any(ord(ch) < 32 or ord(ch) == 127 for ch in raw):
+            raise ValueError(
+                "llm_api_key содержит управляющие символы — не годится для заголовка Authorization"
+            )
+        return SecretStr(raw)
 
     # --- Роли моделей (ADR-007 §4): имя модели — только из Settings, не хардкод ---
     model_cheap: str

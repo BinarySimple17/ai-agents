@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from text_to_sql_agent.config.settings import Settings, load_settings
+from text_to_sql_agent.config.settings import LOCAL_LLM_BASE_URL, Settings, load_settings
 
 # Полный перечень env-переменных Settings (синхрон с .env.example, без compose-блока)
 ENV_NAMES = (
@@ -141,6 +141,64 @@ def test_base_url_must_be_http(clean_env):
     _set_required(clean_env, LLM_BASE_URL="routerai.ru/api/v1")
     with pytest.raises(ValidationError):
         load_settings()
+
+
+def test_base_url_empty_falls_back_to_local_lm_studio(clean_env):
+    # D-020: пустой LLM_BASE_URL → локальный OpenAI-совместимый шлюз LM Studio
+    _set_required(clean_env, LLM_BASE_URL="")
+    assert load_settings().llm_base_url == LOCAL_LLM_BASE_URL
+
+
+def test_base_url_missing_falls_back_to_local_lm_studio(clean_env):
+    for key, value in REQUIRED_ENV.items():
+        if key != "LLM_BASE_URL":
+            clean_env.setenv(key, value)
+    assert load_settings().llm_base_url == LOCAL_LLM_BASE_URL
+
+
+def test_base_url_trailing_slash_stripped(clean_env):
+    _set_required(clean_env, LLM_BASE_URL="https://routerai.ru/api/v1/")
+    assert load_settings().llm_base_url == "https://routerai.ru/api/v1"
+
+
+def test_non_ascii_api_key_rejected(clean_env):
+    # Заголовок Authorization — ASCII: кириллический плейсхолдер должен падать
+    # на старте, а не UnicodeEncodeError'ом при сборке HTTP-запроса (smoke D-020)
+    _set_required(clean_env, LLM_API_KEY="ЗАПОЛНИТЬ")
+    with pytest.raises(ValidationError):
+        load_settings()
+
+
+def test_empty_api_key_rejected(clean_env):
+    _set_required(clean_env, LLM_API_KEY="")
+    with pytest.raises(ValidationError):
+        load_settings()
+
+
+def test_whitespace_only_api_key_rejected(clean_env):
+    _set_required(clean_env, LLM_API_KEY="   ")
+    with pytest.raises(ValidationError):
+        load_settings()
+
+
+def test_control_char_api_key_rejected(clean_env):
+    # Управляющие байты в заголовке Authorization недопустимы — fail-fast на старте
+    _set_required(clean_env, LLM_API_KEY="sk\x01bad")
+    with pytest.raises(ValidationError):
+        load_settings()
+
+
+def test_api_key_never_leaks_into_validation_error(clean_env):
+    # hide_input_in_errors: текст ValidationError не печатает сырой ключ (REVIEW-GATE D-020)
+    _set_required(clean_env, LLM_API_KEY="НЕСЕКРЕТНЫЙ-КЛЮЧ-12345")
+    with pytest.raises(ValidationError) as exc:
+        load_settings()
+    assert "НЕСЕКРЕТНЫЙ-КЛЮЧ-12345" not in str(exc.value)
+
+
+def test_whitespace_only_base_url_falls_back_to_local(clean_env):
+    _set_required(clean_env, LLM_BASE_URL="   ")
+    assert load_settings().llm_base_url == LOCAL_LLM_BASE_URL
 
 
 def test_timeout_override_applies(clean_env):
