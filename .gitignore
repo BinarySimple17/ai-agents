@@ -36,8 +36,8 @@ dist/
 *.orig
 *.rej
 
-# Рантайм-артефакты наблюдаемости (не исходники)
-.harness/traces/traces.jsonl
+# Рантайм-артефакты наблюдаемости (не исходники): JSONL-трейс FR-11
+.harness/traces/
 
 # Локальные настройки агентов
 .claude/settings.local.json

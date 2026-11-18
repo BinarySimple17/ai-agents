@@ -80,7 +80,7 @@ alembic.ini                    # конфиг Alembic (script_location = src/mig
 
 | Порт (application/ports) | Реализации (infrastructure) | Вводит сессия |
 |---|---|---|
-| `LLMProvider.complete(role, messages, *, tools=None) -> LLMResponse(text, tool_calls, usage)` · `embed(texts) -> list[vector]` (эмбеддер — model-card) | `openai_provider.py` (routerai.ru), фейк в тестах | S03 (embed — S06) |
+| `LLMProvider.complete(role, messages, *, tools=None) -> LLMResponse(text, tool_calls, usage, model)` · `embed(texts) -> list[vector]` (эмбеддер — model-card) | `openai_provider.py` (routerai.ru), фейк в тестах | S03 (embed — S06) |
 | `VectorStore.search(query, allowed) -> docs` | `pgvector_store.py`, фейк в тестах | S06 |
 | `SchemaGraphStore.path(a, b, allowed) -> plan\|None` | `neo4j_graph_store.py` | S07 |
 | `SQLExecutor.execute(QueryRequest, *, ctx) -> rows` — read-only; дискриминатор `sql\|spec` (ADR-011 v1.1) | `postgres_executor.py` (роль `agent_ro`) | S13 |
@@ -109,8 +109,8 @@ alembic.ini                    # конфиг Alembic (script_location = src/mig
 
 ### 2. LLMProvider ↔ узлы (владелец: S03; решение — ADR-007, карточка — [model-card.md](../../docs/model-card.md))
 - Формат: вызов по роли (`cheap|mid|strong`) — роль попытки определяет узел из state по политике ретраев M1 (D-016, ADR-007 §4.1): попытка 1 — стартовая роль узла, попытка 2 — та же роль + текст ошибки, попытка 3 — роль выше при достатке бюджета; в контекст при retry — только последний SQL/план + текст ошибки, не цепочка попыток; имя модели берётся из `Settings` (`.env`), не хардкодится в узлах; структурированные выходы — pydantic `JoinPlan`/`QueryPlan`/`ResultCompact` (ADR-008, temperature 0).
-- Инварианты: backoff 1→2→4с и circuit breaker (5 сбоев → пауза 60с) — внутри провайдера; тесты — только моки; учёт бюджета ведёт `BudgetGuard`, при превышении — исключение до вызова.
-- Ответ и трейс (FIX-005): `complete` возвращает `usage` (tokens_in/out) — из него `BudgetGuard` считает ₽ (цены `MODEL_*_PRICE_IN/OUT` в `Settings`) и провайдер пишет `node_timings` (FR-11); тулы (ADR-008) передаются параметром `tools`, `tool_calls` возвращаются оркестратору; `embed` — отдельный метод для адаптеров VectorStore/кэша (эмбеддер — model-card).
+- Инварианты: backoff 1→2→4с **с jitter** (ADR-007 §4.3) и circuit breaker (5 сбоев → пауза 60с) — внутри провайдера; тесты — только моки; учёт бюджета ведёт `BudgetGuard`, при превышении — исключение до вызова.
+- Ответ и трейс (FIX-005): `complete` возвращает `usage` (tokens_in/out) и фактическое имя модели (`model`) — из usage `BudgetGuard` считает ₽ (цены `MODEL_*_PRICE_IN/OUT` в `Settings`) и провайдер пишет `node_timings` (FR-11); тулы (ADR-008) передаются параметром `tools`, `tool_calls` возвращаются оркестратору; `embed` — отдельный метод для адаптеров VectorStore/кэша (эмбеддер — model-card).
 
 ### 3. Права ↔ мир агента (владелец: S05; решение — ADR-005)
 - Формат: `state.permissions` = `{tables: {table: [columns]}}` (scope) — единственный источник для подграфа, retrieval-фильтра и AST-валидатора; кэш прав per-user проверяет версию настроек (`settings_version` — триггерные счётчики) на каждый запрос.
