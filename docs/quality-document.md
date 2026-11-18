@@ -6,7 +6,7 @@
 
 | Module | Correctness | Arch compliance | Test coverage | Verification evidence | Notes |
 |---|---|---|---|---|---|
-| `services/llm` | — | — | — | — | feat-003 |
+| `services/llm` (Settings + LLMProvider + OpenAIProvider + Tracer) | A | A | A | A | feat-003 ✅ (32 unit на моках + 14 infra; ARCH-GATE rulings; REVIEW-GATE fix-волна → re-review «С оговорками»; fuse best-effort — жёсткий контроль S15; embed — S06; smoke реального шлюза — после LLM_API_KEY) |
 | `graph/` (state machine) | — | — | — | — | feat-004 |
 | `domain/` (validate/rbac) | — | — | — | — | feat-005, feat-011 |
 | `services/vector` | — | — | — | — | feat-006 |

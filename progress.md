@@ -7,9 +7,9 @@
 ## Current State
 
 **Last Updated:** 2026-11-18
-**Session ID:** … → docs-sync-review-03 (S20) → **S02 (feat-002 закрыта: миграции схемы v1.5 + роли/гранты + демо-данные; ARCH-GATE canon-check → FIX-007; REVIEW-GATE With fixes → fix-волна)**
-**Active Feature:** — (feat-002 → passing; следующая — S03/feat-003: нужен `LLM_API_KEY` в `.env`)
-**Last commit:** ветка `feat-002-infra` (S02; коммит — `git log -1`, fix-волна ревью внесена amend'ом); слияние по гигиене веток: PR `feat-002-infra` → `dev`; `main` — релизы (v0.1.0 = этап 1)
+**Session ID:** … → S02 (feat-002 ✅) → **S03 (feat-003 закрыта: Settings fail-fast + LLMProvider/openai_provider + Tracer; ARCH-GATE violations→rulings; REVIEW-GATE 1C+5I+6M → fix-волна → re-review «С оговорками»)**
+**Active Feature:** — (feat-003 → passing; следующая — S13/feat-013, финальная сессия ДЗ-02)
+**Last commit:** ветка `feat-003-llm-client` (S03); слияние по гигиене веток — PR `feat-003-llm-client` → `dev`; `main` — релизы (v0.1.0 = этап 1)
 
 ## Status
 
@@ -42,15 +42,17 @@
 
 - [x] **S02 (2026-11-18): feat-002 закрыта — инфраструктура БД** — миграции 0001–0003: схема v1.5 (7 бизнес-таблиц + agent_permissions/user_roles/relationships [DDL — ADR-006 §4.1] + agent_edge_proposals + agent_data_sources + settings_version + query_trace/agent_audit); роли agent_ro/planner/trace/registry_writer (пароли из .env, условный CREATE — роли кластерные), whitelist-гранты deny-by-default (FIX-007), agent_ro read-only на уровне сессии, hardening dblink/file_fdw, страховочный триггер query_trace; bump_settings_version SECURITY DEFINER + search_path=pg_catalog + квалификация public (обход через temp-двойник закрыт тестом); демо-данные с ловушками (33 NULL campaign_id, 5 непремированных, total=SUM позиций, order_items 1000 = 1–4 на заказ); тест test_infra_schema.py — 13 passed; чистая комната (свежая БД → полная цепочка) — зелёная; Makefile infra-migrate → uv --env-file; DSN → 127.0.0.1 (Windows/IPv6 ::1 — 60с/коннект); ARCH-GATE: architect canon-check (needs-decision → rulings FIX-007: RLS → S13, whitelist-гранты, синхрон v1.5); REVIEW-GATE: With fixes (Important 1–6, Minor 1–8) → fix-волна; S00 контракт 4 + security.md §2.1 синхрон; BL-003 (хвосты ревью)
 
+- [x] **S03 (2026-11-18): feat-003 закрыта — конфиг + LLM-клиент шлюза** — `Settings` (pydantic-settings, fail-fast с внятным перечнем отсутствующих, ключ/пароли/DSN — SecretStr без дефолтов, gt=0/http-валидации); порт `LLMProvider` (фикс-сигнатура стыка 2 + `model` в ответе — синхрон S00; типизированные CircuitOpen/BudgetExceeded/LLMRequest ошибки); `OpenAIProvider` (роли из Settings, backoff 1→2→4с с jitter на 4 попытках, breaker 5→60с + half-open проба с переоткрытием, таймаут БЕЗ инкремента breaker, temperature 0, `max_retries=0`, `usage`→₽, флаг `usage_missing`, failure-события трейса); бюджетный предохранитель кап-на-запрос (best-effort, reset оркестратором S04, жёсткий контроль — S15/BudgetGuard); `JsonlTracer` best-effort (JSONL вне git, `.harness/traces/`); сборка — `composition/container.py`; 32 unit на моках (герметичные Settings, скриптованный шлюз, инъекция clock/sleep/rng) + 14 infra; **ARCH-GATE: violations→rulings** (W1 backoff с jitter — синхрон S00/feature_list; W2 таймаут ≠ сбой breaker); **REVIEW-GATE: 1 Critical + 5 Important + 6 Minor → fix-волна → scoped re-review «С оговорками»** (все код-находки resolved); verify-feature → passing; ручной smoke шлюза — ждёт `LLM_API_KEY` от куратора (Layer 3)
+
 ### What's In Progress
 
-- — (S02 закрыта 2026-11-18). Следующая сессия — S03 (feat-003, LLMProvider): **нужен ключ `LLM_API_KEY` в `.env`** — попросить у куратора
+- — (S03 закрыта 2026-11-18). Следующая сессия — S13 (feat-013, тул run_sql + узел execute_sql; RLS-политики + `SET LOCAL app.user_id` — Task 4 S13 по FIX-007) — финальная сессия ДЗ-02; ручной smoke LLM-шлюза — после `LLM_API_KEY` (куратор)
 
 ### Next Steps
 
-1. Ближайшая веха — ДЗ-02 (дедлайн 30.11.2026): `S03` (LLMProvider: backoff/breaker/бюджет) → `S13` (тул run_sql + узел execute_sql; RLS-политики — в Task 4 S13, FIX-007); после трёх сессий — сдача ДЗ-02
-2. Слить `feat-002-infra` → `dev` через PR (гигиена веток); при приёмке ДЗ-02 — PR `dev` → `main` + тег
-3. `LLM_API_KEY` — от куратора; реальный шлюз в тестах S03 не используется (моки), ключ нужен только для ручного smoke
+1. Ближайшая веха — ДЗ-02 (дедлайн 30.11.2026): **`S13`** (тул run_sql + узел execute_sql; RLS-политики — в Task 4 S13, FIX-007) — финальная сессия ДЗ-02, после неё сдача
+2. Слить `feat-003-llm-client` → `dev` через PR (гигиена веток); при приёмке ДЗ-02 — PR `dev` → `main` + тег
+3. `LLM_API_KEY` — от куратора: ручной smoke OpenAIProvider (Layer 3); в тестах шлюз только моками (S00 правило 7)
 4. Веха V2 (ДЗ-03, дедлайн 07.12): S06 → S19
 
 ## Blockers / Risks
