@@ -8,13 +8,15 @@ READ ONLY — D-011; `hw-01/README.md` — решение ДЗ-1, ужатый �
 
 ## Overview
 
-Один процесс Python плюс общая инфраструктура: PostgreSQL — единственное хранилище
-истины (бизнес-данные + pgvector + настройки прав + query_trace), граф связей — Neo4j
-ADR-003), Valkey — только кэш вопросов по точному совпадению (ADR-009 v1.2), LLM — за
-OpenAI-совместимым шлюзом routerai.ru с Intent-Based роутингом «узел → навык → модель»
-(cheap/mid/strong, ADR-007). Оркестрация — workflow-скелет: FSM на коде с агентным
-ядром (ADR-002); модель наполняет узлы, код ведёт маршрут. Развёртывание —
-[c4-l2-container.md](diagrams/c4-l2-container.md) (Data Plane + Observability Plane, ADR-010).
+Python-стек (D-017): API — FastAPI (`POST /ask → 202 + job_id`, SSE-стрим), тяжёлые
+прогоны — arq-воркеры за очередью Valkey Streams (развёртывание — [c4-l2 v1.8](diagrams/c4-l2-container.md));
+валидатор — sqlglot, контракты — pydantic. Инфраструктура: PostgreSQL — единственное
+хранилище истины (бизнес-данные + pgvector + настройки прав + query_trace + аудит),
+граф связей — Neo4j (ADR-003), Valkey — кэш вопросов по точному совпадению, чекпоинтер
+`clarify` и очередь задач (ADR-009), LLM — за OpenAI-совместимым шлюзом routerai.ru с
+Intent-Based роутингом «узел → навык → модель» (cheap/mid/strong, ADR-007). Оркестрация
+— workflow-скелет: FSM на коде с агентным ядром (ADR-002); модель наполняет узлы, код
+ведёт маршрут. Наблюдаемость — Observability Plane (ADR-010).
 
 ## Components
 
@@ -44,12 +46,12 @@ OpenAI-совместимым шлюзом routerai.ru с Intent-Based роут�
 
 Инварианты, которые нельзя нарушать (полный список MUST NOT — [AGENTS.md](../AGENTS.md#constraints); обоснования — ADR-002/004/005/006/009):
 
-1. **Граница прав = граница мира агента** (ADR-005): подграф, retrieval и DDL — только из `agent_permissions`; валидатор deny-by-default по типам узлов AST.
-2. **Текст от LLM — не доверенный** (ADR-005, ADR-008): AST-валидация до выполнения; структурированные выходы — через constrained decoding/тулы; `EXPLAIN` — да, `EXPLAIN ANALYZE` — никогда.
-3. **Выполнение** (ADR-005): read-only роль `agent_ro`, `LIMIT 1000`, `statement_timeout` 30s; запись трейса — отдельная INSERT-only роль `agent_trace`.
-4. **Лимиты задаёт код** (ADR-002/004): retry ≤ 3, эскалация только вверх, бюджет-кап 2₽ (`budget_stop`: «неполное не выдаётся за полное» — incomplete-флаг), кольцо T2 ограничено счётчиком.
-5. **Связи не выдумываются** (ADR-006): джойны только по рёбрам графа (топология в AGE, семантика из PG — reconciliation-тест), тип/направление — из семантики ребра.
-6. **Кэш не отравляется** (ADR-009): scope в ключе, сверка допущений на hit; lookup — после `clarify`, `put` — оркестратор по факту успеха.
+1. **Граница прав = граница мира агента** (ADR-005): подграф, retrieval и DDL — только из `agent_permissions`; валидатор deny-by-default по типам узлов AST + deny-list схем + ACL колонок соединения.
+2. **Текст от LLM — не доверенный** (ADR-005, ADR-008): AST-валидация до выполнения (скелет не изменён — `skeleton_hash`, джойны ⊆ `edge_id`); структурированные выходы — pydantic-контракты + constrained decoding/тулы; `EXPLAIN` — да, `EXPLAIN ANALYZE` — никогда.
+3. **Выполнение** (ADR-005): read-only роль `agent_ro`, `LIMIT 1000`, `statement_timeout` 30s, RLS + `SET LOCAL app.user_id`, раздельные коннекты планировщик/исполнитель; запись трейса — отдельная INSERT-only роль `agent_trace`; аудит (S8) — append-only, вне state.
+4. **Лимиты задаёт код** (ADR-002/004/007): политика ретраев M1 — ≤ 3 попыток на узел (попытка 2 — та же модель + текст ошибки, попытка 3 — уровень вверх при достатке бюджета, D-016); `recursion_limit` на граф; глобальные капы ≤ 8 вызовов / ≤ 90 s / ≤ 2 ₽ с резервом 0,6 ₽ (`budget_stop`: «неполное не выдаётся за полное» — incomplete-флаг); T2 — async/matview/approximate/отказ, не декомпозиция.
+5. **Связи не выдумываются** (ADR-006): джойны только по активным рёбрам реестра (граф — производный снапшот с `graph_version`; хранилище заменяемо за `find_join_paths()` — D-015; reconciliation-тест), тип/направление — из ребра.
+6. **Кэш не отравляется и не обходит гейт** (ADR-009, S7): ключ `rights_hash + graph_version + assumptions`, кэшируется SQL, не результат; на hit — валидация + ACL + `EXPLAIN`; lookup — после `clarify`, `put` — оркестратор по факту успеха.
 
 ## Decision Records
 

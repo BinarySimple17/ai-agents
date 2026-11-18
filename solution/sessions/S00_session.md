@@ -1,6 +1,6 @@
 # S00 — Канон проекта: единый стек, порты, контракты стыка, запреты, процесс
 
-Этап: Канон | Владелец: общий | Зависимости: — | Оценка: 0.5 | Статус: [x] канон заполнен (harness-сессия, 2026-11-15)
+Этап: Канон | Владелец: общий | Зависимости: — | Оценка: 0.5 | Статус: [x] канон заполнен (harness-сессия, 2026-11-15); ревизия 2026-11-18 — синхронизация с ревью-03 (S20): 15 узлов FSM, политика M1, recursion_limit, interrupt()/checkpointer, graph_version, FastAPI/arq (N1 — целевой контур)
 
 > **Этот файл — источник истины при любом конфликте.** Приоритет источников:
 > 1. S00 (этот файл) → 2. `docs/adr/` → 3. рабочие сессии `solution/sessions/` → 4. свёртки `docs/`.
@@ -40,7 +40,7 @@
 | Оркестрация | LangGraph (граф на коде) | state machine, маршрут — только код (hw-01 §2.1) |
 | PostgreSQL-драйвер | psycopg 3 (`psycopg[binary]`) | сервисное подключение + read-only `agent_ro` |
 | Векторная память | pgvector | в одном инстансе с данными (hw-01 §3.1) |
-| Граф связей | Neo4j (Cypher, нативный shortestPath) | контейнер neo4j:5.26.0-community; топология — синк из каталога PG + agent_relationships (ADR-006; ADR-003 v2.0) |
+| Граф связей | Neo4j (Cypher) | контейнер neo4j:5.26.0-community; топология — производный снапшот реестра `agent_relationships` (только active-рёбра), `graph_version` пинится на прогон; хранилище заменяемо за `find_join_paths()` (ADR-006 §4.3; ADR-003 v2.1; D-015) |
 | Neo4j-драйвер | neo4j (официальный Python) | bolt://…; образ запинен |
 | Валидация SQL | sqlglot | AST-whitelist, deny-by-default (hw-01 §3.2) |
 | Миграции БД | Alembic (`src/migrations`) | схема + демо-данные — только миграциями (D-009, правило 5) |
@@ -50,11 +50,11 @@
 | Тесты | pytest (+ fixtures скипами) | LLM — моки; БД-тесты скипаются без инфры |
 | Статика | ruff (lint + format) | гейт layer-1 в `./init.sh` |
 | Инфра | docker compose | образы запинены, см. ниже |
-| Точки входа | CLI (`apps/cli.py`) + Streamlit-демо (`apps/streamlit_app.py` — живое демо RBAC) | c4-l2; Streamlit — после базового контура |
+| Точки входа | MVP: CLI (`apps/cli.py`) + Streamlit-демо (`apps/streamlit_app.py` — живое демо RBAC); целевой контур N1 (c4-l2 v1.8): `agent-api` — FastAPI + uvicorn (async, `POST /ask → 202 + job_id`, `GET /ask/{id}/stream` SSE) + `agent-worker` — arq (очередь — Valkey Streams) | D-005 в MVP не снимается: HTTP-контур — после базового (N1 ревью-03); Streamlit — после базового контура |
 | Наблюдаемость (live) | OTel SDK → Jaeger + Prometheus → Grafana (ADR-010) | ДЗ-06 (S17+), не в базовом скоупе |
 | Внешний источник | SAP через AuthProvider + QuerySpec (ADR-011) | после ДЗ-06, точка роста |
 
-**В MVP отсутствуют (запрещены):** HTTP API с контрактом (интерфейсы CLI/Streamlit-демо, D-005); история диалога; DDL/DML в исполняемом SQL; `EXPLAIN ANALYZE`; вероятностный роутер моделей; per-user гранты в PostgreSQL; poetry/pip/conda (только uv); реальные LLM-вызовы из тестов.
+**В MVP отсутствуют (запрещены):** HTTP API с контрактом (интерфейсы CLI/Streamlit-демо, D-005; целевой контур N1 — c4-l2 v1.8, после базового); история диалога; DDL/DML в исполняемом SQL; `EXPLAIN ANALYZE`; вероятностный роутер моделей; per-user гранты в PostgreSQL; poetry/pip/conda (только uv); реальные LLM-вызовы из тестов.
 
 ## Архитектура кода (канон)
 
@@ -104,11 +104,11 @@ alembic.ini                    # конфиг Alembic (script_location = src/mig
 ## Контракты стыка треков
 
 ### 1. State между узлами (владелец: S04, решение D-004; решение — ADR-002, FSM — [state-agent.md](../../docs/diagrams/state-agent.md))
-- Формат: typed dict LangGraph (`domain/entities.py: AgentState`) — `question`, `rewritten_question`, `assumptions[]`, `permissions{}`, `join_plan`, `sql`, `validation`, `rows`, `error`, `retry_count`, `budget_used`, `route_flags`.
-- Инварианты: узел читает только свои поля и пишет только свои; переходы между узлами определяет граф (код), модель не возвращает имя следующего узла; эскалацию модели назначает код по факту провала (`retry_count` + `route_flags`, ADR-007 v1.1); терминальные исходы и лимиты — как в FSM (state-agent.md: `budget_stop`, `incomplete`-флаг, кольцо T2 ограничено счётчиком).
+- Формат: typed dict LangGraph (`domain/entities.py: AgentState`) — `question`, `rewritten_question`, `assumptions[]`, `permissions{}`, `graph_version` (пин снапшота реестра на прогон), `join_plan`, `skeleton` + `skeleton_hash`, `sql`, `validation`, `rows`/`compact` (ResultCompact), `error`, `retry_count`, `budget_used`, `route_flags`, флаги `truncated`/`approximate`/`incomplete`. Состав узлов FSM — 15, идентичен hw-01 §2.1: `resolve_access`, `clarify`, `plan_joins`, `build_skeleton`, `plan_query`, `generate_sql`, `generate_step_sql`, `validate_sql`, `check_cost`, `execute_sql`, `merge_results`, `compact_result`, `diagnose_error`, `interpret_result`, `degrade`.
+- Инварианты: узел читает только свои поля и пишет только свои; переходы между узлами определяет граф (код), модель не возвращает имя следующего узла; ретраи — политика M1 (D-016, ADR-007 §4.1): попытка 2 — та же модель + текст ошибки, попытка 3 — уровень вверх при достатке бюджета, назначает код (`retry_count` + `route_flags`); **два уровня предохранителей** — per-node счётчики (≤ 3) + **`recursion_limit`** на весь граф (ADR-002 v1.2); терминальные исходы и лимиты — как в FSM (state-agent.md: `budget_stop`, `incomplete`-флаг, T2 → async/matview/approximate/отказ — не декомпозиция). Уточняющий вопрос — **`interrupt()` + checkpointer** (сессия в Valkey, TTL 10 мин), ответ пользователя резюмирует тот же прогон.
 
 ### 2. LLMProvider ↔ узлы (владелец: S03; решение — ADR-007, карточка — [model-card.md](../../docs/model-card.md))
-- Формат: вызов по роли (`cheap|mid|strong`) — роль попытки определяет узел из state (эскалация при retry: провал → уровень вверх, ADR-007 v1.1); имя модели берётся из `Settings` (`.env`), не хардкодится в узлах; структурированные выходы — ADR-008.
+- Формат: вызов по роли (`cheap|mid|strong`) — роль попытки определяет узел из state по политике ретраев M1 (D-016, ADR-007 §4.1): попытка 1 — стартовая роль узла, попытка 2 — та же роль + текст ошибки, попытка 3 — роль выше при достатке бюджета; в контекст при retry — только последний SQL/план + текст ошибки, не цепочка попыток; имя модели берётся из `Settings` (`.env`), не хардкодится в узлах; структурированные выходы — pydantic `JoinPlan`/`QueryPlan`/`ResultCompact` (ADR-008, temperature 0).
 - Инварианты: backoff 1→2→4с и circuit breaker (5 сбоев → пауза 60с) — внутри провайдера; тесты — только моки; учёт бюджета ведёт `BudgetGuard`, при превышении — исключение до вызова.
 - Ответ и трейс (FIX-005): `complete` возвращает `usage` (tokens_in/out) — из него `BudgetGuard` считает ₽ (цены `MODEL_*_PRICE_IN/OUT` в `Settings`) и провайдер пишет `node_timings` (FR-11); тулы (ADR-008) передаются параметром `tools`, `tool_calls` возвращаются оркестратору; `embed` — отдельный метод для адаптеров VectorStore/кэша (эмбеддер — model-card).
 
@@ -116,13 +116,13 @@ alembic.ini                    # конфиг Alembic (script_location = src/mig
 - Формат: `state.permissions` = `{tables: {table: [columns]}}` (scope) — единственный источник для подграфа, retrieval-фильтра и AST-валидатора; кэш прав per-user проверяет версию настроек (`settings_version` — триггерные счётчики) на каждый запрос.
 - Инварианты: недоступная таблица не существует в мире агента; валидатор deny-by-default; права читаются из таблиц настроек на каждый запрос; identity — только из проверенного токена (fail-closed).
 
-### 4. Миграции ↔ схема (владелец: S02; решения — ADR-003, ADR-005 §4, ADR-006 §4, D-009)
-- Формат: миграции Alembic (`src/migrations/versions/`, прогон `make infra-migrate`) — 7 бизнес-таблиц + `agent_permissions`, `agent_user_roles`, `agent_relationships`, `agent_data_sources` + `settings_version` + `query_trace` (роль записи `agent_trace`, INSERT-only) + роли `agent_ro` (read-only) и `agent_trace`; демо-данные — data-migration.
-- Инварианты: `alembic upgrade head` идемпотентен и создаёт схему с нуля; правка применённой миграции запрещена (новый файл); DDL/данные демо-схемы соответствуют [er-data-model.md](../../docs/diagrams/er-data-model.md); пароли ролей — из `.env`, не из кода; топология графа в Neo4j ↔ настройки PG — reconciliation-тест (ADR-006).
+### 4. Миграции ↔ схема (владелец: S02; решения — ADR-003, ADR-005 §4, ADR-006 v1.3 §4, D-009)
+- Формат: миграции Alembic (`src/migrations/versions/`, прогон `make infra-migrate`) — 7 бизнес-таблиц + `agent_permissions`, `agent_user_roles`, `agent_relationships` (контракт ребра R1 — ADR-006 §4.1), `agent_edge_proposals`, `agent_data_sources` + `settings_version` + `query_trace` (роль записи `agent_trace`, INSERT-only) + `agent_audit` (поля S8, append-only) + роли `agent_ro` (read-only, RLS), `agent_planner` (планировщик), `agent_trace`, `registry_writer` (владелец реестра); демо-данные — data-migration.
+- Инварианты: `alembic upgrade head` идемпотентен и создаёт схему с нуля; правка применённой миграции запрещена (новый файл); DDL/данные демо-схемы соответствуют [er-data-model.md](../../docs/diagrams/er-data-model.md); пароли ролей — из `.env`, не из кода; снапшот графа (Neo4j, только active-рёбра) ↔ активные строки реестра — reconciliation-тест; `graph_version` — производная ревизии реестра, пин на прогон (ADR-006 §4.3).
 
 ### 5. SemanticCache ↔ прогон (владелец: S16; решение — ADR-009)
-- Формат: ключ = (scope пользователя, вопрос/вектор); значение = SQL (+ допущения clarify, `query_plan`/`sql_steps` для реплея декомпозиции); lookup — после `clarify`, до `plan_joins`; `put` — оркестратор по факту успеха.
-- Инварианты: на хите допущения сверяются с текущим вопросом — не совпали → miss; SQL из кэша проходит ту же валидацию, что и сгенерированный.
+- Формат: ключ = (нормализованный вопрос, `rights_hash`, **`graph_version`**, допущения clarify); значение = SQL (кэшируется SQL, не результат; + `query_plan`/`sql_steps` для реплея декомпозиции); lookup — после `clarify`, до `plan_joins`; `put` — оркестратор по факту успеха.
+- Инварианты: на хите допущения сверяются с текущим вопросом — не совпали → miss; **кэш не обходит гейт (S7):** SQL из кэша проходит ту же валидацию + ACL + `EXPLAIN`, что и сгенерированный; переопределение ребра инвалидирует кэш через `graph_version`.
 
 ## Запрещено
 
@@ -159,3 +159,4 @@ grep -c "^### " solution/sessions/S00_session.md                  # стыки �
 - Отклонения от плана: docs/api/ из шаблона не ведётся (D-005); scripts/audit-harness.sh патчен под uv.lock (D-003).
 - Правки 2026-11-15 (после переноса архпакета v1.7 в docs/, D-007/D-008, FIX-001): раскладка кода приведена к code-architecture-draft §2 (`text_to_sql_agent`: domain/application/infrastructure/orchestration/config/composition + apps/ + sql/ + tests unit/integration/e2e); порты стыков переименованы в порты draft (LLMProvider, VectorStore, SchemaGraphStore, SQLExecutor с `ctx` по ADR-011, SemanticCache, Tracer, BudgetGuard); стыки привязаны к ADR; в стек добавлены точки входа (CLI + Streamlit-демо), наблюдаемость (ADR-010, ДЗ-06) и SAP (ADR-011, после ДЗ-06).
 - Перенесено в другие сессии: Streamlit-демо и live-наблюдаемость — вне базового скоупа S01–S17 (в feature_list не заводились, решение за куратором).
+- Правки 2026-11-18 (S20, синхронизация с ревью-03; hw-01 — норматив): контракт 1 — состав 15 узлов FSM (= hw-01 §2.1, `build_skeleton`/`compact_result`/`generate_step_sql`), `graph_version` в state, `skeleton_hash`, флаги усечения/`approximate`; два уровня предохранителей (per-node M1 + `recursion_limit`); `interrupt()` + checkpointer (TTL 10 мин) для clarify; контракт 2 — политика ретраев M1 (D-016); контракт 4 — +`agent_edge_proposals`, +`agent_audit` (S8), роль `registry_writer`, `graph_version` = производная ревизии реестра; контракт 5 — ключ кэша `rights_hash + graph_version + assumptions`, кэшируется SQL, hit не обходит гейт (S7); стек — точки входа дополнены целевым контуром N1 (FastAPI agent-api + arq agent-worker, Valkey Streams — c4-l2 v1.8), D-005 (нет HTTP в MVP) не менялся.

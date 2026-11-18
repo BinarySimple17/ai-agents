@@ -1,6 +1,6 @@
 # Архитектурный пакет — Text-to-SQL Agent
 
-- **Статус:** пакет v1.7 (принят владельцем 2026-11-14; ревизии 01, 02 применены; v1.7 — ADR-011 v1.1 QuerySpec — см. [История](#история))
+- **Статус:** пакет v1.8 (принят владельцем 2026-11-14; ревизии 01–03 применены; v1.8 — отработка ревью-03 + addition в каноне, S20/BL-002: ADR-002 v1.2, ADR-003 v2.1, ADR-004 v1.2, ADR-005 v1.2, ADR-006 v1.3, ADR-007 v1.2, prd v1.8, security v1.6, диаграммы, model-card/RISKS/observability — см. [История](#история))
 - **Скоуп:** HW-01 «Архитектура агента» (кейс 2) + расширения владельца; фундамент пет-проекта
 - **Размещение:** с 2026-11-15 пакет разложен по harness-структуре и трекается в git
   (решение владельца — [DECISIONS.md D-007](../DECISIONS.md)): ADR — [adr/](adr/),
@@ -31,7 +31,7 @@
 | Почему не взять готовое Text-to-SQL (Vanna и др.)? | [ADR-001](adr/ADR-001-build-vs-buy.md) |
 | Почему state machine на коде, а не свободный ReAct? почему это агент? | [ADR-002](adr/ADR-002-fsm-on-code.md) |
 | Почему PostgreSQL + Neo4j + Valkey, а не одна СУБД или три? | [ADR-003](adr/ADR-003-single-postgres.md) |
-| Как разбиваются тяжёлые запросы (аналог FOR ALL ENTRIES)? кто решает? | [ADR-004](adr/ADR-004-query-decomposition.md) |
+| Как разбиваются тяжёлые запросы (key-set декомпозиция)? кто решает? | [ADR-004](adr/ADR-004-query-decomposition.md) |
 | Как устроено разделение доступа? почему не GRANT-ы? | [ADR-005](adr/ADR-005-rbac-as-data.md) |
 | FK ≠ бизнес: кто и куда вносит связи? | [ADR-006](adr/ADR-006-relationship-semantics.md) |
 | Какая модель на каком узле и почему? сколько стоит запрос? | [ADR-007](adr/ADR-007-model-cascade.md), [model-card](model-card.md) |
@@ -53,28 +53,28 @@
 
 | Файл | Содержание | Статус |
 |---|---|---|
-| [prd.md](prd.md) | ТЗ: FR-1…14 (P0/P1), NFR-1…8, 7 сцен приёмки, трассировка FR → ADR | принято v1.7 |
+| [prd.md](prd.md) | ТЗ: FR-1…14 (P0/P1), NFR-1…8, сцены приёмки + eval-критерии N4 (ACL-leak = 0 — hard gate), трассировка FR → ADR | принято v1.8 |
 | [adr/ADR-001](adr/ADR-001-build-vs-buy.md) | своё vs готовое Text-to-SQL | принято v1.0 |
-| [adr/ADR-002](adr/ADR-002-fsm-on-code.md) | оркестрация: workflow-скелет с агентным ядром | принято v1.1 |
-| [adr/ADR-003](adr/ADR-003-single-postgres.md) | PostgreSQL (pgvector) + Neo4j (граф связей); PG — истина, граф — производная | принято v2.0 |
-| [adr/ADR-004](adr/ADR-004-query-decomposition.md) | декомпозиция тяжёлых запросов, план Б — заглушка | принято v1.1 |
-| [adr/ADR-005](adr/ADR-005-rbac-as-data.md) | права как данные, три рубежа, AuthProvider | принято v1.1 |
-| [adr/ADR-006](adr/ADR-006-relationship-semantics.md) | семантика связей, владелец данных вносит рёбра | принято v1.2 |
-| [adr/ADR-007](adr/ADR-007-model-cascade.md) | Intent-Based Routing, эскалация всех генерирующих узлов, экономика в ₽ | принято v1.1 |
+| [adr/ADR-002](adr/ADR-002-fsm-on-code.md) | оркестрация: workflow-скелет с агентным ядром; два уровня предохранителей (per-node M1 + recursion_limit) | принято v1.2 |
+| [adr/ADR-003](adr/ADR-003-single-postgres.md) | PostgreSQL (pgvector) + Neo4j (граф связей); PG — истина, граф — производный снапшот реестра; хранилище заменяемо за find_join_paths() | принято v2.1 |
+| [adr/ADR-004](adr/ADR-004-query-decomposition.md) | декомпозиция тяжёлых запросов (key-set exchange): T1 — основной путь, T2 → async/matview/approximate; key-set без LIMIT, кап 50 000 | принято v1.2 |
+| [adr/ADR-005](adr/ADR-005-rbac-as-data.md) | права как данные, рубежи 1–5 (AST+скелет, deny-list схем, ACL колонок соединения, БД: RLS + SET LOCAL), AuthProvider | принято v1.2 |
+| [adr/ADR-006](adr/ADR-006-relationship-semantics.md) | реестр связей — единственный SoT; контракт ребра R1, жизненный цикл draft → CI → active, graph_version, agent_edge_proposals | принято v1.3 |
+| [adr/ADR-007](adr/ADR-007-model-cascade.md) | Intent-Based Routing, политика ретраев M1 (D-016), экономика в ₽ — фикс. снимок каталога 18.11.2026 (D-017) | принято v1.2 |
 | [adr/ADR-008](adr/ADR-008-structured-output.md) | constrained decoding + тул-based enforcement | принято v1.0 |
-| [adr/ADR-009](adr/ADR-009-semantic-cache.md) | кэш вопросов со scope в ключе (точное совпадение) | принято v1.2 |
+| [adr/ADR-009](adr/ADR-009-semantic-cache.md) | кэш вопросов (точное совпадение); не обходит гейт — ключ rights_hash + graph_version + assumptions | принято v1.2 |
 | [adr/ADR-010](adr/ADR-010-observability-stack.md) | live-наблюдаемость: OTel SDK → Jaeger (трейсы) + Prometheus (скрейп /metrics; источник — Streamlit-демо) → Grafana | принято v1.2 |
 | [adr/ADR-011](adr/ADR-011-external-sap-datasource.md) | внешний источник SAP: OAuth за AuthProvider; QuerySpec → ручка на ABAP строит Open SQL и проверяет права | принято v1.1 |
 | [diagrams/c4-l1-context.md](diagrams/c4-l1-context.md) | системный контекст | принято v1.1 |
-| [diagrams/c4-l2-container.md](diagrams/c4-l2-container.md) | контейнеры + развёртывание (продуктовый + Observability Plane) | принято v1.7 |
-| [diagrams/c4-l3-agent.md](diagrams/c4-l3-agent.md) | внутреннее устройство агента | принято v1.3 |
-| [diagrams/state-agent.md](diagrams/state-agent.md) | FSM: терминальные исходы, лимиты | принято v1.2 |
-| [diagrams/sequence-query.md](diagrams/sequence-query.md) | тяжёлый запрос сквозь систему (alt-ветки) | принято v1.2 |
-| [diagrams/er-data-model.md](diagrams/er-data-model.md) | 7 бизнес-таблиц + 4 настройки (права, роли, связи, источники) + их версии + query_trace | принято v1.4 |
-| [model-card.md](model-card.md) | карточка моделей (HF-формат) | принято v1.0 |
-| [security.md](security.md) | модель угроз, guardrails-таблица, секреты, инциденты | принято v1.5 |
-| [observability.md](observability.md) | сигналы/пороги/корреляция; live-слой — ADR-010, аналитический — query_trace | принято v1.3 |
-| [RISKS.md](RISKS.md) | регистр рисков с митигациями → ADR | принято v1.0 |
+| [diagrams/c4-l2-container.md](diagrams/c4-l2-container.md) | контейнеры + развёртывание (agent-api FastAPI + agent-worker arq, Data Plane + Observability Plane, NetworkPolicy) | принято v1.8 |
+| [diagrams/c4-l3-agent.md](diagrams/c4-l3-agent.md) | внутреннее устройство агента (15 узлов, k путей + ранжирование, M1) | принято v1.4 |
+| [diagrams/state-agent.md](diagrams/state-agent.md) | FSM: 15 узлов = hw-01 §2.1, терминальные исходы, лимиты | принято v1.3 |
+| [diagrams/sequence-query.md](diagrams/sequence-query.md) | тяжёлый запрос сквозь систему (alt-ветки, M1, probe, compact_result) | принято v1.3 |
+| [diagrams/er-data-model.md](diagrams/er-data-model.md) | 7 бизнес-таблиц + настройки (права, роли, реестр-SoT, заявки, источники) + их версии + query_trace + аудит S8 + контракты N3 | принято v1.5 |
+| [model-card.md](model-card.md) | карточка моделей (HF-формат); снимок каталога 18.11.2026, тарифы зафиксированы | принято v1.1 |
+| [security.md](security.md) | модель угроз, guardrails-таблица (рубежи 1–5, S1–S9), секреты, инциденты | принято v1.6 |
+| [observability.md](observability.md) | сигналы/пороги/корреляция; live-слой — ADR-010, аналитический — query_trace; аудит S8 отдельно | принято v1.4 |
+| [RISKS.md](RISKS.md) | регистр рисков с митигациями → ADR | принято v1.1 |
 
 ## Соглашения пакета
 
@@ -84,7 +84,7 @@
   (C4/state/sequence/ER). При расхождении — правка затронутых ADR в одном заходе
   (правило R-P2 RISKS). Ссылки трассировки вида «Канон: hw-01/README.md §N»
   указывают номера разделов публичной версии; полные подразделы исторически —
-  `.docs/hw-01/README.md` (как в ADR-004: «hw-01/README.md §3.3, .docs §3.5.1–3.5.9»).
+  `.docs/hw-01/README.md` (как в ADR-006: «Канон: hw-01/README.md §3.3, §3.5»).
 - **Формат ADR** — как в принятых [ADR-001…011](adr/): шапка → §1 Контекст → §2 Сравнение
   по осям → §3 Варианты → §4 Решение → §5 Последствия (+/−, revisit triggers) → §6 Ссылки →
   трассировка. [ADR-TEMPLATE.md](adr/ADR-TEMPLATE.md) — справочник структуры нового ADR.
@@ -112,3 +112,4 @@
 | 2026-11-15 | Решения владельца по итогам аудита (FIX-005): (1) **ADR-009 → v1.2** — кэш вопросов на точном совпадении (нормализованный вопрос), семантическая близость исключена: у Valkey нет KNN, перефразировки идут полным циклом; правила scope-изоляции, сверки допущений (п. 6) и реплея декомпозиции не меняются; риск R-Q5 снят по построению; провода: prd FR-13 (v1.5), RISKS R-Q5 + реестр, observability §4, c4-l2, feat-016, S16; (2) **ADR-010 → v1.2** — источник `/metrics`: долгоживущий Streamlit-демо (Prometheus из compose скрейбит host.docker.internal), CLI-прогоны — OTLP-спаны + query_trace (вклад в счётчики — аналитический слой); заголовок ADR-010: Tempo → Jaeger (редакционный остаток v1.0); провода: observability §1/§2.3/§5 (v1.3), c4-l2 (v1.6), feat-018 |
 | 2026-11-15 | **ADR-003 → v2.0 — граф вынесен в Neo4j** (решение владельца по находке №4 аудита, [D-013](../DECISIONS.md)): PG — хранилище истины (данные + pgvector + настройки + query_trace), Neo4j — только топология рёбер (нативный `shortestPath`); официальный образ `pgvector/pgvector:0.8.0-pg17` вместо кастомной сборки AGE+pgvector (риск локальной сборки снят) + `neo4j:5.26.0-community`; контракт синхронизации ADR-006 §4 не меняется (v1.2: AGE → Neo4j в формулировках); права и декомпозиция остаются целиком в PG. Провода: prd §8/§9 (v1.6), c4-l1 v1.1, c4-l2 v1.7 (PG-бокс без AGE, Neo4j-контейнер), c4-l3 v1.2, sequence v1.2, er v1.4, security v1.5 (сеть/секрет/угрозы), S00 (стек, порты, адаптер `neo4j_graph_store`), compose/.env/pyproject (+neo4j-драйвер), feat-002/feat-007, S02/S07 |
 | 2026-11-16 | **Эскалация — единое правило генерирующих узлов** (решение владельца, [D-014](../DECISIONS.md)): **ADR-007 → v1.1** — повторная попытка после провала идёт на уровень вверх (cheap→mid→strong), эскалацию назначает код по факту провала валидации (`retry_count`), эскалации расходуют общий retry-бюджет ≤ 3. **plan_joins** получает структурную валидацию JoinPlan при парсинге (таблицы ∈ scope, джойны ∈ рёбрам графа, ≤ 4 таблиц, связность — как инварианты `plan_query`, ADR-004) + эскалацию: раньше у узла не было ни эскалации, ни ветки провала в FSM. **generate_sql** — эскалация mid → strong проговорена в матрице (раньше — только в §4 и «Чтении схемы» FSM). Провода: ADR-002 v1.1 (карта решений: tier назначает код), state-agent v1.2 (рёбра plan_joins: retry/fail), c4-l3 v1.3 (узел plan_joins + правило роутинга), prd v1.7 (FR-8/FR-10), S00 (контракты 1/2), feat-004/009/010, S09/S10 |
+| 2026-11-18 | **v1.8 — отработка ревью-03 + addition в каноне** (сессия S20; груз — [BL-002](../solution/backlog/BL-002-docs-sync-review-03.md), противоречие — FIX-006; hw-01/README.md отработан раньше — коммит `1022a45` на `hw-01-agent-architecture`, канон сводится к нему, не наоборот). Решения: **D-015** (hw-01 остаётся на AGE + мост «граф — производный снапшот реестра, хранилище — заменяемая деталь за `find_join_paths()`»; канон — Neo4j), **D-016** (ретраи M1: попытка 2 — та же модель + текст ошибки, попытка 3 — уровень вверх при достатке бюджета; supersede «каждый retry вверх» из D-014), **D-017** (чистый Python-стек, Q5 снят; дефолты Q1–Q4/Q6–Q7 с TODO(confirm); тарифы зафиксированы по снимку каталога routerai.ru от 18.11.2026). Перечень ID отработки: **A** (A2 key-set без LIMIT + кап 50 000 + `approximate`; A3 fan-out guard → предагрегация в CTE; A8 T2 → async/matview/approximate/отказ — не декомпозиция; A9 T1 — основной путь, заглушка — оговорка стенда; A10 лимиты `deadline 90 s / statement_timeout 30 s / max_sql_executions 4`); **S** (S1 скелет в валидаторе — `skeleton_hash`, `mandatory_predicates`, джойны ⊆ `edge_id`; S2 ACL колонок соединения; S3 deny-list схем; S4 БД — настоящий рубеж: RLS + `SET LOCAL app.user_id`, раздельные коннекты планировщик/исполнитель; S6 инъекции второго порядка; S7 кэш не обходит гейт — ключ `rights_hash + graph_version + assumptions`; S8 аудит append-only отдельно от трейсов; S9 отказ без раскрытия существования данных); **R** (R1–R7: реестр — единственный SoT, контракт ребра, жизненный цикл `draft → CI → active`, `graph_version` пин на прогон, `agent_edge_proposals`, bootstrap FK+майнинг, cold start/time-to-edge, SAP-оговорка с `MANDT`); **M** (M1 ретраи, M2 ранжирование k путей, M4 Spider 2.0/BIRD вместо кодовых бенчмарков, M5 structured output pydantic temperature 0, M6 circuit breaker → деградация, M7 снимок каталога 618 моделей, M8 рычаг `interpret_result` вне базовой версии); **E** (E1–E6: 0,61/0,62/0,67 ₽; 1000 ≈ 670 ₽; базлайн без retry 2,57 ₽; экономия ≈76%; 6,6К токенов на прогон; кап 2 ₽ с резервом 0,6 ₽); **N** (N1 развёртывание Python-native: agent-api FastAPI + agent-worker arq/Valkey Streams, k8s, NetworkPolicy, OTel fastapi/psycopg/httpx; N3 pydantic-контракты + состав AgentState; N7 LangGraph-специфика: interrupt()/checkpointer, recursion_limit); **C** (C4 состав узлов 15 = hw-01 §2.1, `generate_step` → `generate_step_sql` каскадом); Q5 снят. Правки: **ADR-002 → v1.2** (recursion_limit, M1 в карте решений), **ADR-003 → v2.1** (мост D-015, критерий переключения BFS, k путей, shortestPath — имя функции), **ADR-004 → v1.2** (A2/A3/A8/A9/A10), **ADR-005 → v1.2** (рубежи 1–5, S1–S9), **ADR-006 → v1.3** (реестр-SoT, DDL ребра R1, жизненный цикл, graph_version, заявки), **ADR-007 → v1.2** (M1 + экономика E1–E6 + бенчмарки M4), prd → **v1.8** (FR-2/4/6/7/8/10/11/12/13/14, eval N4, дефолты Q), security → **v1.6**, ARCHITECTURE (стале-AGE в constraint 5 снят, constraint 4 = M1, Overview — Python-стек), диаграммы: state-agent → **v1.3**, c4-l3 → **v1.4**, sequence → **v1.3**, c4-l2 → **v1.8** (N1), er → **v1.5** (DDL ребра, заявки, аудит S8, N3), model-card → **v1.1** (снимок/фиксация тарифов, Spider 2.0/BIRD, стек), RISKS → **v1.1** (R-C1 76%, R-D3 cold start без FK-автопула, R-P3), observability → **v1.4** (OTel-инструментирование, аудит отдельно), S00 (15 узлов, M1, recursion_limit, interrupt/checkpointer, graph_version, FastAPI/arq — D-005 MVP не снят), feature_list (behavior/description feat-004/008/009/010/011/014/015/016/017 — states не тронуты), sessions.md (S07/S09/S10/S12/S14/S17). BL-002 закрыт |

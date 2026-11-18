@@ -1,6 +1,6 @@
 # Observability — наблюдаемость Text-to-SQL Agent
 
-- **Статус:** Принято v1.3 (2026-11-15 — источник `/metrics`: Streamlit-демо; CLI-прогоны — спаны + query_trace, ADR-010 v1.2; v1.2 2026-11-14 — live-стек (ADR-010): Jaeger вместо Tempo, без коллектора (скрейп `/metrics` напрямую))
+- **Статус:** Принято v1.4 (2026-11-18 — синхронизация с ревью-03: OTel-instrumentation fastapi/psycopg/httpx (развёртывание N1 — c4-l2 v1.8); аудит S8 — отдельная append-only таблица `agent_audit`, отдельно от трейсов; PII-редакция. v1.3 — источник `/metrics`: Streamlit-демо; v1.2 — live-стек (ADR-010): Jaeger вместо Tempo, без коллектора)
 - **Назначение:** операционный уровень поверх prd FR-11 и NFR-1/2/6/8: что собираем,
   где хранится, что считаем, на какие пороги смотрим. Состав стека и его альтернативы —
   ADR-010; здесь — контракты сигналов и реакции. PII-политика телеметрии согласована
@@ -36,8 +36,10 @@
 
 - **`query_trace` — system of record** (FR-11, er-data-model): один запрос = одна
   строка, append-only, хранится весь срок проекта. Бизнес-payload: question,
-  assumptions, join_plan, sql, retry_count, latency_ms, cost_rub, cache_hit, status,
-  incomplete, **`ttft_ms`**, **`node_timings` (jsonb)** — по-узловые события LLM-вызовов:
+  assumptions, join_plan (`edge_id` рёбер), **`graph_version`** (снапшот реестра, по
+  которому считали), sql, retry_count, latency_ms, cost_rub, cache_hit, status,
+  incomplete / truncated / approximate, **`ttft_ms`**, **`node_timings` (jsonb)** —
+  по-узловые события LLM-вызовов:
 
 ```json
 [{"node": "generate_sql", "role": "mid", "model": "deepseek-v4.1-flash",
@@ -51,10 +53,17 @@
   `node_timings` живёт в БД независимо от retention телеметрии.
 - **OTel-спаны — операционный слой:** корневой спан на прогон, по спану на узел FSM,
   LLM-вызов (атрибуты: node, role, model, attempt, tokens, cost_rub, timeout) и
-  выполнение SQL (datasource, row_count). Живой waterfall в Grafana (data source
+  выполнение SQL (datasource, row_count). Instrumentation — готовые модули
+  **fastapi** (хендлеры agent-api), **psycopg** (SQL), **httpx** (LLM-вызовы к
+  шлюзу) — c4-l2 v1.8. Живой waterfall в Grafana (data source
   Jaeger) — ответ «где зависло / где деньги» без ручного разбора (R-C2/R-C4).
   Retention Jaeger (Badger, локальный volume) ~14д — поэтому бизнес-истина в
   `query_trace`, не в спанах.
+- **Аудит (S8) — отдельно от трейсов:** `agent_audit` — append-only таблица
+  (er-data-model): пользователь, вопрос, SQL, `edge_id`, `graph_version`, число
+  строк, отказы по правам, стоимость, уровни моделей; пишется вне state прогона.
+  Это не телеметрия, а security-артефакт (security §2): retention — политика
+  заказчика, PII-редакция применяется до записи.
 
 ### 2.2. Логи — структурные события в stdout
 
@@ -175,5 +184,5 @@ cause-сигналы — дашборд/тикет, разбор на вехе. 
 
 ## Трассировка
 
-Ревизии: v1.2 · Связанные ADR: ADR-002, ADR-007, **ADR-010** · Канон: hw-01/README.md §6 ·
-Хранилище бизнес-трейса: er-data-model.md (`query_trace`) · Пороги: prd.md (NFR-1/2/6/8)
+Ревизии: v1.4 · Связанные ADR: ADR-002, ADR-007, **ADR-010** · Канон: hw-01/README.md §6 ·
+Хранилище бизнес-трейса: er-data-model.md (`query_trace`) · Аудит S8: er-data-model.md (`agent_audit`) · Пороги: prd.md (NFR-1/2/6/8)

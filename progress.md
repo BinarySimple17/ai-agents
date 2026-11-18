@@ -7,9 +7,9 @@
 ## Current State
 
 **Last Updated:** 2026-11-18
-**Session ID:** harness-setup (S00 + S01) → arch-package-import → plan-audit → arch-red-team (FIX-005) → escalation-rule (D-014) → apply-review-03 (ревизия hw-01/README.md по внешнему ревью + патч автора, FIX-006, D-015…D-017, BL-002)
-**Active Feature:** — (feat-001 → passing; следующая — сессия синхронизации docs/ по BL-002, затем feat-002/feat-003)
-**Last commit:** `hw-01/README.md` (ревизия ревью-03) → `hw-01-agent-architecture` (1022a45, запушен); весь harness/пакет/журналы → ветка `project-harness` (отпочкована 2026-11-18 для сохранения рабочего дерева; слить после приёмки ДЗ-1) — `make check`: passing
+**Session ID:** harness-setup (S00 + S01) → arch-package-import → plan-audit → arch-red-team (FIX-005) → escalation-rule (D-014) → apply-review-03 (ревизия hw-01/README.md, FIX-006, D-015…D-017) → docs-sync-review-03 (S20: канон docs/ сведён к ревизии hw-01 по ревью-03, BL-002 закрыт)
+**Active Feature:** — (feat-001 → passing; док-сессия S20 фич не меняла; следующая — S02/feat-002)
+**Last commit:** `9228e54` (S20: канон docs/ сведён к ревизии hw-01 по ревью-03, BL-002 закрыт) → ветка `project-harness` (предыдущий — 43d9594); эталон ДЗ — `hw-01/README.md` в `hw-01-agent-architecture` (1022a45, запушен); слить `project-harness` → `hw-01-agent-architecture` (затем в `main`) после приёмки ДЗ-1 — `make check`: passing
 
 ## Status
 
@@ -34,17 +34,18 @@
 - [x] Канон S00: раскладка кода приведена к code-architecture-draft §2 (D-008, FIX-001), порты стыков = порты draft, стыки привязаны к ADR; стек дополнен точками входа и ростом
 - [x] Скелет выровнен: пакет text_to_sql_agent (domain/application/infrastructure/orchestration/config/composition), apps/, sql/, tests unit/integration/e2e; pyproject переименован, uv.lock пересобран
 - [x] Противоречия зафиксированы: DECISIONS D-007/D-008, solution/FIXES.md FIX-001
+- [x] **S20 docs-sync-review-03 (2026-11-18): канон docs/ сведён к ревизии hw-01 по ревью-03 (BL-002 закрыт)** — эталон не тронут, канон догнан: **ADR-006 → v1.3** (реестр — единственный SoT: FK — генератор кандидатов в очередь владельцу, не ребро; полный DDL-контракт ребра R1 — единственный источник для миграций; жизненный цикл `draft → CI → active` с CI по факту (колонки/типы/уникальность/сироты/измеренный fan-out против кардинальности), `deprecated + replaced_by`, вьюха `active`; `graph_version` — производная ревизии реестра, пин на прогон (state/кэш/аудит), reconciliation сохранён; `agent_edge_proposals`; bootstrap FK+майнинг SQL/BI, data steward для кросс-доменных; cold start/time-to-edge; SAP-оговорка с `MANDT`); **ADR-007 → v1.2** (политика ретраев M1 = D-016: попытка 2 — та же модель + текст ошибки, попытка 3 — уровень вверх при достатке бюджета; per-node ≤ 3 + глобальные капы ≤ 8 вызовов/≤ 90 s/≤ 2 ₽; резерв 0,6 ₽; экономика E1–E6 зафиксирована по снимку 18.11.2026 — 0,61/0,62/0,67 ₽, 1000 ≈ 670 ₽, базлайн 2,57 ₽, ≈76%; Spider 2.0/BIRD вместо кодовых бенчмарков; pydantic temperature 0; breaker → деградация; M8 вне базовой версии); **ADR-005 → v1.2** (рубежи 1–5 = hw-01 §3.2: AST+скелет/deny-list схем/ACL колонок соединения/БД — RLS + `SET LOCAL app.user_id`, раздельные коннекты; аудит S8; отказ S9; инъекции S6); **ADR-004 → v1.2** (T2 → async/matview/approximate/отказ — не декомпозиция; T1 — основной путь, заглушка — оговорка стенда; key-set без `LIMIT`, кап 50 000, `approximate`; лимиты A10; fan-out guard A3; внешняя аналогия убрана); **ADR-003 → v2.1** (мост D-015: граф — производный снапшот реестра, критерий переключения BFS, k путей + ранжирование, shortestPath — имя функции); **ADR-002 → v1.2** (recursion_limit — второй предохранитель, M1 в карте решений); **prd → v1.8** (FR-2/4/6/7/8/10/12/13/14, eval-критерии N4 с ACL-leak = 0 hard gate, §7 670 ₽, §8 дефолты Q1–Q4/Q6–Q7 TODO(confirm), Q5 снят); **security → v1.6**; **model-card → v1.1** (снимок/фиксация тарифов, Spider 2.0/BIRD, Python-стек); **RISKS → v1.1** (R-C1 76%, R-D3 cold start без FK-автопула, R-P3); **observability → v1.4** (OTel fastapi/psycopg/httpx, аудит S8 отдельно); **ARCHITECTURE** (стале-AGE снят, constraint 4 = M1, Overview — Python-стек); диаграммы: **state-agent v1.3** (15 узлов = hw-01 §2.1, M1 на рёбрах, interrupt/checkpointer, T2 → degraded_out, probe COUNT), **c4-l3 v1.4**, **sequence v1.3** (M1, probe, compact_result, флаги), **c4-l2 v1.8** (развёртывание N1: agent-api FastAPI + agent-worker arq/Valkey Streams, k8s, NetworkPolicy, миграции Alembic Job), **er v1.5** (DDL ребра R1, `agent_edge_proposals`, аудит S8, pydantic N3), **c4-l1 v1.2** (618 моделей, 6,6К); **S00** (15 узлов, M1, recursion_limit, interrupt/checkpointer TTL 10 мин, graph_version, FastAPI/arq — D-005 MVP не снят); **feature_list** (behavior/description feat-004/008/009/010/011/014/015/016/017 — states не тронуты); **sessions.md** (S07/S09/S10/S12/S14/S17); индексы adr/README, docs/README, diagrams/README (v1.8); arch-package → **v1.8** (Состав пакета + История); **BL-002 закрыт**, реестр беклога обновлён
 
 ### What's In Progress
 
-- BL-002 (P1): синхронизация канона docs/ с ревью-03 — следующая сессия, до старта S02 (feat-002 пишет первую миграцию по ER — контракт ребра и `graph_version` должны попасть в er-data-model раньше)
+- — (ничего; BL-002 закрыт в S20, 2026-11-18). Следующая сессия — S02 (feat-002, миграции по ER v1.5: контракт ребра R1 и `graph_version` уже в каноне)
 
 ### Next Steps
 
-1. **Сессия синхронизации docs/ по BL-002** (до S02): ADR-006 v1.3 (реестр-SoT + DDL ребра), ADR-007 v1.2 (ретраи M1 + экономика E), ADR-005 v1.2/security (S2–S4, S8), ADR-004 v1.2 (A2/A8/A9/A10), ADR-003 (мост заменяемости), prd (FR-7, FR-13/S7, eval N4), ARCHITECTURE (stale AGE, constraint 4), диаграммы (state-agent/c4-l3/sequence/c4-l2/er), model-card, RISKS — полный список в BL-002
-2. Ближайшая веха — ДЗ-02 (дедлайн 30.11.2026): `S02` (миграции схемы) → `S03` (LLMProvider) → `S13` (тул run_sql); создать `solution/sessions/S02_session.md` из TEMPLATE, закрыть feat-002 через `make verify-feature F=feat-002`
-3. Параллельно `S03` (feat-003): нужен ключ `LLM_API_KEY` в `.env` — попросить у куратора
-4. Коммит по согласованию с куратором (harness + пакет + ревизия ДЗ-1)
+1. Ближайшая веха — ДЗ-02 (дедлайн 30.11.2026): `S02` (миграции схемы: 7 таблиц + настройки + реестр R1 + `agent_edge_proposals` + аудит S8 + роли agent_planner/agent_ro/agent_trace/registry_writer) → `S03` (LLMProvider) → `S13` (тул run_sql); закрыть feat-002 через `make verify-feature F=feat-002`
+2. Параллельно `S03` (feat-003): нужен ключ `LLM_API_KEY` в `.env` — попросить у куратора
+3. После приёмки ДЗ-1 — слить `project-harness` → `hw-01-agent-architecture` (затем в `main` по регламенту вех)
+4. `make infra-up` + первый `make infra-migrate` — S02; миграции строго по er-data-model v1.5 (DDL ребра — ADR-006 §4.1)
 
 ## Blockers / Risks
 
@@ -54,7 +55,7 @@
 - [ ] Ключ `LLM_API_KEY` не задан (до feat-003 не мешает)
 - [x] ~~Всё ещё не коммитится по решению куратора~~ — решено (2026-11-18): ДЗ-1-файл закоммичен в `hw-01-agent-architecture` (1022a45), harness/пакет/журналы — в ветке `project-harness` (отпочкована от hw-01-agent-architecture после 1022a45); слить `project-harness` → `hw-01-agent-architecture` (затем в `main` по регламенту вех) после приёмки ДЗ
 - [ ] `.docs/arch/` заморожен как источник пакета (D-007): новые ревизии — только в docs/, иначе расползание копий
-- [ ] **Канон docs/ расходится с hw-01 по ревью-03** (граф AGE+мост vs Neo4j, ретраи M1 vs ADR-007 v1.1, реестр-SoT vs ADR-006 v1.2, экономика 2,57/76% vs 3,31/81%, узлы §8/§9/AgentState) — закрыть BL-002 до S02; список расхождений — FIX-006 «Следствие»
+- [x] ~~Канон docs/ расходится с hw-01 по ревью-03~~ — закрыт в S20 (2026-11-18): BL-002 закрыт, grep-сверка чистая (Evidence), er-data-model v1.5 готов под первую миграцию S02
 
 ## Decisions Made
 
@@ -83,6 +84,7 @@
 - D-013 (Neo4j вместо AGE): `docs/adr/ADR-003-single-postgres.md` (v2.0), `docs/adr/ADR-006-relationship-semantics.md` (v1.2), `docs/adr/ADR-005-rbac-as-data.md` (точечная правка), `docs/prd.md` (v1.6), `docs/diagrams/{c4-l1 v1.1, c4-l2 v1.7, c4-l3 v1.2, sequence-query v1.2, er-data-model v1.4}.md`, `docs/security.md` (v1.5), `docs/ARCHITECTURE.md`, `docs/adr/README.md` (реестр: ADR-003/006/009/010), `docker-compose.yml` (+neo4j, официальный pgvector-образ; `infra/` удалён), `.env.example` (+NEO4J_*), `pyproject.toml` (+neo4j) + uv.lock, `feature_list.json` (feat-002/feat-007), `solution/sessions.md` (S02/S07), `solution/sessions/S00_session.md` (стек/порты/адаптер), `AGENTS.md`, `README.md`, `docs/arch-package.md` (реестр/история), `DECISIONS.md` (D-013)
 - D-014 (эскалация генерирующих узлов): `docs/adr/ADR-007-model-cascade.md` (v1.1 — матрица/правило/экономика/следствия), `docs/adr/ADR-002-fsm-on-code.md` (v1.1 — строка карты решений), `docs/diagrams/state-agent.md` (v1.2 — рёбра plan_joins retry/fail + чтение схемы), `docs/prd.md` (v1.7 — FR-8/FR-10 + матрица + трассировка), `feature_list.json` (feat-004/009/010), `solution/sessions.md` (S09/S10), `solution/sessions/S00_session.md` (контракты 1/2, фикс «в AGE»), `docs/adr/README.md` + `docs/arch-package.md` (реестры/история), `DECISIONS.md` (D-014)
 - apply-review-03: `hw-01/README.md` (полная ревизия §1–§9 + приложение AgentState + история ревизий/открытые вопросы), `DECISIONS.md` (D-015/D-016/D-017), `solution/FIXES.md` (FIX-006), `solution/backlog/BL-002-docs-sync-review-03.md` + реестр беклога, `progress.md`
+- S20 (docs-sync-review-03): `docs/adr/ADR-006` (v1.3), `ADR-007` (v1.2), `ADR-005` (v1.2), `ADR-004` (v1.2), `ADR-003` (v2.1), `ADR-002` (v1.2), `docs/prd.md` (v1.8), `docs/security.md` (v1.6), `docs/model-card.md` (v1.1), `docs/RISKS.md` (v1.1), `docs/observability.md` (v1.4), `docs/ARCHITECTURE.md`, `docs/diagrams/{state-agent v1.3, c4-l3 v1.4, sequence-query v1.3, c4-l2-container v1.8, er-data-model v1.5, c4-l1-context v1.2}.md`, `docs/arch-package.md` (v1.8: Состав пакета + История), `docs/{adr,diagrams}/README.md`, `docs/README.md` (v1.8), `solution/sessions/S00_session.md` (15 узлов, M1, recursion_limit, interrupt/checkpointer, graph_version, N1), `feature_list.json` (behavior/description 9 фич, states не тронуты), `solution/sessions.md` (S07/S09/S10/S12/S14/S17 + S20), `solution/backlog/BL-002…` (закрыт) + реестр, `progress.md`
 
 ## Evidence of Completion
 
@@ -99,16 +101,17 @@
 - [x] apply-review-03 (2026-11-18): baseline `./init.sh` → exit 0 (до правок); `make check` → EXIT=0 (uv sync OK, ruff OK, 20 files formatted, 1 passed); `node scripts/validate-harness.mjs .` → Overall: 100/100. Grep-сверка C4 по `hw-01/README.md`: отсутствуют `shortestPath`/`FOR ALL ENTRIES`/ABAP/«по остатку времени»/3,31/81%/«~3К токенов»/608/Java/Spring/SWE-bench/HumanEval/двухисточниковая FK-формулировка (0 вхождений); присутствуют и согласованы 6,6К/76%/2,57/670/graph_version/build_skeleton/compact_result/generate_step_sql/merge_results/interrupt()/checkpointer/recursion_limit/edge_id/mandatory_predicates/fanout_guard/approximate/agent_edge_proposals/ACL-leak/Spider 2.0/BIRD/pydantic/FastAPI/arq/psycopg/asyncio.timeout(90)/skeleton_hash/time-to-edge/MANDT/TTL 10/50 000; все 15 узлов в §2.1 = §3.1-схема = §4.2; 3 mermaid-блока. Объём: 588 строк / 49,4 КБ (было 402/33,6 — рост за счёт обязательных §3.5/§8/§9/приложения, проза ужата в два захода). Чеклист §V ревью — 11/11 пунктов закрыты (включая патчённую строку развёртывания: «упоминаний Java/Spring в тексте нет» — grep 0). Каталог routerai.ru (M7, снимок 18.11.2026): 618 моделей; `qwen/qwen3.7-flash`, `deepseek/deepseek-v4.1-flash-1017`, `z-ai/glm-5.3-prime` присутствуют; тарифы дрейфуют (glm-5.3-prime 180/565 ₽ против 299/939 в расчёте) — по решению автора расчёт зафиксирован, дата снимка в тексте (D-017)
 - [x] Feature gate: `make verify-feature F=feat-001` → PASS, evidence записан; `make vcr` → 1/1
 - [x] Clean state: `make session-end` → 7 passed, 0 failed
-- [ ] Повторный clean-check после переноса пакета — в конце этой сессии
-- [ ] `make infra-up` + seed — feat-002 (S02)
+- [x] S20 grep-сверка приёмки (2026-11-18, живой текст docs/): отсутствуют (0 вхождений) — «вычитываются из каталога автоматически», «каждый retry», `3,31`, `81%`, «по остатку времени», «план Б», SWE-bench, HumanEval, «608», FOR ALL ENTRIES, Java/Spring; присутствуют и согласованы — `2,57`/`76%`/`6,6К`/`670`, `graph_version`, `build_skeleton`/`compact_result`/`generate_step_sql`/`merge_results`, `interrupt()`/checkpointer, `recursion_limit`, `ACL-leak`, Spider 2.0/BIRD, `50 000`/`approximate`, резерв `0,6 ₽`; состав 15 узлов идентичен в state-agent v1.3 = c4-l3 v1.4 = hw-01 §2.1; пофайловые гейты сессии — все зелёные (T1: 0/0; T2: 0/0, 8, 0, 5+2; T3: 14/5, 3+2; T4: 0/0/0, 3; T5: 4+5, 6+4; T6: 4, 11, 0; T7: 6 строк, 6, 10); `make check` → EXIT=0; `node scripts/validate-harness.mjs .` → Overall: 100/100; states feature_list — все в {not_started, active, passing} → True
+- [ ] Повторный clean-check — `make clean-check` в конце этой сессии
+- [ ] `make infra-up` + первая миграция — feat-002 (S02)
 
 ## Notes for Next Session
 
 <!-- Свободные заметки, чтобы следующая сессия продолжила без потери контекста. -->
 
-- Пакет v1.7 живёт в docs/ (D-007); `.docs/arch/` — замороженный источник, не править.
+- Пакет v1.8 живёт в docs/ (D-007); `.docs/arch/` — замороженный источник, не править.
 - Конвенция ДЗ (D-010/D-011): `hw-NN/` — решения ДЗ NN (артефакты сдачи, в harness-сессиях не трогаются); `.docs/` — исторические документы READ ONLY — читать можно, править нельзя. Изменения требований — docs/prd.md + затронутые ADR; при неясных требованиях сверяйся с исторической полной спецификацией `.docs/hw-01/README.md`.
 - Раскладка кода — по draft §2 (D-008): новые файлы только в слои draft; composition — единственная точка сборки.
-- Кэш: lookup после clarify, put — оркестратор (ревизия 02); FSM: budget_stop/incomplete, кольцо T2 ограничено счётчиком — фичи feat-009/012/015/016/017 учитывать.
-- Схема БД — только миграции Alembic (`src/migrations/versions/`, `make infra-migrate`); feat-002 пишет первую миграцию по er-data-model v1.2: 7 бизнес-таблиц + agent_* + settings_version + query_trace (роль agent_trace INSERT-only) + agent_data_sources (ADR-011).
+- Канон после S20: 15 узлов FSM (= hw-01 §2.1), ретраи M1 (D-016), recursion_limit, interrupt()/checkpointer, graph_version, кэш-ключ `rights_hash + graph_version + assumptions` — фичи feat-004/008/009/010/011/014/015/016/017 писать по этим behavior.
+- Схема БД — только миграции Alembic (`src/migrations/versions/`, `make infra-migrate`); feat-002 пишет первую миграцию по **er-data-model v1.5**: 7 бизнес-таблиц + agent_permissions/agent_user_roles/**agent_relationships (контракт ребра R1 — ADR-006 §4.1)**/agent_edge_proposals/agent_data_sources + settings_version + query_trace (роль agent_trace INSERT-only) + agent_audit (S8) + роли agent_ro/agent_planner/registry_writer.
 - Makefile: рецепты через bash/uv run (cmd.exe на Windows); `make dev` → apps.cli (пакет src/apps).
