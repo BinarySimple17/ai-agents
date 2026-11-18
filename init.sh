@@ -7,6 +7,13 @@ set -e
 
 echo "=== Harness Initialization ==="
 
+# Гигиена веток: локальные гварды pre-commit/pre-push (AGENTS.md § Branch Hygiene).
+# Идемпотентно: hooksPath указывает на версионированные .githooks/, права не критичны на Windows.
+if [ -d .githooks ]; then
+  git config core.hooksPath .githooks
+  chmod +x .githooks/* 2>/dev/null || true
+fi
+
 if [ -f pyproject.toml ]; then
   echo "=== Running Python verification (uv) ==="
   command -v uv >/dev/null 2>&1 || {

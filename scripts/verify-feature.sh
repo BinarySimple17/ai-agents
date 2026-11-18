@@ -54,6 +54,15 @@ if [ "$STATE" != "active" ]; then
   exit 2
 fi
 
+# Гейт субагентов: фича закрывается — ARCH-GATE/REVIEW-GATE в файле сессии заполнены
+# (DoD в AGENTS.md; закрыть фичу мимо ревью/архитектурного гейта нельзя).
+echo "=== Subagent gates (scripts/guard-subagents.sh) ==="
+if ! bash "$ROOT/scripts/guard-subagents.sh"; then
+  echo ""
+  echo "BLOCKED: гейты субагентов не закрыты — заполните раздел «Гейты субагентов» в файле сессии (см. вывод выше), затем повторите."
+  exit 2
+fi
+
 CMD="$(node -e '
   const fs = require("fs");
   const fl = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));

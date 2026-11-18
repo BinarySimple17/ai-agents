@@ -39,11 +39,14 @@ node scripts/validate-harness.mjs .
 
 ```bash
 bash scripts/verify-feature.sh feat-001   # гейт фичи: state=active → верификация → passing + evidence
+bash scripts/guard-subagents.sh           # гейты субагентов: ARCH-GATE/REVIEW-GATE в файле сессии
 bash scripts/clean-state-check.sh         # чистое состояние перед коммитом (или: make clean-check)
 bash scripts/clean-state-check.sh . feat-002   # многосессионная фича: feat-002 сознательно остаётся active (продолжение запланировано)
 make check                                # полная верификация (вызывает ./init.sh)
 make vcr                                  # VCR = passing / активированные (цель 1.0)
 ```
+
+- `guard-subagents.sh` — механический гейт субагентов (architect/code-reviewer): проверяет раздел «Гейты субагентов» в файле сессии, каждая строка — `✅ + evidence` либо `N/A — причина`; вызывается из `make clean-check`, `make session-end` и `verify-feature.sh`. Сессия в `archive/` без раздела = legacy (WARN, exit 0).
 
 ## Что ожидать на пустом (незаполненном) шаблоне
 

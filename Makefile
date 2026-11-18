@@ -67,9 +67,11 @@ session-start:
 	@echo "Clock-in: 1) pwd  2) прочитать AGENTS.md  3) прочитать progress.md  4) запустить make check  5) выбрать ОДНУ фичу из feature_list.json"
 
 session-end:
+	bash scripts/guard-subagents.sh
 	bash scripts/clean-state-check.sh .
 
 # Протокол чистого состояния перед коммитом; многосессионная фича:
 #   bash scripts/clean-state-check.sh . feat-0XX  (фича сознательно остаётся active до финальной сессии)
 clean-check:
+	bash scripts/guard-subagents.sh
 	bash scripts/clean-state-check.sh .
