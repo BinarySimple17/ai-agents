@@ -41,6 +41,7 @@ If baseline verification is failing, repair that first — do not add new scope 
 - **Verification required**: run verification commands before claiming any work done
 - **Update artifacts**: before ending session, update `progress.md` and `feature_list.json`
 - **Stay in scope**: do not modify files unrelated to the current feature
+- **Принципы кода**: SOLID/DRY/KISS — разумно, не в ущерб простоте и здравому смыслу (ясность важнее модности паттернов; преждевременная абстракция — не лучше дубля). Магические цифры и литералы в логике — именованные константы или Settings с комментарием «почему такое значение»; пороги, таймауты, лимиты, повторяющиеся литералы (ключи, URL, имена событий) — обязательно. why: код правится после того, как контекст сессии забыт, — имя и комментарий несут смысл, голое число нет; литерал в двух местах разъедется при правке.
 - **Leave clean state**: the repo must remain restartable — next session runs `./init.sh` immediately
 
 ## Branch Hygiene
