@@ -1,0 +1,14 @@
+#!/bin/bash
+# pre-commit: прямые коммиты в main/dev запрещены — работа только в рабочих ветках
+# (AGENTS.md § Branch Hygiene). Подключается через core.hooksPath=.githooks (init.sh).
+BRANCH="$(git rev-parse --abbrev-ref HEAD)"
+case "$BRANCH" in
+  main|dev)
+    echo "BLOCKED: прямые коммиты в '$BRANCH' запрещены (AGENTS.md § Branch Hygiene)."
+    echo "Создайте рабочую ветку и коммитьте там:"
+    echo "  git switch -c <feat-0XX-slug>   # фича"
+    echo "  git switch -c harness/<topic>   # обвязка"
+    exit 1
+    ;;
+esac
+exit 0

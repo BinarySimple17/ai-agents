@@ -1,4 +1,47 @@
+# Локальные папки workspace (не часть harness)
 .zcode/
 .vscode/
 .drafts/
 .tasks/
+.reference/
+.docs/
+.private_docs/
+.tmp/
+
+# Секреты: ключи LLM-шлюза — только в .env (см. AGENTS.md: Constraints)
+.env
+
+# Python / uv
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Артефакты сборки и зависимостей
+node_modules/
+target/
+build/
+dist/
+*.class
+*.jar
+
+# Логи и временные файлы (debug-артефакты — см. End of Session)
+*.log
+*.tmp
+*.orig
+*.rej
+
+# Рантайм-артефакты наблюдаемости (не исходники)
+.harness/traces/traces.jsonl
+
+# Локальные настройки агентов
+.claude/settings.local.json
+
+# ОС
+.DS_Store
+Thumbs.db

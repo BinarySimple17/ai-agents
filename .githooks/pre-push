@@ -1,0 +1,16 @@
+#!/bin/bash
+# pre-push: прямой пуш в main/dev запрещён — изменения попадают туда только через PR
+# (AGENTS.md § Branch Hygiene). Пуш рабочей ветки в origin — разрешён.
+# stdin: <local ref> <local sha> <remote ref> <remote sha>
+while read -r _local_ref _local_sha remote_ref _remote_sha; do
+  case "$remote_ref" in
+    refs/heads/main|refs/heads/dev)
+      echo "BLOCKED: пуш прямо в '$remote_ref' запрещён — изменения попадают в $remote_ref только через PR."
+      echo "Запушьте рабочую ветку и откройте PR:"
+      echo "  git push -u origin <рабочая-ветка>"
+      echo "  gh pr create --base dev   # разработка (или --base main для release-среза)"
+      exit 1
+      ;;
+  esac
+done
+exit 0
