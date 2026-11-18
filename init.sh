@@ -1,0 +1,46 @@
+#!/bin/bash
+# init.sh — стандартный путь инициализации и верификации harness.
+# Запускается агентом в начале сессии (Startup Workflow) и перед claim'ом "done".
+# Стек проекта: Python 3.13 + uv (зависимости — pyproject.toml / uv.lock).
+
+set -e
+
+echo "=== Harness Initialization ==="
+
+if [ -f pyproject.toml ]; then
+  echo "=== Running Python verification (uv) ==="
+  command -v uv >/dev/null 2>&1 || {
+    echo "ERROR: uv не найден. Установка: https://docs.astral.sh/uv/getting-started/installation/"
+    exit 1
+  }
+  command -v python >/dev/null 2>&1 || {
+    echo "ERROR: python не найден (нужен Python 3.13)."
+    exit 1
+  }
+
+  # Зависимости — строго из lockfile (воспроизводимая сборка)
+  uv sync --frozen
+
+  # Layer 1 — статика
+  uv run ruff check src
+  uv run ruff format --check src
+
+  # Layer 2 — тесты. Тесты, требующие PostgreSQL/Valkey, скипаются,
+  # если инфра не поднята (см. src/tests/conftest.py) — make check остаётся зелёным.
+  # pytest exits 5 when no tests are collected — not a failure for a fresh project.
+  uv run pytest -q || [ $? -eq 5 ]
+
+  # Синтаксис всех исходников (код, миграции, тесты — всё в src/)
+  uv run python -m compileall -q src
+else
+  echo "No recognized package manifest detected."
+  echo "Ожидается pyproject.toml в корне проекта (см. feat-001 в feature_list.json)."
+fi
+
+echo "=== Verification Complete ==="
+echo ""
+echo "Next steps:"
+echo "1. Read feature_list.json to see current feature state"
+echo "2. Pick ONE unfinished feature to work on"
+echo "3. Implement only that feature"
+echo "4. Re-run verification before claiming done"

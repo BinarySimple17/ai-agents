@@ -1,0 +1,508 @@
+{
+  "features": [
+    {
+      "id": "feat-001",
+      "name": "Project Setup",
+      "description": "Скелет проекта по code-architecture-draft §2 с поправкой D-009 (весь код в src/): пакет text_to_sql_agent в src/ (domain/application/infrastructure/orchestration/config/composition), презентационный слой src/apps/, миграции Alembic src/migrations (scaffold + alembic.ini), тесты src/tests/ (unit/integration/e2e); pyproject.toml + uv.lock, ruff/pytest конфигурация, docker-compose.yml, .env.example. Из чистого checkout'а ./init.sh проходит с нуля.",
+      "behavior": "From a clean checkout, `./init.sh` installs dependencies (uv sync) and finishes verification (ruff + pytest) with exit code 0.",
+      "verification": "./init.sh",
+      "dependencies": [],
+      "state": "passing",
+      "status": "done",
+      "evidence": "command «./init.sh» exited 0 at 2026-11-15T15:20:18+03:00 (scripts/verify-feature.sh)",
+      "layers": [
+        {
+          "label": "layer-1-static",
+          "cmd": "uv run ruff check src && uv run ruff format --check src",
+          "repair": "Read the ruff output, fix the reported issues, then re-run."
+        },
+        {
+          "label": "layer-2-runtime",
+          "cmd": "./init.sh",
+          "repair": "Read the failing step printed by ./init.sh (sync/lint/tests) and fix it, then re-run."
+        }
+      ]
+    },
+    {
+      "id": "feat-002",
+      "name": "Инфраструктура БД и кэша (миграции Alembic)",
+      "description": "docker-compose: PostgreSQL 17 + pgvector (официальный образ pgvector/pgvector:0.8.0-pg17), Neo4j (neo4j:5.26.0-community, граф связей — ADR-003 v2.0) и Valkey; схема БД — только миграциями Alembic (src/migrations, D-009): 7 бизнес-таблиц, настройки (agent_permissions, agent_user_roles, agent_relationships, agent_data_sources), счётчики settings_version, query_trace (роль agent_trace INSERT-only), роли agent_ro (read-only, без SELECT на query_trace) и agent_trace; демо-данные — data-migration. Версии схемы — er-data-model.md v1.4 (docs/diagrams/).",
+      "behavior": "После `make infra-up` и `make infra-migrate` (alembic upgrade head): все таблицы схемы v1.4 существуют, alembic idempotentен (повторный апгрейд — no-op), роль agent_ro читает данные без права DDL/DML (и без SELECT на query_trace), agent_trace пишет только INSERT; расширение vector загружено; Neo4j отвечает по bolt (аутентификация по NEO4J_PASSWORD из .env).",
+      "verification": "make infra-up && make infra-migrate && uv run pytest src/tests/integration/test_infra_schema.py -q",
+      "dependencies": [
+        "feat-001"
+      ],
+      "state": "not_started",
+      "status": "not-started",
+      "evidence": "",
+      "layers": [
+        {
+          "label": "layer-1-static",
+          "cmd": "uv run ruff check src",
+          "repair": "Fix lint issues in seed/infra code, then re-run."
+        },
+        {
+          "label": "layer-2-runtime",
+          "cmd": "make infra-up && make infra-migrate && uv run pytest src/tests/integration/test_infra_schema.py -q",
+          "repair": "Check `docker compose ps` and compose logs; fix the failing migration in src/migrations/versions/ (правка применённой миграции запрещена — новый файл), re-run."
+        }
+      ]
+    },
+    {
+      "id": "feat-003",
+      "name": "Конфиг и LLM-клиент шлюза",
+      "description": "Settings (pydantic-settings, fail-fast на обязательных переменных) и OpenAI-совместимый клиент routerai.ru: три роли cheap/mid/strong (qwen/deepseek/glm из hw-01 §4.2), экспоненциальный backoff 1→2→4с, circuit breaker (5 сбоев подряд → пауза 60с), учёт расхода бюджета (кап 2₽ на запрос).",
+      "behavior": "Клиент принимает роль (cheap/mid/strong) и возвращает ответ; при HTTP 429/5xx — backoff и circuit breaker по коду; при превышении бюджета — исключение до вызова. В тестах — только моки шлюза.",
+      "verification": "uv run pytest src/tests/unit/test_llm_client.py src/tests/unit/test_settings.py -q",
+      "dependencies": [
+        "feat-001"
+      ],
+      "state": "not_started",
+      "status": "not-started",
+      "evidence": "",
+      "layers": [
+        {
+          "label": "layer-1-static",
+          "cmd": "uv run ruff check src",
+          "repair": "Fix lint issues in settings/llm client, then re-run."
+        },
+        {
+          "label": "layer-2-runtime",
+          "cmd": "uv run pytest src/tests/unit/test_llm_client.py src/tests/unit/test_settings.py -q",
+          "repair": "Read failing test output; fix client logic (backoff table, breaker state, budget) and re-run."
+        }
+      ]
+    },
+    {
+      "id": "feat-004",
+      "name": "State machine на LangGraph",
+      "description": "Каркас графа агента: все узлы hw-01 §2.1 (resolve_access → clarify → plan_joins → generate_sql → validate_sql → check_cost → execute_sql → diagnose_error → interpret_result) как заглушки, маршрутизация на коде (4 ветвления + retry-циклы diagnose_error и plan_joins с общим лимитом 3), CLI-точка входа «вопрос → ответ». check_cost в базовом FSM (ДЗ-05) — транзитный узел-заглушка «не декомпозировать» (план Б, hw-01 §3.4); полный T2-порог — feat-012/feat-017 (выпускная).",
+      "behavior": "`uv run python -m apps.cli \"вопрос\"` прогоняет вопрос через все узлы-заглушки в правильном порядке и печатает результат; LLM не может изменить маршрут; retry-лимит и ветвления управляются кодом.",
+      "verification": "uv run pytest src/tests/unit/test_graph.py -q",
+      "dependencies": [
+        "feat-001",
+        "feat-003"
+      ],
+      "state": "not_started",
+      "status": "not-started",
+      "evidence": "",
+      "layers": [
+        {
+          "label": "layer-1-static",
+          "cmd": "uv run ruff check src",
+          "repair": "Fix lint issues in graph code, then re-run."
+        },
+        {
+          "label": "layer-2-runtime",
+          "cmd": "uv run pytest src/tests/unit/test_graph.py -q",
+          "repair": "Read failing test; fix edges/conditional routing in graph builder and re-run."
+        },
+        {
+          "label": "layer-3-e2e",
+          "cmd": "uv run python -m apps.cli \"Сколько заказов у клиентов из Москвы?\" (заглушки: порядок узлов в выводе)",
+          "repair": "Fix composition root / CLI wiring, re-run manually."
+        }
+      ]
+    },
+    {
+      "id": "feat-005",
+      "name": "resolve_access",
+      "description": "Первый узел — детерминированный код: user_id → роли (agent_user_roles) → права (agent_permissions: таблицы + колонки + scope) из таблиц настроек; результат кладётся в state. Без LLM.",
+      "behavior": "Для known user_id узел возвращает полную карту прав в state; для неизвестного — deny-исход с валидным отказом; права актуальны на момент запроса (правка строк настроек действует со следующего запроса).",
+      "verification": "uv run pytest src/tests/integration/test_resolve_access.py -q",
+      "dependencies": [
+        "feat-002",
+        "feat-004"
+      ],
+      "state": "not_started",
+      "status": "not-started",
+      "evidence": "",
+      "layers": [
+        {
+          "label": "layer-1-static",
+          "cmd": "uv run ruff check src",
+          "repair": "Fix lint issues, then re-run."
+        },
+        {
+          "label": "layer-2-runtime",
+          "cmd": "uv run pytest src/tests/integration/test_resolve_access.py -q",
+          "repair": "Read failing test; fix RBAC query/mapping and re-run."
+        }
+      ]
+    },
+    {
+      "id": "feat-006",
+      "name": "Векторная память (pgvector)",
+      "description": "Четыре типа документов в pgvector: DDL с комментариями колонок, связи с семантикой (meaning/usage_notes), бизнес-глоссарий, few-shot «вопрос → SQL». Загрузка в seed; поиск с фильтром по правам пользователя (недоступное — не существует в retrieval).",
+      "behavior": "Поиск по эмбеддингу возвращает только документы разрешённых таблиц; в выдачу входят глоссарий-определения и few-shot для релевантных таблиц; недоступные таблицы не попадают в контекст даже при близком совпадении.",
+      "verification": "make infra-up && uv run pytest src/tests/integration/test_vector_memory.py -q",
+      "dependencies": [
+        "feat-002"
+      ],
+      "state": "not_started",
+      "status": "not-started",
+      "evidence": "",
+      "layers": [
+        {
+          "label": "layer-1-static",
+          "cmd": "uv run ruff check src",
+          "repair": "Fix lint issues, then re-run."
+        },
+        {
+          "label": "layer-2-runtime",
+          "cmd": "make infra-up && uv run pytest src/tests/integration/test_vector_memory.py -q",
+          "repair": "Check docker compose is up; fix ingestion/filter logic and re-run."
+        }
+      ]
+    },
+    {
+      "id": "feat-007",
+      "name": "Граф связей (Neo4j)",
+      "description": "Граф связей в Neo4j (ADR-003 v2.0): FK-рёбра вычитываются из каталога PostgreSQL автоматически, бизнес-рёбра (по дате, по email, иерархии) — из agent_relationships (meaning, join_type, usage_notes); синк топологии по счётчику settings_version + reconciliation-тест «строки настроек + FK каталога = рёбра графа» (ADR-006 §4). Нативный shortestPath для плана джойнов; семантика читается из настроек PG (Neo4j — только топология с rel_id).",
+      "behavior": "Для пары таблиц узел возвращает путь по реальным рёбрам или null (пути нет — не выдумываем джойн); для каждого ребра пути возвращает семантику (join_type, meaning, usage_notes) из настроек.",
+      "verification": "make infra-up && uv run pytest src/tests/integration/test_join_graph.py -q",
+      "dependencies": [
+        "feat-002"
+      ],
+      "state": "not_started",
+      "status": "not-started",
+      "evidence": "",
+      "layers": [
+        {
+          "label": "layer-1-static",
+          "cmd": "uv run ruff check src",
+          "repair": "Fix lint issues, then re-run."
+        },
+        {
+          "label": "layer-2-runtime",
+          "cmd": "make infra-up && uv run pytest src/tests/integration/test_join_graph.py -q",
+          "repair": "Check Neo4j up (feat-002: bolt + NEO4J_PASSWORD); fix Cypher-запросы / синк-загрузку рёбер and re-run."
+        }
+      ]
+    },
+    {
+      "id": "feat-008",
+      "name": "clarify",
+      "description": "Узел уточнения (qwen3.7-flash, классификация): однозначен ли вопрос; нехватка данных → один уточняющий вопрос (валидный исход), иначе — переформулировка + явная фиксация допущений в state.",
+      "behavior": "Однозначный вопрос проходит дальше с зафиксированными допущениями; неоднозначный — завершает прогон ровно одним уточняющим вопросом; допущения попадают в state и в финальный ответ.",
+      "verification": "uv run pytest src/tests/unit/test_clarify.py -q",
+      "dependencies": [
+        "feat-004"
+      ],
+      "state": "not_started",
+      "status": "not-started",
+      "evidence": "",
+      "layers": [
+        {
+          "label": "layer-1-static",
+          "cmd": "uv run ruff check src",
+          "repair": "Fix lint issues, then re-run."
+        },
+        {
+          "label": "layer-2-runtime",
+          "cmd": "uv run pytest src/tests/unit/test_clarify.py -q",
+          "repair": "Read failing test (LLM мокается); fix prompt/проверку однозначности и re-run."
+        }
+      ]
+    },
+    {
+      "id": "feat-009",
+      "name": "plan_joins",
+      "description": "Векторный поиск по DDL/глоссарию (feat-006) + выбор пути по графу (feat-007): JoinPlan — таблицы, путь джойна, семантика рёбер. Не более 4 таблиц; ходит только по рёбрам графа, связь не придумывает. Валидация JoinPlan — код при парсинге (таблицы ∈ scope, джойны ∈ рёбрам графа, ≤ 4 таблиц, связность); провал → retry с эскалацией модели cheap→mid→strong (ADR-007 v1.1) в общем retry-бюджете ≤ 3; исчерпание → уточняющий вопрос/отказ. В ДЗ-04 (веха V3) допущения фиксирует код/контекст вопроса — без clarify-узла (он подключается в FSM, ДЗ-05, hw-plan §4).",
+      "behavior": "Для вопроса plan_joins возвращает JoinPlan ≤ 4 таблиц с типом и направлением джойна из семантики ребра; невалидный план (вне прав/нет пути/выдуманный джойн) → retry с эскалацией модели, а не сразу отказ; исчерпание retry-бюджета → уточняющий вопрос/отказ, не выдуманный план.",
+      "verification": "uv run pytest src/tests/unit/test_plan_joins.py -q",
+      "dependencies": [
+        "feat-006",
+        "feat-007"
+      ],
+      "state": "not_started",
+      "status": "not-started",
+      "evidence": "",
+      "layers": [
+        {
+          "label": "layer-1-static",
+          "cmd": "uv run ruff check src",
+          "repair": "Fix lint issues, then re-run."
+        },
+        {
+          "label": "layer-2-runtime",
+          "cmd": "uv run pytest src/tests/unit/test_plan_joins.py -q",
+          "repair": "Read failing test; fix prompt/validation of JoinPlan (≤4 таблиц, рёбра только из графа) and re-run."
+        }
+      ]
+    },
+    {
+      "id": "feat-010",
+      "name": "generate_sql",
+      "description": "Генерация SELECT (deepseek-v4.1-flash): SQL строго по таблицам и колонкам из JoinPlan, тип и направление джойна — из семантики ребра; при retry в контекст идёт только последний SQL + текст ошибки; после провала — эскалация на флагман (glm-5.3-prime, ADR-007 v1.1, feat-014).",
+      "behavior": "По JoinPlan и вопросу модель возвращает один валидный по форме SELECT; выдуманные таблицы/связи невозможны — контекст строится только из JoinPlan; после diagnose_error в промпт уходит только последняя попытка.",
+      "verification": "uv run pytest src/tests/unit/test_generate_sql.py -q",
+      "dependencies": [
+        "feat-009"
+      ],
+      "state": "not_started",
+      "status": "not-started",
+      "evidence": "",
+      "layers": [
+        {
+          "label": "layer-1-static",
+          "cmd": "uv run ruff check src",
+          "repair": "Fix lint issues, then re-run."
+        },
+        {
+          "label": "layer-2-runtime",
+          "cmd": "uv run pytest src/tests/unit/test_generate_sql.py -q",
+          "repair": "Read failing test (LLM мокается); fix prompt/parsing and re-run."
+        }
+      ]
+    },
+    {
+      "id": "feat-011",
+      "name": "validate_sql (AST + ACL)",
+      "description": "Главный рубеж безопасности: sqlglot-парсинг (только SELECT, deny-by-default), каждая таблица и колонка ∈ правам пользователя, джойны только по рёбрам графа. Три исхода: ok / галлюцинация (→ diagnose_error, retry) / чужие данные (→ degrade, без retry).",
+      "behavior": "Запрос с DML/DDL, запрещённой таблицей/колонкой или джойном вне графа не выполняется; несуществующее → retry-ветка, вне прав → degrade без retry; валидный SELECT проходит дальше.",
+      "verification": "uv run pytest src/tests/unit/test_validate_sql.py -q",
+      "dependencies": [
+        "feat-005",
+        "feat-007",
+        "feat-010"
+      ],
+      "state": "not_started",
+      "status": "not-started",
+      "evidence": "",
+      "layers": [
+        {
+          "label": "layer-1-static",
+          "cmd": "uv run ruff check src",
+          "repair": "Fix lint issues, then re-run."
+        },
+        {
+          "label": "layer-2-runtime",
+          "cmd": "uv run pytest src/tests/unit/test_validate_sql.py -q",
+          "repair": "Read failing test; fix sqlglot whitelist/ACL check (deny-by-default) and re-run."
+        }
+      ]
+    },
+    {
+      "id": "feat-012",
+      "name": "check_cost (EXPLAIN-порог T2)",
+      "description": "EXPLAIN (без ANALYZE) над валидированным SQL, сравнение оценки стоимости с порогом T2; тяжёлый запрос → план_query (feat-017), в норме → execute_sql. Без LLM. Веха: выпускная (после ДЗ-05, вместе с декомпозицией feat-017 — hw-plan §7).",
+      "behavior": "Для валидного SQL узел возвращает оценку EXPLAIN и вердикт; при превышении порога — исход в декомпозицию; EXPLAIN ANALYZE не вызывается никогда.",
+      "verification": "make infra-up && uv run pytest src/tests/integration/test_check_cost.py -q",
+      "dependencies": [
+        "feat-011",
+        "feat-002"
+      ],
+      "state": "not_started",
+      "status": "not-started",
+      "evidence": "",
+      "layers": [
+        {
+          "label": "layer-1-static",
+          "cmd": "uv run ruff check src",
+          "repair": "Fix lint issues, then re-run."
+        },
+        {
+          "label": "layer-2-runtime",
+          "cmd": "make infra-up && uv run pytest src/tests/integration/test_check_cost.py -q",
+          "repair": "Check infra up; fix EXPLAIN call/threshold comparison and re-run."
+        }
+      ]
+    },
+    {
+      "id": "feat-013",
+      "name": "SQLExecutor: тул run_sql + узел execute_sql",
+      "description": "Выполнение под read-only ролью agent_ro: LIMIT 1000, statement_timeout 30s. Ошибка SQL или пустой результат при непустых таблицах → diagnose_error. Тул run_sql (function calling, ДЗ-02) доступен сразу после БД; в FSM узел подключается после validate_sql (ДЗ-05). Артефакты ДЗ-02 в объёме фичи (hw-plan §2): JSON-схема тулa (аргументы валидируются кодом), function-calling цикл «вопрос → LLM → run_sql → Observation → ответ» в apps.cli, SOP тулa (когда звать / чего не звать / действие при ошибке).",
+      "behavior": "Тул run_sql выполняет SELECT под read-only ролью agent_ro (LIMIT 1000, timeout 30s) и возвращает ошибку модели как Observation (начало цикла самокоррекции); в FSM узел маршрутизирует ошибку/пустой результат в diagnose_error. Read-only проверен попыткой INSERT (отказ БД — рубеж 3).",
+      "verification": "make infra-up && uv run pytest src/tests/integration/test_execute_sql.py -q",
+      "dependencies": [
+        "feat-002"
+      ],
+      "state": "not_started",
+      "status": "not-started",
+      "evidence": "",
+      "layers": [
+        {
+          "label": "layer-1-static",
+          "cmd": "uv run ruff check src",
+          "repair": "Fix lint issues, then re-run."
+        },
+        {
+          "label": "layer-2-runtime",
+          "cmd": "make infra-up && uv run pytest src/tests/integration/test_execute_sql.py -q",
+          "repair": "Check infra up; fix role/timeout/LIMIT wiring and re-run."
+        },
+        {
+          "label": "layer-3-e2e",
+          "cmd": "uv run python -m apps.cli \"Сколько заказов у клиентов из Москвы?\" — LLM сам вызывает run_sql и комментирует результат (ручной прогон, нужен LLM_API_KEY; hw-plan §2)",
+          "repair": "Fix JSON-схему тулa / function-calling цикл в apps.cli, re-run manually."
+        }
+      ]
+    },
+    {
+      "id": "feat-014",
+      "name": "diagnose_error + retry-цикл",
+      "description": "Разбор ошибки/пустого результата (qwen3.7-flash) + подсказка для регенерации; retry до 3 попыток задаёт код; в декомпозированном режиме ретраится упавший шаг. Эскалация модели при провале.",
+      "behavior": "После ошибки SQL в контекст generate_sql уходит только последний SQL + разбор ошибки; после 3 неудач — валидный отказ, не бесконечный цикл; эскалация deepseek → glm только по факту провала.",
+      "verification": "uv run pytest src/tests/unit/test_diagnose.py -q",
+      "dependencies": [
+        "feat-013",
+        "feat-004"
+      ],
+      "state": "not_started",
+      "status": "not-started",
+      "evidence": "",
+      "layers": [
+        {
+          "label": "layer-1-static",
+          "cmd": "uv run ruff check src",
+          "repair": "Fix lint issues, then re-run."
+        },
+        {
+          "label": "layer-2-runtime",
+          "cmd": "uv run pytest src/tests/unit/test_diagnose.py -q",
+          "repair": "Read failing test (LLM мокается); fix retry counter/подсказку и re-run."
+        }
+      ]
+    },
+    {
+      "id": "feat-015",
+      "name": "interpret_result + degrade",
+      "description": "Финальный текст пользователю (glm-5.3-prime): объяснение результата на языке бизнеса, в ответе — SQL и список допущений; usage_notes рёбер раскрываются в ответе. Degrade-исход: отказ по правам бизнес-понятиями, без раскрытия чужой схемы. Частичный результат — только с incomplete-флагом.",
+      "behavior": "Успех: текст + SQL + допущения + стоимость. Отказ по правам: «данные премий недоступны» + доступный вариант, без имён недоступных таблиц. Бюджет исчерпан: честный отказ или incomplete-флаг.",
+      "verification": "uv run pytest src/tests/unit/test_interpret.py -q",
+      "dependencies": [
+        "feat-005",
+        "feat-014"
+      ],
+      "state": "not_started",
+      "status": "not-started",
+      "evidence": "",
+      "layers": [
+        {
+          "label": "layer-1-static",
+          "cmd": "uv run ruff check src",
+          "repair": "Fix lint issues, then re-run."
+        },
+        {
+          "label": "layer-2-runtime",
+          "cmd": "uv run pytest src/tests/unit/test_interpret.py -q",
+          "repair": "Read failing test (LLM мокается); fix prompt/degrade-формулировки and re-run."
+        }
+      ]
+    },
+    {
+      "id": "feat-016",
+      "name": "Кэш вопросов (Valkey)",
+      "description": "Кэш вопросов в Valkey по точному совпадению нормализованного вопроса — семантическая близость исключена решением владельца (ADR-009 v1.2, FIX-005: у Valkey нет KNN). Ключ включает права пользователя; lookup — после clarify: в значении — допущения clarify, на хите допущения сверяются, не совпали — miss. Хит идёт мимо plan_joins/generate (валидация кэшированного SQL не пропускается); справочные шаги декомпозиции — с TTL.",
+      "behavior": "Точный повтор вопроса того же пользователя с теми же допущениями → хит кэша (SQL без регенерации); перефразировка → miss и полный цикл; пользователь с другими правами → miss; «по оплаченным» против кэша «без фильтра» → miss из-за расхождения допущений.",
+      "verification": "make infra-up && uv run pytest src/tests/integration/test_semantic_cache.py -q",
+      "dependencies": [
+        "feat-005",
+        "feat-010"
+      ],
+      "state": "not_started",
+      "status": "not-started",
+      "evidence": "",
+      "layers": [
+        {
+          "label": "layer-1-static",
+          "cmd": "uv run ruff check src",
+          "repair": "Fix lint issues, then re-run."
+        },
+        {
+          "label": "layer-2-runtime",
+          "cmd": "make infra-up && uv run pytest src/tests/integration/test_semantic_cache.py -q",
+          "repair": "Check infra up; fix key composition / допущения-сверка and re-run."
+        }
+      ]
+    },
+    {
+      "id": "feat-017",
+      "name": "plan_query — декомпозиция тяжёлых запросов (stretch)",
+      "description": "По остатку времени (hw-01 §3.4): триггеры T1 (≥4 таблиц или ≥3 хопов) и T2 (EXPLAIN-порог) — решение кода, не LLM. QueryPlan — DAG из ≤ 4 шагов (WHERE x = ANY(:prev_keys)), слияние результатов — обычный код. Если не успели: узел заменяется заглушкой «не декомпозировать».",
+      "behavior": "Структурно тяжёлый или дорогой запрос разбивается на цепочку шагов; шаги выполняются последовательно, слияние — код; инварианты DAG проверяются при парсинге; при отключённой декомпозиции базовый цикл работает без неё.",
+      "verification": "make infra-up && uv run pytest src/tests/integration/test_plan_query.py -q",
+      "dependencies": [
+        "feat-011",
+        "feat-012"
+      ],
+      "state": "not_started",
+      "status": "not-started",
+      "evidence": "",
+      "layers": [
+        {
+          "label": "layer-1-static",
+          "cmd": "uv run ruff check src",
+          "repair": "Fix lint issues, then re-run."
+        },
+        {
+          "label": "layer-2-runtime",
+          "cmd": "make infra-up && uv run pytest src/tests/integration/test_plan_query.py -q",
+          "repair": "Check infra up; fix T1/T2 триггеры/DAG-инварианты and re-run."
+        },
+        {
+          "label": "layer-3-e2e",
+          "cmd": "uv run python -m apps.cli <тяжёлый вопрос с ≥4 таблицами> — прогон через декомпозицию",
+          "repair": "Fix wiring план→шаги→merge, re-run manually."
+        }
+      ]
+    },
+    {
+      "id": "feat-018",
+      "name": "Observability Plane live (ADR-010)",
+      "description": "Live-стек наблюдаемости для ДЗ-06: Jaeger all-in-one (трейсы OTLP), Prometheus (скрейп /metrics; источник — долгоживущий Streamlit-демо, ADR-010 v1.2 — CLI-прогоны дают спаны и query_trace), Grafana (дашборды: success rate, p95 latency, стоимость ₽), Alertmanager (опц.); compose-сервисы + instrumentation (спаны прогон/узел/LLM/SQL, trace_id = OTel); query_trace остаётся system of record. hw-plan §6.",
+      "behavior": "Вопрос прогоняется через агента (Streamlit-демо): трейс виден в Jaeger (waterfall по узлам), метрики собираются Prometheus со /metrics демо-процесса, дашборд Grafana показывает success rate / p95 / ₽; скриншот дашборда — артефакт ДЗ-06.",
+      "verification": "make infra-up && make infra-obs-up && uv run pytest src/tests/integration/test_observability.py -q",
+      "dependencies": [
+        "feat-015"
+      ],
+      "state": "not_started",
+      "status": "not-started",
+      "evidence": "",
+      "layers": [
+        {
+          "label": "layer-1-static",
+          "cmd": "uv run ruff check src",
+          "repair": "Fix lint issues in instrumentation code, then re-run."
+        },
+        {
+          "label": "layer-2-runtime",
+          "cmd": "make infra-up && make infra-obs-up && uv run pytest src/tests/integration/test_observability.py -q",
+          "repair": "Check compose services (jaeger/prometheus/grafana); fix instrumentation/scrape config and re-run."
+        },
+        {
+          "label": "layer-3-e2e",
+          "cmd": "прогон вопроса → трейс в Jaeger + метрики на дашборде Grafana (скриншот)",
+          "repair": "Fix wiring trace_id → span → dashboard, re-run manually."
+        }
+      ]
+    },
+    {
+      "id": "feat-019",
+      "name": "Стриминг объяснения (ДЗ-03)",
+      "description": "Потоковый вывод LLM-ответа в CLI/Streamlit (стриминг interpret_result-класса ответа; в ДЗ-03 — без полного interpret-узла: stream в контуре «вопрос → retrieval → LLM → потоковый вывод». hw-plan §3.",
+      "behavior": "Ответ модели печатается в терминал по мере генерации (chunk'ами); сценарий ДЗ-03 («клиенты из Германии из рекламных кампаний») воспроизводится с сидами и retrieval-контекстом.",
+      "verification": "uv run pytest src/tests/unit/test_streaming.py -q",
+      "dependencies": [
+        "feat-003",
+        "feat-006"
+      ],
+      "state": "not_started",
+      "status": "not-started",
+      "evidence": "",
+      "layers": [
+        {
+          "label": "layer-1-static",
+          "cmd": "uv run ruff check src",
+          "repair": "Fix lint issues, then re-run."
+        },
+        {
+          "label": "layer-2-runtime",
+          "cmd": "uv run pytest src/tests/unit/test_streaming.py -q",
+          "repair": "Read failing test (LLM мокается со stream=True); fix stream handling and re-run."
+        }
+      ]
+    }
+  ]
+}

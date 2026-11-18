@@ -1,0 +1,37 @@
+# ADR — Architecture Decision Records
+
+Индекс архитектурных решений проекта. Формат — по практике ADR (Michael Nygard), правила — по образцу [walkinglabs/learn-harness-engineering](https://github.com/walkinglabs/learn-harness-engineering).
+
+- **Что сюда попадает:** значимые архитектурные решения — выбор технологий, модели данных, границы сервисов, протоколы безопасности. Один ADR = одно решение.
+- **Что НЕ сюда:** оперативные решения сессий (журнал [DECISIONS.md](../../DECISIONS.md) в корне) и факты (они — в [ARCHITECTURE.md](../ARCHITECTURE.md) и [docs/diagrams/](../diagrams/)).
+
+Формат принятых ADR-001…011: шапка → §1 Контекст → §2 Сравнение по осям → §3 Варианты →
+§4 Решение → §5 Последствия (+/−, revisit triggers) → §6 Ссылки → трассировка.
+[ADR-TEMPLATE.md](ADR-TEMPLATE.md) — справочник структуры нового ADR; правила жизни — ниже.
+
+## Реестр
+
+| ADR | Решение | Статус |
+|---|---|---|
+| [ADR-001](ADR-001-build-vs-buy.md) | Своё на LangGraph vs готовое Text-to-SQL (Vanna/LangChain/LlamaIndex) | Принято v1.0 |
+| [ADR-002](ADR-002-fsm-on-code.md) | Оркестрация: workflow-скелет (FSM на коде) с агентным ядром | Принято v1.1 |
+| [ADR-003](ADR-003-single-postgres.md) | Хранилища: PostgreSQL (pgvector) + Neo4j (граф); PG — истина, граф — производная | Принято v2.0 |
+| [ADR-004](ADR-004-query-decomposition.md) | Декомпозиция тяжёлых запросов (T1/T2, key-set, DAG ≤ 4 шагов), план Б — заглушка | Принято v1.1 |
+| [ADR-005](ADR-005-rbac-as-data.md) | Права как данные (настройки в БД), три рубежа, AuthProvider | Принято v1.1 |
+| [ADR-006](ADR-006-relationship-semantics.md) | Семантика связей — данные владельца; топология в Neo4j, семантика из PG | Принято v1.2 |
+| [ADR-007](ADR-007-model-cascade.md) | Intent-Based Routing: узел → навык → модель (cheap/mid/strong), эскалация всех генерирующих узлов, экономика | Принято v1.1 |
+| [ADR-008](ADR-008-structured-output.md) | Валидные структурированные выходы: constrained decoding + тул-based enforcement | Принято v1.0 |
+| [ADR-009](ADR-009-semantic-cache.md) | Кэш вопросов (точное совпадение): scope в ключе, сверка допущений на hit, позиция после clarify | Принято v1.2 |
+| [ADR-010](ADR-010-observability-stack.md) | Live-наблюдаемость: OTel SDK → Jaeger + Prometheus (/metrics — Streamlit-демо) → Grafana (+Alertmanager) | Принято v1.2 |
+| [ADR-011](ADR-011-external-sap-datasource.md) | Внешний источник SAP: OAuth за AuthProvider; QuerySpec → ABAP-ручка строит Open SQL | Принято v1.1 |
+
+Полный порядок чтения и матрица «вопрос → документ» — [arch-package.md](../arch-package.md).
+
+## Как заводить новый ADR
+
+1. Номер — следующий по порядку (ADR-012); файл — `ADR-0NN-краткое-имя.md` в этой папке.
+2. Формат — как в принятых ADR-001…011 (секции §1–§6 + трассировка); [ADR-TEMPLATE.md](ADR-TEMPLATE.md) — структурный справочник.
+3. Заголовки секций сохранять; подсказки-комментарии удалить перед принятием.
+4. Изменение уже принятого ADR — **новая версия в том же файле** с датой (история версий — в поле «Статус»), не тихая правка.
+5. Решение, меняющее модель данных, — синхронно обнови [diagrams/er-data-model.md](../diagrams/er-data-model.md); меняющее схемы/топологию — соответствующие диаграммы (тот же PR).
+6. Добавь строку в реестр выше и в «Состав пакета» [arch-package.md](../arch-package.md).

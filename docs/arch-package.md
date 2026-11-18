@@ -1,0 +1,114 @@
+# Архитектурный пакет — Text-to-SQL Agent
+
+- **Статус:** пакет v1.7 (принят владельцем 2026-11-14; ревизии 01, 02 применены; v1.7 — ADR-011 v1.1 QuerySpec — см. [История](#история))
+- **Скоуп:** HW-01 «Архитектура агента» (кейс 2) + расширения владельца; фундамент пет-проекта
+- **Размещение:** с 2026-11-15 пакет разложен по harness-структуре и трекается в git
+  (решение владельца — [DECISIONS.md D-007](../DECISIONS.md)): ADR — [adr/](adr/),
+  схемы — [diagrams/](diagrams/), обвязка (prd, security, observability, model-card, RISKS) — здесь, в [docs/](.).
+  С 2026-11-15 вся работа ведётся в **этом трекаемом пакете** — `.docs/` целиком объявлен
+  историческими документами READ ONLY (D-011).
+- **Родственные документы:** `.docs/hw-01/README.md` — историческая полная спецификация
+  (вне гита, ≈89 КБ, READ ONLY — D-011; живые прикладные требования — [prd.md](prd.md));
+  [hw-01/README.md](../hw-01/README.md) — **решение ДЗ-1** (подготовленный к сдаче, ужатый
+  документ ≈30 КБ). Конвенция: папки `hw-NN/` — решения ДЗ NN (заполняются по мере прохождения
+  курса); исторические полные спецификации — `.docs/hw-NN/` (READ ONLY).
+  `.drafts/*-draft.md` — первичные черновики-источники (вне гита); `.docs/review-0N.md` — ревизии пакета (история).
+
+---
+
+## Порядок чтения
+
+1. **[prd.md](prd.md)** — ТЗ: проблема, пользователи, FR/NFR, приёмка, **матрица трассировки** (связывает пакет).
+2. **[ADR-001…011](adr/README.md)** — решения, каждое в формате: контекст → сравнение по осям → варианты → решение → последствия + revisit triggers.
+3. **Схемы** — [c4-l1-context](diagrams/c4-l1-context.md) → [c4-l2-container](diagrams/c4-l2-container.md) → [c4-l3-agent](diagrams/c4-l3-agent.md) → [state-agent](diagrams/state-agent.md) → [sequence-query](diagrams/sequence-query.md) → [er-data-model](diagrams/er-data-model.md).
+4. **Обвязка** — [model-card](model-card.md) (модели как карточка), [security](security.md) (операционный уровень поверх ADR-005), [observability](observability.md) (сигналы и пороги NFR; стек — ADR-010), [RISKS](RISKS.md) (регистр рисков).
+
+## Матрица «вопрос → документ»
+
+| Вопрос | Документ |
+|---|---|
+| Что строим и для кого? какие требования и как их проверяем? | [prd.md](prd.md) |
+| Почему не взять готовое Text-to-SQL (Vanna и др.)? | [ADR-001](adr/ADR-001-build-vs-buy.md) |
+| Почему state machine на коде, а не свободный ReAct? почему это агент? | [ADR-002](adr/ADR-002-fsm-on-code.md) |
+| Почему PostgreSQL + Neo4j + Valkey, а не одна СУБД или три? | [ADR-003](adr/ADR-003-single-postgres.md) |
+| Как разбиваются тяжёлые запросы (аналог FOR ALL ENTRIES)? кто решает? | [ADR-004](adr/ADR-004-query-decomposition.md) |
+| Как устроено разделение доступа? почему не GRANT-ы? | [ADR-005](adr/ADR-005-rbac-as-data.md) |
+| FK ≠ бизнес: кто и куда вносит связи? | [ADR-006](adr/ADR-006-relationship-semantics.md) |
+| Какая модель на каком узле и почему? сколько стоит запрос? | [ADR-007](adr/ADR-007-model-cascade.md), [model-card](model-card.md) |
+| Как гарантируется валидный JSON структурированных выходов? | [ADR-008](adr/ADR-008-structured-output.md) |
+| Как устроен кэш и почему он не отравляется между доменами? | [ADR-009](adr/ADR-009-semantic-cache.md) |
+| Какая наблюдаемость live: стек, дашборды, трейсы? | [ADR-010](adr/ADR-010-observability-stack.md), [observability.md](observability.md) |
+| Как подключить внешний источник (SAP: OAuth, исполнение под правами токена)? | [ADR-011](adr/ADR-011-external-sap-datasource.md) |
+| Что видит пользователь / что снаружи? | [c4-l1-context.md](diagrams/c4-l1-context.md) |
+| Из каких контейнеров состоит система? как разворачивается? | [c4-l2-container.md](diagrams/c4-l2-container.md) |
+| Как устроен агент изнутри (узлы, рубежи, роутинг, лимиты)? | [c4-l3-agent.md](diagrams/c4-l3-agent.md) |
+| Какие исходы возможны и кто их не пропускает? | [state-agent.md](diagrams/state-agent.md) |
+| Как выглядит тяжёлый запрос сквозь всю систему? | [sequence-query.md](diagrams/sequence-query.md) |
+| Какая структура данных в БД (бизнес + настройки + трейс)? | [er-data-model.md](diagrams/er-data-model.md) |
+| Что проверяется операционно: угрозы, пороги, секреты, инциденты? | [security.md](security.md) |
+| Как узнаём, что система деградирует: какие логи, метрики, пороги? | [observability.md](observability.md) |
+| Что может пойти не так и что уже заложено против этого? | [RISKS.md](RISKS.md) |
+
+## Состав пакета
+
+| Файл | Содержание | Статус |
+|---|---|---|
+| [prd.md](prd.md) | ТЗ: FR-1…14 (P0/P1), NFR-1…8, 7 сцен приёмки, трассировка FR → ADR | принято v1.7 |
+| [adr/ADR-001](adr/ADR-001-build-vs-buy.md) | своё vs готовое Text-to-SQL | принято v1.0 |
+| [adr/ADR-002](adr/ADR-002-fsm-on-code.md) | оркестрация: workflow-скелет с агентным ядром | принято v1.1 |
+| [adr/ADR-003](adr/ADR-003-single-postgres.md) | PostgreSQL (pgvector) + Neo4j (граф связей); PG — истина, граф — производная | принято v2.0 |
+| [adr/ADR-004](adr/ADR-004-query-decomposition.md) | декомпозиция тяжёлых запросов, план Б — заглушка | принято v1.1 |
+| [adr/ADR-005](adr/ADR-005-rbac-as-data.md) | права как данные, три рубежа, AuthProvider | принято v1.1 |
+| [adr/ADR-006](adr/ADR-006-relationship-semantics.md) | семантика связей, владелец данных вносит рёбра | принято v1.2 |
+| [adr/ADR-007](adr/ADR-007-model-cascade.md) | Intent-Based Routing, эскалация всех генерирующих узлов, экономика в ₽ | принято v1.1 |
+| [adr/ADR-008](adr/ADR-008-structured-output.md) | constrained decoding + тул-based enforcement | принято v1.0 |
+| [adr/ADR-009](adr/ADR-009-semantic-cache.md) | кэш вопросов со scope в ключе (точное совпадение) | принято v1.2 |
+| [adr/ADR-010](adr/ADR-010-observability-stack.md) | live-наблюдаемость: OTel SDK → Jaeger (трейсы) + Prometheus (скрейп /metrics; источник — Streamlit-демо) → Grafana | принято v1.2 |
+| [adr/ADR-011](adr/ADR-011-external-sap-datasource.md) | внешний источник SAP: OAuth за AuthProvider; QuerySpec → ручка на ABAP строит Open SQL и проверяет права | принято v1.1 |
+| [diagrams/c4-l1-context.md](diagrams/c4-l1-context.md) | системный контекст | принято v1.1 |
+| [diagrams/c4-l2-container.md](diagrams/c4-l2-container.md) | контейнеры + развёртывание (продуктовый + Observability Plane) | принято v1.7 |
+| [diagrams/c4-l3-agent.md](diagrams/c4-l3-agent.md) | внутреннее устройство агента | принято v1.3 |
+| [diagrams/state-agent.md](diagrams/state-agent.md) | FSM: терминальные исходы, лимиты | принято v1.2 |
+| [diagrams/sequence-query.md](diagrams/sequence-query.md) | тяжёлый запрос сквозь систему (alt-ветки) | принято v1.2 |
+| [diagrams/er-data-model.md](diagrams/er-data-model.md) | 7 бизнес-таблиц + 4 настройки (права, роли, связи, источники) + их версии + query_trace | принято v1.4 |
+| [model-card.md](model-card.md) | карточка моделей (HF-формат) | принято v1.0 |
+| [security.md](security.md) | модель угроз, guardrails-таблица, секреты, инциденты | принято v1.5 |
+| [observability.md](observability.md) | сигналы/пороги/корреляция; live-слой — ADR-010, аналитический — query_trace | принято v1.3 |
+| [RISKS.md](RISKS.md) | регистр рисков с митигациями → ADR | принято v1.0 |
+
+## Соглашения пакета
+
+- **Канон архитектурных фактов — этот трекаемый пакет `docs/`** (prd.md, ADR, схемы, обвязка);
+  `.docs/` — исторические документы READ ONLY (D-011); `hw-01/README.md` — решение ДЗ
+  (ужатая наружная версия). Пакет развивает канон до решений (ADR) и схем
+  (C4/state/sequence/ER). При расхождении — правка затронутых ADR в одном заходе
+  (правило R-P2 RISKS). Ссылки трассировки вида «Канон: hw-01/README.md §N»
+  указывают номера разделов публичной версии; полные подразделы исторически —
+  `.docs/hw-01/README.md` (как в ADR-004: «hw-01/README.md §3.3, .docs §3.5.1–3.5.9»).
+- **Формат ADR** — как в принятых [ADR-001…011](adr/): шапка → §1 Контекст → §2 Сравнение
+  по осям → §3 Варианты → §4 Решение → §5 Последствия (+/−, revisit triggers) → §6 Ссылки →
+  трассировка. [ADR-TEMPLATE.md](adr/ADR-TEMPLATE.md) — справочник структуры нового ADR.
+- **Из шаблонов сознательно не переносится** (решение 2026-11-14): `agent-task-classification.md`
+  (роутинг статичен по узлам), `sequence-ingest.md` (нет инжест-конвейера), `data-flow.md`
+  и `deployment.md` (слились в c4-l2), `audit-*.md` (появится с кодом).
+- **Термин:** `scope` — совокупность прав сессии (роли → таблицы/колонки); `key-set` —
+  набор ключей между шагами декомпозиции; `usage_notes` — обязательные допущения ребра.
+
+## История
+
+| Дата | Что |
+|---|---|
+| 2026-11-14 | v1.0: prd + ADR-001…009 + 6 схем + обвязка (model-card, security, RISKS) — пакет целиком черновиками на ревью |
+| 2026-11-14 | Статусы prd, ADR-001…009 и security переведены в «Принято» по итогам ревью владельца |
+| 2026-11-14 | v1.1 — применена ревизия 01 (`.docs/review-01.md`): валидатор — deny-by-default по типам узлов AST + adversarial-корпус ≥ поверхности sqlglot + property-based сверка (ADR-005); допущения `clarify` в значении кэша со сверкой на hit (ADR-009 п. 6); контракт синхронизации настроек ↔ AGE — топология в AGE, семантика из PG, reconciliation-тест (ADR-006); RR-транзакция — зафиксированный трейд с триггером и путём перехода на `pg_export_snapshot` (ADR-004); вариант C0 (BFS в коде) в сравнении ADR-003 + кураторство few-shot; рантайм-конверт — таймаут LLM ~15s, jitter, per-user token bucket, back-of-envelope ≤ 10 одновременных (ADR-007, security.md); `budget_stop` в FSM с контрактом «неполное не выдаётся за полное» (`incomplete`-флаг; state-agent, c4-l3, er-data-model); PII-маскирование в коде до LLM и устранено противоречие TTL-прав ↔ NFR-5 (security.md); RISKS — усилен R-S1, добавлены R-Q5, R-C4; пакет перенесён в `.docs/arch/` |
+| 2026-11-14 | v1.2 — добавлен `observability.md` (обвязка): NFR-1/2/6/8 как SLO-пороги с отчётом по вехам вместо пейджинга; три сигнала — `query_trace` (+ новые поля `ttft_ms`, `node_timings` по LLM-вызовам), структурные JSON-логи в stdout с trace_id, SQL-представления метрик (`v_metrics_daily`, `v_metrics_per_node`); корреляция trace_id до логов PostgreSQL; health-checks (`/livez`, `/readyz`, `pg_isready`); таблица «чего сознательно нет» с триггерами появления полного стека. Сопутствующие правки: prd FR-11 расширен (v1.1), er-data-model (поля трейса, v1.1), security (ссылка на схему аудита), RISKS (индикаторы ↔ observability), c4-l2 (буллет наблюдаемости), hw-plan (ДЗ-06) |
+| 2026-11-14 | v1.3 — решение владельца: live-стек обязателен. Новый **ADR-010**: OTel SDK (спаны на прогон/узел/LLM-вызов/SQL, async-экспорт) → OTel Collector (батчинг, retry; адреса бэкендов — только в нём) → Prometheus (метрики низкой кардинальности + алерт-правила) и Tempo (трейсы, ~14д) → Grafana (дашборды, waterfall, поиск по trace_id) + Alertmanager (webhook-уведомления, не пейджинг); `query_trace` остаётся system of record (eval-сет, экономика), `trace_id` = OTel trace_id; семплирование 100%. observability.md → v1.1 (двухслойный трейс, таблица метрик с лейблами, сценарий разбора через Tempo, watch-the-watcher); c4-l2 → v1.1 (Observability Plane в диаграмме, деплой-единицы); prd (FR-11, матрица); security §5 (сегментация плоскости телеметрии, PII-правило для спанов); RISKS, hw-plan (ДЗ-06: живые метрики + скриншот дашборда) |
+| 2026-11-14 | v1.4 — решение владельца по составу стека: **Jaeger all-in-one вместо Tempo** (OTLP-native 4317/4318, Badger на volume, встроенный UI; Grafana — data source) и **без OTel Collector** — спаны OTLP идут из приложения напрямую, метрики OTel SDK отдаёт на `/metrics` (тот же HTTP-сервер, что `/livez`/`/readyz`), Prometheus скрейбит напрямую. Плоскость телеметрии: jaeger/prometheus/grafana/alertmanager (опционально). Трейд зафиксирован: потеряна коллекторная фильтрация/мульти-sink — возврат коллектора по env-эндпоинту (триггер в ADR-010 §5). ADR-010 → v1.1, observability.md → v1.2, c4-l2 → v1.2 (диаграмма: Jaeger + скрейп-pull ребро), security §5 (состав плоскости), README (состав) |
+| 2026-11-14 | v1.5 — применена ревизия 02 (`.docs/review-02.md`; системных замечаний нет, шесть точечных): **§3.1 [P1]** канал записи трейса — роль `agent_trace` INSERT-only (append-only = отсутствие грантов + триггер-страховка, мини-пул 1–2, best-effort fallback в stdout; security §2.2, c4-l2 ребро, prd NFR-3 v1.2, er-data) — без него FR-11 неисполним: `agent_ro` сессионно read-only; **§3.2 [P2]** версионирование настроек — триггерный счётчик `settings_version` вместо `max(updated_at)` (INSERT/DELETE покрыты: revoke роли, удаление строки/ребра; ADR-005 §4 DDL, ADR-006 §4 синк, security §2, er-data `SETTINGS_VERSION`); **§3.3 [P2]** кэш — lookup **после `clarify`**, до `plan_joins` (сверке допущений п. 6 нужно, чтобы они уже были зафиксированы; бонус — на хите экономятся retrieval + shortestPath), `put` — оркестратор по факту успеха (допущения + `query_plan` + `sql_steps` в значении), реплей декомпозиции — хит входит в цикл шагов минуя `plan_query`/`generate_step` (sequence v1.1 перерисована, c4-l3, state-agent, ADR-009 v1.1); **§3.4** кольцо T2 ограничено счётчиком: второе T2 → overflow, не `budget_stop` (ADR-004 v1.1, state-agent); **§3.5** payload `interpret_result` — код-свод (агрегаты + ≤ 20 строк, сырых строк нет никогда) на обоих путях (c4-l2, c4-l3); **§3.6** редакционные остатки v1.3→v1.4 (дубль п. 5 в ADR-010, заголовок и Tempo в observability); §5 — CI-гейты валидатора приняты как обязательства реализации. Диаграммы sequence/c4-l2/c4-l3/er провалидированы mmdc |
+| 2026-11-14 | v1.6 — решение владельца о прод-сцене: агент в проде работает с SAP. Новый **ADR-011 «Внешний источник данных SAP»**: OAuth-флоу — у фронта/портала (агент — resource server, `SapAuthProvider` за портом AuthProvider); исполнение — `SapHttpExecutor` (HTTPS-ручка, SQL + bind-параметры → QueryResult) под правами токена; права per datasource — арбитр SAP, наши настройки — только фильтр мира и UX (инверсия рубежа 3: R-S1 для SAP закрыт по построению); федерация PG ↔ SAP — штатный key-set exchange ADR-004; диалектный зазор (sqlglot не знает HANA) — cross-dialect ядро, T2 — флаг per datasource. Единственная правка ядра: порт `SQLExecutor.execute(..., ctx: RunContext)` (trace_id + scope + token_ref) — draft §4/§5.2 обновлён. Провода: prd §8 (v1.3), security §4 (токен как секрет, граница SAP; v1.2), c4-l2 «точки роста» (v1.4), RISKS R-D4 + примечание к R-S1 + реестр, hw-plan §7 (реализация после ДЗ-06) |
+| 2026-11-14 | v1.7 — решение владельца по контракту SAP-ручки: **ADR-011 → v1.1, QuerySpec вместо SQL-текста**. В HTTPS-ручку уходит формализованный IR запроса (таблицы/джойны — из JoinPlan, фильтры/проекции — от LLM, операторы из whitelist, значения — bind, `key_column` — явное поле для шагов); **ручка на ABAP строит по спеке динамический Open SQL и проверяет права** (CDS/DCL) — нативный ADBC отклонён (обходит авторизации приложения). Валидация спеки — структурная (deny-by-default по схеме IR, без парсера — sqlglot для Open SQL неприменим); генерация для SAP — отдельный сервис StructuredSpec (ADR-008); порт — `SQLExecutor.execute(QueryRequest, *, ctx)` с дискриминатором `sql \| spec` (PG-путь не меняется). Новые риски: R-S5 «прямой вызов ручки в обход агента» (авторизация вызова сервисной идентичностью агента) + актёр в модели угроз; `agent_data_sources` + колонка `protocol`. Диалектный зазор из v1.6 снят заменой на IR (трейд: выразительность = аналитическое ядро). Провода: prd v1.4, security v1.3, c4-l2 v1.5, draft §4/§5.1/§5.2, hw-plan §7, hw-01 README §9.4 |
+| 2026-11-15 | Перенос пакета в git по решению владельца ([DECISIONS.md D-007](../DECISIONS.md)): ADR — `docs/adr/`, схемы — `docs/diagrams/`, обвязка — `docs/`; индекс пакета — этот файл; `.docs/arch/` заморожен как источник. |
+| 2026-11-15 | Red-team аудит пакета (harness-сессия, [FIX-005](../solution/FIXES.md)): ER → v1.3 (+`agent_data_sources` — догоняет ADR-011 v1.7, таблицу создаёт feat-002); security → v1.4 (`agent_ro` без SELECT на `query_trace` — трейсы вне канала исполнения); ADR-003 → v1.1 (в openCypher/AGE нет функции `shortestPath` — var-length MATCH, «shortestPath» = имя задачи); контракты стыков S00: `LLMProvider.complete(..., tools) -> LLMResponse(text, tool_calls, usage)` + `embed(texts)` (ADR-007/008, model-card), +порт `AuthProvider` (ADR-005); `.env.example` — цены ролей и `EMBEDDING_MODEL`; compose — порты только на localhost (security §5), шапка — на миграции (D-009). Открытые решения владельца: механизм семантической близости кэша (у Valkey нет KNN) и источник `/metrics` для ADR-010 (CLI-процесс не скрейбится) |
+| 2026-11-15 | Решения владельца по итогам аудита (FIX-005): (1) **ADR-009 → v1.2** — кэш вопросов на точном совпадении (нормализованный вопрос), семантическая близость исключена: у Valkey нет KNN, перефразировки идут полным циклом; правила scope-изоляции, сверки допущений (п. 6) и реплея декомпозиции не меняются; риск R-Q5 снят по построению; провода: prd FR-13 (v1.5), RISKS R-Q5 + реестр, observability §4, c4-l2, feat-016, S16; (2) **ADR-010 → v1.2** — источник `/metrics`: долгоживущий Streamlit-демо (Prometheus из compose скрейбит host.docker.internal), CLI-прогоны — OTLP-спаны + query_trace (вклад в счётчики — аналитический слой); заголовок ADR-010: Tempo → Jaeger (редакционный остаток v1.0); провода: observability §1/§2.3/§5 (v1.3), c4-l2 (v1.6), feat-018 |
+| 2026-11-15 | **ADR-003 → v2.0 — граф вынесен в Neo4j** (решение владельца по находке №4 аудита, [D-013](../DECISIONS.md)): PG — хранилище истины (данные + pgvector + настройки + query_trace), Neo4j — только топология рёбер (нативный `shortestPath`); официальный образ `pgvector/pgvector:0.8.0-pg17` вместо кастомной сборки AGE+pgvector (риск локальной сборки снят) + `neo4j:5.26.0-community`; контракт синхронизации ADR-006 §4 не меняется (v1.2: AGE → Neo4j в формулировках); права и декомпозиция остаются целиком в PG. Провода: prd §8/§9 (v1.6), c4-l1 v1.1, c4-l2 v1.7 (PG-бокс без AGE, Neo4j-контейнер), c4-l3 v1.2, sequence v1.2, er v1.4, security v1.5 (сеть/секрет/угрозы), S00 (стек, порты, адаптер `neo4j_graph_store`), compose/.env/pyproject (+neo4j-драйвер), feat-002/feat-007, S02/S07 |
+| 2026-11-16 | **Эскалация — единое правило генерирующих узлов** (решение владельца, [D-014](../DECISIONS.md)): **ADR-007 → v1.1** — повторная попытка после провала идёт на уровень вверх (cheap→mid→strong), эскалацию назначает код по факту провала валидации (`retry_count`), эскалации расходуют общий retry-бюджет ≤ 3. **plan_joins** получает структурную валидацию JoinPlan при парсинге (таблицы ∈ scope, джойны ∈ рёбрам графа, ≤ 4 таблиц, связность — как инварианты `plan_query`, ADR-004) + эскалацию: раньше у узла не было ни эскалации, ни ветки провала в FSM. **generate_sql** — эскалация mid → strong проговорена в матрице (раньше — только в §4 и «Чтении схемы» FSM). Провода: ADR-002 v1.1 (карта решений: tier назначает код), state-agent v1.2 (рёбра plan_joins: retry/fail), c4-l3 v1.3 (узел plan_joins + правило роутинга), prd v1.7 (FR-8/FR-10), S00 (контракты 1/2), feat-004/009/010, S09/S10 |

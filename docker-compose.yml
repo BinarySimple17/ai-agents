@@ -1,0 +1,54 @@
+# docker-compose.yml — локальная инфраструктура агента (feat-002 в feature_list.json).
+# Поднимается по требованию: make infra-up / make infra-down (init.sh БД не поднимает).
+# Схема БД и демо-данные — только миграциями Alembic: make infra-migrate (D-009, правило 5 S00).
+# Порты проброшены только на localhost — наружу не публикуются (security §5).
+# Образы официальные и запинены (правило 10 S00): postgres+pgvector, Neo4j (ADR-003 v2.0), Valkey.
+
+services:
+  postgres:
+    image: pgvector/pgvector:0.8.0-pg17
+    container_name: hw-text2sql-postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-agent}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-agent}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  neo4j:
+    image: neo4j:5.26.0-community
+    container_name: hw-text2sql-neo4j
+    environment:
+      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:-neo4j-dev-password}
+    ports:
+      - "127.0.0.1:7474:7474"
+      - "127.0.0.1:7687:7687"
+    volumes:
+      - neo4jdata:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:7474 || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  valkey:
+    image: valkey/valkey:8.1.11-alpine3.24
+    container_name: hw-text2sql-valkey
+    ports:
+      - "127.0.0.1:6379:6379"
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  pgdata:
+  neo4jdata:
