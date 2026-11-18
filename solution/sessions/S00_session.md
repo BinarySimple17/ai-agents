@@ -1,6 +1,6 @@
 # S00 — Канон проекта: единый стек, порты, контракты стыка, запреты, процесс
 
-Этап: Канон | Владелец: общий | Зависимости: — | Оценка: 0.5 | Статус: [x] канон заполнен (harness-сессия, 2026-11-15); ревизия 2026-11-18 — синхронизация с ревью-03 (S20): 15 узлов FSM, политика M1, recursion_limit, interrupt()/checkpointer, graph_version, FastAPI/arq (N1 — целевой контур)
+Этап: Канон | Владелец: общий | Зависимости: — | Оценка: 0.5 | Статус: [x] канон заполнен (harness-сессия, 2026-11-15); ревизия 2026-11-18 — синхронизация с ревью-03 (S20): 15 узлов FSM, политика M1, recursion_limit, interrupt()/checkpointer, graph_version, FastAPI/arq (N1 — целевой контур); ревизия 2026-11-18 (D-020) — LLM-шлюз: локальный LM Studio по умолчанию (пустой LLM_BASE_URL), облако routerai.ru — опция
 
 > **Этот файл — источник истины при любом конфликте.** Приоритет источников:
 > 1. S00 (этот файл) → 2. `docs/adr/` → 3. рабочие сессии `solution/sessions/` → 4. свёртки `docs/`.
@@ -45,7 +45,7 @@
 | Валидация SQL | sqlglot | AST-whitelist, deny-by-default (hw-01 §3.2) |
 | Миграции БД | Alembic (`src/migrations`) | схема + демо-данные — только миграциями (D-009, правило 5) |
 | Кэш-клиент | redis-py | протокол Redis, совместим с Valkey |
-| LLM-шлюз | OpenAI SDK → routerai.ru | роли: cheap=qwen, mid=deepseek, strong=glm (hw-01 §4.2) |
+| LLM-шлюз | OpenAI SDK → routerai.ru (облако) или локальный LM Studio (D-020: `LLM_BASE_URL` пуст → `http://127.0.0.1:1234/v1`) | роли cheap/mid/strong; облако: qwen/deepseek/glm (hw-01 §4.2), локально — одна модель на все роли |
 | Конфиг | pydantic-settings | fail-fast обязательных переменных |
 | Тесты | pytest (+ fixtures скипами) | LLM — моки; БД-тесты скипаются без инфры |
 | Статика | ruff (lint + format) | гейт layer-1 в `./init.sh` |
@@ -80,7 +80,7 @@ alembic.ini                    # конфиг Alembic (script_location = src/mig
 
 | Порт (application/ports) | Реализации (infrastructure) | Вводит сессия |
 |---|---|---|
-| `LLMProvider.complete(role, messages, *, tools=None) -> LLMResponse(text, tool_calls, usage, model)` · `embed(texts) -> list[vector]` (эмбеддер — model-card) | `openai_provider.py` (routerai.ru), фейк в тестах | S03 (embed — S06) |
+| `LLMProvider.complete(role, messages, *, tools=None) -> LLMResponse(text, tool_calls, usage, model)` · `embed(texts) -> list[vector]` (эмбеддер — model-card) | `openai_provider.py` (routerai.ru / локальный LM Studio — D-020), фейк в тестах | S03 (embed — S06) |
 | `VectorStore.search(query, allowed) -> docs` | `pgvector_store.py`, фейк в тестах | S06 |
 | `SchemaGraphStore.path(a, b, allowed) -> plan\|None` | `neo4j_graph_store.py` | S07 |
 | `SQLExecutor.execute(QueryRequest, *, ctx) -> rows` — read-only; дискриминатор `sql\|spec` (ADR-011 v1.1) | `postgres_executor.py` (роль `agent_ro`) | S13 |
@@ -97,7 +97,8 @@ alembic.ini                    # конфиг Alembic (script_location = src/mig
 | PostgreSQL (данные + pgvector) | 5432 | internal (только localhost) |
 | Neo4j (граф связей) | 7687 (bolt) / 7474 (http) | internal (только localhost) |
 | Valkey | 6379 | internal (только localhost) |
-| LLM-шлюз routerai.ru | 443 (внешний, HTTPS) | DMZ — единственный наружный вызов |
+| LLM-шлюз routerai.ru (облако) | 443 (внешний, HTTPS) | DMZ — единственный наружный вызов |
+| LLM-шлюз локальный (LM Studio, D-020) | 1234 (127.0.0.1) | dev-дефолт при пустом `LLM_BASE_URL`; наружу не публикуется |
 
 Наружу ничего не публикуется: интерфейс — локальный CLI.
 
@@ -161,3 +162,4 @@ grep -c "^### " solution/sessions/S00_session.md                  # стыки �
 - Перенесено в другие сессии: Streamlit-демо и live-наблюдаемость — вне базового скоупа S01–S17 (в feature_list не заводились, решение за куратором).
 - Правки 2026-11-18 (S02, FIX-007): контракт 4 — RLS-политики переносятся в S13 (механизм `SET LOCAL app.user_id` появляется в канале исполнения); в миграциях S02 — роли + whitelist-гранты (deny-by-default) + hardening; `agent_planner` читает реестр только через вьюху active (ADR-006 §4.2).
 - Правки 2026-11-18 (S20, синхронизация с ревью-03; hw-01 — норматив): контракт 1 — состав 15 узлов FSM (= hw-01 §2.1, `build_skeleton`/`compact_result`/`generate_step_sql`), `graph_version` в state, `skeleton_hash`, флаги усечения/`approximate`; два уровня предохранителей (per-node M1 + `recursion_limit`); `interrupt()` + checkpointer (TTL 10 мин) для clarify; контракт 2 — политика ретраев M1 (D-016); контракт 4 — +`agent_edge_proposals`, +`agent_audit` (S8), роль `registry_writer`, `graph_version` = производная ревизии реестра; контракт 5 — ключ кэша `rights_hash + graph_version + assumptions`, кэшируется SQL, hit не обходит гейт (S7); стек — точки входа дополнены целевым контуром N1 (FastAPI agent-api + arq agent-worker, Valkey Streams — c4-l2 v1.8), D-005 (нет HTTP в MVP) не менялся.
+- Правки 2026-11-18 (D-020, решение владельца): LLM-шлюз — локальный LM Studio по умолчанию (пустой `LLM_BASE_URL` → `http://127.0.0.1:1234/v1` — OpenAI-совместимый API LM Studio; его `/api/v1` — собственный REST, chat/completions там 404; 127.0.0.1, не localhost — IPv6-ловушка, как в DSN), облако routerai.ru — опция; все роли локально → `qwen3.8-9b`, цены 0; `LLM_API_KEY` — обязательный непустой ASCII без control-символов, `hide_input_in_errors` прячет значение из ValidationError. Провода: security.md v1.7 §4/§5, model-card v1.2, arch-package (история), .env.example, AGENTS/README/ARCHITECTURE, settings.py (+9 тестов). REVIEW-GATE D-020: With fixes (0C/4I/11M) → fix-волна (секрет в тексте ValidationError, 127.0.0.1-дефолт, стале-арх-реестр) → scoped re-review.

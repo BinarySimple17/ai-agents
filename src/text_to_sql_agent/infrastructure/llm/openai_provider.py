@@ -1,4 +1,5 @@
-"""Адаптер `LLMProvider`: OpenAI-совместимый шлюз routerai.ru (S03 Task 3).
+"""Адаптер `LLMProvider`: OpenAI-совместимый шлюз — облако routerai.ru или локальный
+LM Studio (D-020: пустой `LLM_BASE_URL` → `http://127.0.0.1:1234/v1`; S03 Task 3).
 
 Инварианты стыка 2 (S00):
 - backoff 1→2→4с **с jitter** (ADR-007 §4.3; ARCH-GATE S03 W1 — ADR старше и

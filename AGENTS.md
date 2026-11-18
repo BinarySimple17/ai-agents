@@ -11,11 +11,11 @@ work, and resume cleanly.
 полные исторические спецификации (вне гита, **READ ONLY** — D-011). Полная историческая
 спецификация ДЗ-1 — `.docs/hw-01/README.md` (≈89 КБ, только чтение); живые прикладные
 требования — [docs/prd.md](docs/prd.md); `hw-01/README.md` — решение ДЗ-1 (≈30 КБ).
-Архитектурный пакет v1.7 (11 ADR, C4 L1–L3, FSM, ER, prd, security) — [docs/arch-package.md](docs/arch-package.md);
+Архитектурный пакет v1.8 (11 ADR, C4 L1–L3, FSM, ER, prd, security) — [docs/arch-package.md](docs/arch-package.md);
 краткие свёртки — [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), [docs/PRODUCT.md](docs/PRODUCT.md).
 
 **Стек:** Python 3.13 · LangGraph · PostgreSQL (pgvector) · Neo4j (граф связей) · Valkey ·
-OpenAI-совместимый шлюз routerai.ru. Зависимости — uv. **Весь код — в `src/`:**
+OpenAI-совместимый шлюз (облако routerai.ru или локальный LM Studio — D-020). Зависимости — uv. **Весь код — в `src/`:**
 пакет `src/text_to_sql_agent/` (domain/application/infrastructure/orchestration/config/composition),
 презентационный слой `src/apps/`, миграции Alembic `src/migrations/` (инициализация БД —
 только миграциями), тесты `src/tests/`.
@@ -148,7 +148,7 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) и ADR-реестр ([docs/adr/
 - File edits: allowed inside project scope only (`src/`, `tests/`, `docs/`, `solution/`, инфра-файлы корня)
 - Shell: read/debug commands freely; destructive commands require explicit user approval
 - Docker: `make infra-up` / `make infra-down` разрешены без подтверждения (локальные контейнеры проекта); команды с удалением томов — по согласованию
-- Сеть: LLM-вызовы — только к OpenAI-совместимому шлюзу из `.env` (`LLM_BASE_URL`); из тестов — только моки, реальный шлюз в тестах не вызывается
+- Сеть: LLM-вызовы — только к OpenAI-совместимому шлюзу: `LLM_BASE_URL` из `.env` или проектный дефолт (локальный LM Studio, D-020); произвольные адреса запрещены; из тестов — только моки, реальный шлюз в тестах не вызывается
 - MCP/integrations: document here when added
 
 ## Observability
