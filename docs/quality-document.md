@@ -11,9 +11,9 @@
 | `domain/` (validate/rbac) | — | — | — | — | feat-005, feat-011 |
 | `services/vector` | — | — | — | — | feat-006 |
 | `services/join_graph` | — | — | — | — | feat-007 |
-| `services/db` (execute/seed) | A | A | B | A | feat-002 ✅ (миграции 0001–0003, тест 13 passed, чистая комната); B по покрытию: RLS-политики и исполнитель — S13; заявки/ETL-гранты — S07/S10 |
+| `services/db` (execute/seed) | A | A | A | A | feat-002 ✅ + feat-013 ✅ (миграции 0001–0004; исполнитель agent_ro — extended protocol, LIMIT 1001+пост-срез, SET LOCAL timeout, RLS-tripwire — 14 integration; чистая комната); заявки/ETL-гранты — S07/S10 |
 | `services/cache` | — | — | — | — | feat-016 |
-| `cli/` | — | — | — | — | feat-004 |
+| `cli/` | A | A | A | A | feat-013 ✅ (function-calling цикл: кап 3 хода, ретраи пустых/битых не расходуют кап, деградация шлюза — 18 unit; layer-3 живые прогоны на LM Studio D-020); FSM-подключение — feat-004 |
 
 ## How to Update
 

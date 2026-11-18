@@ -12,7 +12,7 @@
 > В разделе — ТОЛЬКО статус последней закрытой сессии; подробности исполнения —
 > в файле самой сессии (закрытые переносятся `make archive` в sessions/archive/).
 
-- Последняя ✅: S03 — 2026-11-18: конфиг + LLM-клиент шлюза feat-003 закрыт (Settings fail-fast с SecretStr-ключами/паролями/DSN; порт LLMProvider = стык 2 + model; OpenAIProvider: backoff 1→2→4с с jitter, breaker 5→60с + half-open, таймаут ≠ breaker, temperature 0, max_retries=0, usage→₽ + usage_missing; fuse кап-на-запрос best-effort — жёсткий контроль в S15; JsonlTracer best-effort; composition/container; 32 unit на моках, verify-feature passing; ARCH-GATE violations→rulings (jitter, timeout≠breaker); REVIEW-GATE 1C+5I+6M → fix-волна → re-review «С оговорками»)
+- Последняя ✅: S13 — 2026-11-18: feat-013 закрыт — SQLExecutor (порт с QueryResult/SQLFailureClass + канонными константами канала; RunContext в domain fail-closed; ADR-011 v1.2 +user_id) + адаптер agent_ro (extended protocol против stacked statements, LIMIT 1001+пост-срез, SET LOCAL timeout, RLS-tripwire — миграция 0004) + тул run_sql + узел execute_sql + CLI function-calling цикл (кап 3, ретраи не расходуют кап); SOP — hw-02/README.md; 115 тестов, verify-feature passing; ARCH-GATE needs-decision→rulings; REVIEW-GATE 2C+3I+9M → fix-волна с регрессионными тестами на Critical → re-review «оба Critical закрыты по-настоящему»; layer-3 — живые прогоны CLI на LM Studio (D-020); **ДЗ-02 собрана — сдача PR dev→main + тег**
 ## Владельцы треков
 
 | Трек | Владелец | Зона |
@@ -47,7 +47,7 @@
 | S10 | sessions/S10_session.md | generate_sql: наполнение скелета (build_skeleton — код, skeleton_hash) по JoinPlan; ретраи M1: попытка 2 — та же модель + текст ошибки, попытка 3 — эскалация на флагман | агент | S09 | feat-010 — закрывает | 1 | P0 | ⬜ |
 | S11 | sessions/S11_session.md | validate_sql: sqlglot AST + ACL + джойны по графу | агент | S05, S07, S10 | feat-011 — закрывает | 1.5 | P0 | ⬜ |
 | S12 | sessions/S12_session.md | check_cost: EXPLAIN-порог T2 → async / matview / approximate / отказ с рекомендацией (не декомпозиция, ADR-004 v1.2) | агент | S11, S02 | feat-012 — закрывает | 0.5 | P1 | ⬜ |
-| S13 | sessions/S13_session.md | SQLExecutor: тул run_sql (ДЗ-02) + узел execute_sql — agent_ro, LIMIT 1000, timeout 30s | агент | S02 | feat-013 — закрывает | 1 | P0 | ⬜ |
+| S13 | sessions/S13_session.md | SQLExecutor: тул run_sql (ДЗ-02) + узел execute_sql — agent_ro, LIMIT 1000, timeout 30s | агент | S02 | feat-013 — закрывает | 1 | P0 | ✅ 2026-11-18 |
 | S14 | sessions/S14_session.md | diagnose_error + ретраи M1 (≤ 3 на узел; попытка 2 — та же модель + ошибка, попытка 3 — эскалация после проверки бюджета с резервом 0,6 ₽) | агент | S13, S04 | feat-014 — закрывает | 1 | P0 | ⬜ |
 | S15 | sessions/S15_session.md | interpret_result + degrade + incomplete-флаг | агент | S05, S14 | feat-015 — закрывает | 1 | P0 | ⬜ |
 | S16 | sessions/S16_session.md | Кэш вопросов Valkey (точное совпадение): допущения-сверка, ключ с правами | агент | S05, S10 | feat-016 — закрывает | 1 | P1 | ⬜ |

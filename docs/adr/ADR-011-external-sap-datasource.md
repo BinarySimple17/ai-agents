@@ -1,6 +1,6 @@
 # ADR-011 — Внешний источник данных SAP (OAuth, исполнение под правами токена)
 
-- **Статус:** Принято (v1.1, 2026-11-14 — QuerySpec вместо SQL-текста: ручка на ABAP строит Open SQL и проверяет права)
+- **Статус:** Принято (v1.2, 2026-11-18 — RunContext +`user_id`: канал PG выставляет `SET LOCAL app.user_id` (рубеж 5, ADR-005 §4; ruling ARCH-GATE S13). v1.1 — QuerySpec вместо SQL-текста: ручка на ABAP строит Open SQL и проверяет права)
 - **Требования prd.md:** §8 (допущения — прод-сцена SAP: подключение с минимальными усилиями), FR-6 (AuthProvider), FR-12 (декомпозиция как механизм федерации)
 - **Связанные документы:** ADR-004 (key-set exchange — единственный кросс-базовый джойн), ADR-005 (AuthProvider, RBAC как данные, три рубежа), **ADR-008** (structured output — генерация спеки), ADR-010 (спаны на выполнение SQL, trace_id), security.md §3–4 (PII на границе, токены как секреты), RISKS.md (R-S1, R-D4, R-S5), code-architecture-draft (§4 порт, §5.2 мульти-БД)
 - **Контекст принятия:** прод-сцена владельца: пользователь аутентифицируется через SAP (OAuth — страница входа отдаёт токен пользователя); обращения к SAP с этим токеном выполняются под его правами. Агент строит SQL и выполняет его через HTTPS-ручку SAP, получая результат в нормализованном виде. Требование: архитектура и код допускают подключение **с минимальными усилиями**. Реализация — после v1 (hw-plan §7, расширения владельца); решение фиксируется сейчас, чтобы ядро не пришлось переделывать.
@@ -48,9 +48,12 @@
    токена» (ADR-005) не меняется.
 2. **Контекст исполнения (главная правка кода):** порт `SQLExecutor.execute(request,
    *, ctx: RunContext)` (v1.1: запрос — дискриминированный `QueryRequest`), где
-   `RunContext` несёт `trace_id` (= OTel trace_id, ADR-010), `scope` и `token_ref`.
-   `PostgresSqlExecutor` игнорирует токен (ходит под `agent_ro`, trace_id — в
-   `SET LOCAL`); `SapHttpExecutor` кладёт токен в `Authorization: Bearer`, trace_id —
+   `RunContext` несёт `trace_id` (= OTel trace_id, ADR-010), `user_id` (v1.2,
+   ruling ARCH-GATE S13 — владелец scope; fail-closed непустое), `scope` и
+   `token_ref`; RunContext — VO в `domain/` (без внешних зависимостей).
+   `PostgresSqlExecutor` игнорирует токен (ходит под `agent_ro`; trace_id и
+   user_id — в `SET LOCAL`/`set_config(…, is_local=true)`, рубеж 5 — ADR-005 §4);
+   `SapHttpExecutor` кладёт токен в `Authorization: Bearer`, trace_id —
    в заголовок запроса (аудит на стороне SAP).
 3. **Исполнение — формализованная спека, не SQL-текст** (решение владельца, v1.1).
    `SapHttpExecutor` принимает `QueryRequest(kind="spec")` и отправляет HTTPS POST с
