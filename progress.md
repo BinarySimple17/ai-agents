@@ -7,9 +7,9 @@
 ## Current State
 
 **Last Updated:** 2026-11-18
-**Session ID:** harness-setup (S00 + S01) → arch-package-import → plan-audit → arch-red-team (FIX-005) → escalation-rule (D-014) → apply-review-03 (ревизия hw-01/README.md, FIX-006, D-015…D-017) → docs-sync-review-03 (S20: канон docs/ сведён к ревизии hw-01 по ревью-03, BL-002 закрыт)
-**Active Feature:** — (feat-001 → passing; док-сессия S20 фич не меняла; следующая — S02/feat-002)
-**Last commit:** `9228e54` (S20: канон docs/ сведён к ревизии hw-01 по ревью-03, BL-002 закрыт) → ветка `project-harness` (предыдущий — 43d9594); эталон ДЗ — `hw-01/README.md` в `hw-01-agent-architecture` (1022a45, запушен); слить `project-harness` → `hw-01-agent-architecture` (затем в `main`) после приёмки ДЗ-1 — `make check`: passing
+**Session ID:** … → docs-sync-review-03 (S20) → **S02 (feat-002 закрыта: миграции схемы v1.5 + роли/гранты + демо-данные; ARCH-GATE canon-check → FIX-007; REVIEW-GATE With fixes → fix-волна)**
+**Active Feature:** — (feat-002 → passing; следующая — S03/feat-003: нужен `LLM_API_KEY` в `.env`)
+**Last commit:** ветка `feat-002-infra` (S02; коммит — `git log -1`, fix-волна ревью внесена amend'ом); слияние по гигиене веток: PR `feat-002-infra` → `dev`; `main` — релизы (v0.1.0 = этап 1)
 
 ## Status
 
@@ -40,16 +40,18 @@
 
 - [x] **Пост-приёмочный патч-2 по отзыву преподавателя (2026-11-18, D-019)** — 3 замечания «не критичных, но стоит учесть»: (1) ретрай шага декомпозиции сделан явным: hw-01 §3.1 — ребро `diagnose_error → generate_step_sql`, §4.3 — фраза «ретраится упавший шаг, а не весь запрос» (замечание поймало реальную регрессию state-agent v1.3 — ребро потерялось при свёртке step_diagnose); state-agent → v1.4, c4-l3 → v1.6; (2) T2-исходы по UX: approximate/matview — через `compact_result → interpret_result` с флагом `approximate`, async/отказ — терминал: hw-01 §3.1 (HEAVY без `--> OUT`), state-agent v1.4, c4-l3 v1.6, sequence → v1.4, ADR-004 → v1.3; (3) «TODO(confirm)» в hw-01 §1/§3.5 → «допущение» (в prd §8 остаются — живые требования)
 
+- [x] **S02 (2026-11-18): feat-002 закрыта — инфраструктура БД** — миграции 0001–0003: схема v1.5 (7 бизнес-таблиц + agent_permissions/user_roles/relationships [DDL — ADR-006 §4.1] + agent_edge_proposals + agent_data_sources + settings_version + query_trace/agent_audit); роли agent_ro/planner/trace/registry_writer (пароли из .env, условный CREATE — роли кластерные), whitelist-гранты deny-by-default (FIX-007), agent_ro read-only на уровне сессии, hardening dblink/file_fdw, страховочный триггер query_trace; bump_settings_version SECURITY DEFINER + search_path=pg_catalog + квалификация public (обход через temp-двойник закрыт тестом); демо-данные с ловушками (33 NULL campaign_id, 5 непремированных, total=SUM позиций, order_items 1000 = 1–4 на заказ); тест test_infra_schema.py — 13 passed; чистая комната (свежая БД → полная цепочка) — зелёная; Makefile infra-migrate → uv --env-file; DSN → 127.0.0.1 (Windows/IPv6 ::1 — 60с/коннект); ARCH-GATE: architect canon-check (needs-decision → rulings FIX-007: RLS → S13, whitelist-гранты, синхрон v1.5); REVIEW-GATE: With fixes (Important 1–6, Minor 1–8) → fix-волна; S00 контракт 4 + security.md §2.1 синхрон; BL-003 (хвосты ревью)
+
 ### What's In Progress
 
-- — (ничего; BL-002 закрыт в S20, 2026-11-18). Следующая сессия — S02 (feat-002, миграции по ER v1.5: контракт ребра R1 и `graph_version` уже в каноне)
+- — (S02 закрыта 2026-11-18). Следующая сессия — S03 (feat-003, LLMProvider): **нужен ключ `LLM_API_KEY` в `.env`** — попросить у куратора
 
 ### Next Steps
 
-1. Ближайшая веха — ДЗ-02 (дедлайн 30.11.2026): `S02` (миграции схемы: 7 таблиц + настройки + реестр R1 + `agent_edge_proposals` + аудит S8 + роли agent_planner/agent_ro/agent_trace/registry_writer) → `S03` (LLMProvider) → `S13` (тул run_sql); закрыть feat-002 через `make verify-feature F=feat-002`
-2. Параллельно `S03` (feat-003): нужен ключ `LLM_API_KEY` в `.env` — попросить у куратора
-3. После приёмки ДЗ-1 — слить `project-harness` → `hw-01-agent-architecture` (затем в `main` по регламенту вех)
-4. `make infra-up` + первый `make infra-migrate` — S02; миграции строго по er-data-model v1.5 (DDL ребра — ADR-006 §4.1)
+1. Ближайшая веха — ДЗ-02 (дедлайн 30.11.2026): `S03` (LLMProvider: backoff/breaker/бюджет) → `S13` (тул run_sql + узел execute_sql; RLS-политики — в Task 4 S13, FIX-007); после трёх сессий — сдача ДЗ-02
+2. Слить `feat-002-infra` → `dev` через PR (гигиена веток); при приёмке ДЗ-02 — PR `dev` → `main` + тег
+3. `LLM_API_KEY` — от куратора; реальный шлюз в тестах S03 не используется (моки), ключ нужен только для ручного smoke
+4. Веха V2 (ДЗ-03, дедлайн 07.12): S06 → S19
 
 ## Blockers / Risks
 
@@ -91,6 +93,7 @@
 - S20 (docs-sync-review-03): `docs/adr/ADR-006` (v1.3), `ADR-007` (v1.2), `ADR-005` (v1.2), `ADR-004` (v1.2), `ADR-003` (v2.1), `ADR-002` (v1.2), `docs/prd.md` (v1.8), `docs/security.md` (v1.6), `docs/model-card.md` (v1.1), `docs/RISKS.md` (v1.1), `docs/observability.md` (v1.4), `docs/ARCHITECTURE.md`, `docs/diagrams/{state-agent v1.3, c4-l3 v1.4, sequence-query v1.3, c4-l2-container v1.8, er-data-model v1.5, c4-l1-context v1.2}.md`, `docs/arch-package.md` (v1.8: Состав пакета + История), `docs/{adr,diagrams}/README.md`, `docs/README.md` (v1.8), `solution/sessions/S00_session.md` (15 узлов, M1, recursion_limit, interrupt/checkpointer, graph_version, N1), `feature_list.json` (behavior/description 9 фич, states не тронуты), `solution/sessions.md` (S07/S09/S10/S12/S14/S17 + S20), `solution/backlog/BL-002…` (закрыт) + реестр, `progress.md`
 - D-018 (патч по отзыву преподавателя): `hw-01/README.md` (7 точек: Reason, §8/§9-ссылки ×5, стартовые пороги), `docs/adr/ADR-002` (v1.3), `docs/diagrams/c4-l3` (v1.5), `docs/arch-package.md` (Состав + История), `DECISIONS.md` (D-018), `progress.md`
 - D-019 (патч-2 по отзыву): `hw-01/README.md` (§3.1: DG→GSS + HEAVY-разбивка, §3.1 ветвления, §4.3 ретрай шага, TODO(confirm)→допущение ×2), `docs/diagrams/state-agent` (v1.4), `docs/diagrams/c4-l3` (v1.6), `docs/diagrams/sequence-query` (v1.4), `docs/adr/ADR-004` (v1.3), `docs/arch-package.md` (Состав + История), `DECISIONS.md` (D-019), `progress.md`
+- S02 (feat-002): `src/migrations/versions/{20261118_0001_schema_v15,20261118_0002_roles_hardening,20261118_0003_demo_data}.py`, `src/tests/conftest.py` (.env-загрузка, neo4j), `src/tests/integration/test_infra_schema.py` (13 тестов), `Makefile` (infra-migrate --env-file), `.env.example` (+пароли ролей, 127.0.0.1), `feature_list.json` (feat-002 v1.5 + feat-013 рубеж), `docs/security.md` (§2.1 — миграции + whitelist), `docs/diagrams/er-data-model.md` (7 строк каталога), `solution/sessions/S00_session.md` (контракт 4 FIX-007), `solution/sessions/{S02,S13,S03? — нет: S02,S13}_session.md`, `solution/FIXES.md` (FIX-007), `solution/backlog/BL-003…` + реестр, `scripts/guard-subagents.sh` (фича-aware + strict), `scripts/verify-feature.sh` (передача F), `solution/sessions/S03_session.md`/`S13_session.md` (батч — ранее)
 
 ## Evidence of Completion
 
@@ -110,6 +113,7 @@
 - [x] S20 grep-сверка приёмки (2026-11-18, живой текст docs/): отсутствуют (0 вхождений) — «вычитываются из каталога автоматически», «каждый retry», `3,31`, `81%`, «по остатку времени», «план Б», SWE-bench, HumanEval, «608», FOR ALL ENTRIES, Java/Spring; присутствуют и согласованы — `2,57`/`76%`/`6,6К`/`670`, `graph_version`, `build_skeleton`/`compact_result`/`generate_step_sql`/`merge_results`, `interrupt()`/checkpointer, `recursion_limit`, `ACL-leak`, Spider 2.0/BIRD, `50 000`/`approximate`, резерв `0,6 ₽`; состав 15 узлов идентичен в state-agent v1.3 = c4-l3 v1.4 = hw-01 §2.1; пофайловые гейты сессии — все зелёные (T1: 0/0; T2: 0/0, 8, 0, 5+2; T3: 14/5, 3+2; T4: 0/0/0, 3; T5: 4+5, 6+4; T6: 4, 11, 0; T7: 6 строк, 6, 10); `make check` → EXIT=0; `node scripts/validate-harness.mjs .` → Overall: 100/100; states feature_list — все в {not_started, active, passing} → True
 - [x] D-018 grep-сверка: «вслух» → 0 в hw-01 и docs/; «§8»/«§9» → 0 в hw-01 (легальные ссылки §2–§7 не тронуты); «краткий план следующего действия» присутствует в hw-01, ADR-002 v1.3, c4-l3 v1.5; «стартовые» пороги — в hw-01 §3.4; `make check` → EXIT=0
 - [x] D-019 grep-сверка: hw-01 — ребро «ретраится шаг» на схеме (1), фраза ретрая шага в §4.3 (1), «TODO(confirm)» → 0, HEAVY без `--> OUT` (approximate/matview → CR — 1, async/отказ → OUT — 1); state-agent v1.4 — «ретраится шаг, не весь план» + «T2 → approximate / matview… идёт в объяснение»; «ретраится упавший шаг» присутствует в hw-01, ADR-004 v1.3, feat-014; `make check` → EXIT=0
+- [x] **S02 Evidence (2026-11-18):** чистая комната — свежая БД → `alembic upgrade head` (3 миграции) → vector/17 объектов/4 роли/ловушки данных на месте; `uv run pytest src/tests/integration/test_infra_schema.py -v` → **13 passed** (идемпотентность, состав, вьюха active, vector, dblink отсутствует, bump-триггеры, whitelist agent_ro, read-only сессии, INSERT-only trace, registry_writer без DELETE, temp-двойник не перехватывает bump, ловушки данных, total=SUM, Neo4j bolt); `make check` → EXIT=0; `make verify-feature F=feat-002` → PASS (гвард гейтов — фича-aware); `make clean-check` → EXIT=0
 - [ ] Повторный clean-check — `make clean-check` в конце этой сессии
 - [ ] `make infra-up` + первая миграция — feat-002 (S02)
 
@@ -117,9 +121,10 @@
 
 <!-- Свободные заметки, чтобы следующая сессия продолжила без потери контекста. -->
 
+- **S02 закрыта**: схема v1.5 в БД, роли/гранты готовы. S03 (feat-003) — LLMProvider: порт + адаптер routerai.ru (backoff/breaker/usage), Settings (fail-fast), бюджетный предохранитель; **ключ `LLM_API_KEY` — у куратора**, тесты — моки. Диспетчеризация субагентов: architect canon-check ДО кода (контракт стыка 2 — ADR-007), code-reviewer после зелёного make check; гейты в S03_session.md заполнять ПО ФАКТУ (guard в режиме фичи отвергает «не начата»).
+- Гигиена веток: работа в рабочих ветках от `dev` → PR → `dev`; `main` — релизы (PR dev → main + тег). Локальные гварды .githooks активны (init.sh подключает); GitHub branch protection — ещё не включён.
+- Роли БД: пароли из .env (AGENT_*_PASSWORD); при смене — миграция идемпотентна (условный CREATE + ALTER PASSWORD), но DSN в .env менять синхронно. DSN — только 127.0.0.1 (Windows/IPv6-ловушка).
 - Пакет v1.8 живёт в docs/ (D-007); `.docs/arch/` — замороженный источник, не править.
-- Конвенция ДЗ (D-010/D-011): `hw-NN/` — решения ДЗ NN (артефакты сдачи, в harness-сессиях не трогаются); `.docs/` — исторические документы READ ONLY — читать можно, править нельзя. Изменения требований — docs/prd.md + затронутые ADR; при неясных требованиях сверяйся с исторической полной спецификацией `.docs/hw-01/README.md`.
-- Раскладка кода — по draft §2 (D-008): новые файлы только в слои draft; composition — единственная точка сборки.
-- Канон после S20: 15 узлов FSM (= hw-01 §2.1), ретраи M1 (D-016), recursion_limit, interrupt()/checkpointer, graph_version, кэш-ключ `rights_hash + graph_version + assumptions` — фичи feat-004/008/009/010/011/014/015/016/017 писать по этим behavior.
-- Схема БД — только миграции Alembic (`src/migrations/versions/`, `make infra-migrate`); feat-002 пишет первую миграцию по **er-data-model v1.5**: 7 бизнес-таблиц + agent_permissions/agent_user_roles/**agent_relationships (контракт ребра R1 — ADR-006 §4.1)**/agent_edge_proposals/agent_data_sources + settings_version + query_trace (роль agent_trace INSERT-only) + agent_audit (S8) + роли agent_ro/agent_planner/registry_writer.
+- Канон после S02/FIX-007: RLS-политики — S13 (Task 4); agent_planner читает реестр только через вьюху active; bump_settings_version — SECURITY DEFINER (не менять); кэш-ключ `rights_hash + graph_version + assumptions` — фичи feat-004/008/009/010/011/014/015/016/017 писать по этим behavior.
+- Схема БД — только миграции Alembic; **правка применённой миграции запрещена** (правки до первого коммита цепочки — легальны, окружение пересобирается из цепочки).
 - Makefile: рецепты через bash/uv run (cmd.exe на Windows); `make dev` → apps.cli (пакет src/apps).

@@ -12,7 +12,7 @@
 
 ### Правила для исполнителя
 
-1. Подключение — строго по `AGENT_RO_DSN` (не по сервисному `POSTGRES_DSN`); роль не может DDL/DML — это обеспечивает БД (рубеж 3), а не код.
+1. Подключение — строго по `AGENT_RO_DSN` (не по сервисному `POSTGRES_DSN`); роль не может DDL/DML — это обеспечивает БД (read-only сессии — рубеж 5 ADR-005), а не код.
 2. `LIMIT 1000` — обёрткой `SELECT * FROM (<sql>) AS q LIMIT 1000`, не правкой текста пользователя.
 3. Timeout — `SET LOCAL statement_timeout = '30s'` внутри транзакции запроса; не client-side cancel.
 4. Ошибка БД — структурированная Observation (не traceback, S00 правило 8); пустой результат — валидный исход, не ошибка.
@@ -58,7 +58,7 @@ uv run ruff check src    # чисто; узел не импортирует др
 
 ### Task 4: integration-тест `src/tests/integration/test_execute_sql.py`
 
-Пункты `behavior` feat-013: SELECT под `agent_ro` возвращает данные; LIMIT режет >1000 строк; INSERT под `agent_ro` → отказ БД (рубеж 3); timeout (`pg_sleep` > 30s) → ошибка по таймауту, не зависание; `query_trace` недоступна `agent_ro`; пустой результат — не ошибка. Скип без инфры (conftest).
+Пункты `behavior` feat-013: SELECT под `agent_ro` возвращает данные; LIMIT режет >1000 строк; INSERT под `agent_ro` → отказ БД (read-only сессии, рубеж 5); timeout (`pg_sleep` > 30s) → ошибка по таймауту, не зависание; `query_trace` недоступна `agent_ro`; пустой результат — не ошибка. Здесь же — RLS-политики чувствительных таблиц + `SET LOCAL app.user_id` (перенос из S02, FIX-007: механизм появляется в этом каноне). Скип без инфры (conftest).
 
 **✅ Самопроверка:**
 

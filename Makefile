@@ -43,9 +43,11 @@ infra-up:
 infra-down:
 	docker compose down
 
-# Инициализация схемы БД — только миграциями Alembic (D-009, S00 правило 5)
+# Инициализация схемы БД — только миграциями Alembic (D-009, S00 правило 5).
+# .env подхватывает uv (--env-file): alembic читает POSTGRES_DSN из окружения,
+# секреты — только из .env (S00 правило 4), не из кода.
 infra-migrate:
-	uv run alembic upgrade head
+	uv run --env-file .env alembic upgrade head
 
 # --- Harness ---
 
