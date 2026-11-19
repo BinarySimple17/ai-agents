@@ -29,7 +29,7 @@ lint:
 e2e:
 	uv run pytest src/tests/e2e -q || [ $$? -eq 5 ]
 
-# Локальный запуск агента: make dev Q="Сколько заказов у клиентов из Москвы?"
+# Локальный запуск агента: make dev Q="Сколько заказов у клиентов из РФ?"
 dev:
 	@test -n "$(Q)" || { echo 'Usage: make dev Q="бизнес-вопрос"'; exit 2; }
 	uv run python -m apps.cli "$(Q)"
@@ -66,7 +66,8 @@ archive:
 
 # Ритуалы начала/конца сессии (см. AGENTS.md: Startup Workflow / End of Session)
 session-start:
-	@echo "Clock-in: 1) pwd  2) прочитать AGENTS.md  3) прочитать progress.md  4) запустить make check  5) выбрать ОДНУ фичу из feature_list.json"
+	@echo "Clock-in: 1) pwd  2) прочитать AGENTS.md  3) создать/проверить файл сессии (из TEMPLATE_session.md)  4) прочитать progress.md  5) выбрать ОДНУ фичу из feature_list.json  6) запустить make check"
+	bash scripts/guard-subagents.sh --phase start
 
 session-end:
 	bash scripts/guard-subagents.sh

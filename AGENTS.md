@@ -27,11 +27,11 @@ Before writing code (session start / clock-in):
 1. Confirm working directory with `pwd`
 2. Read this file completely
 3. Read project docs if present: [архитектурный пакет](docs/arch-package.md) (порядок чтения и матрица «вопрос → документ»), [Architecture](docs/ARCHITECTURE.md), [Product](docs/PRODUCT.md), канон — [solution/sessions/S00_session.md](solution/sessions/S00_session.md)
-4. Run `./init.sh` to verify the environment is healthy
+4. Create/verify the session file first (copy of `solution/sessions/TEMPLATE_session.md` under the session ID, per `solution/README.md` lifecycle), then run `./init.sh` to verify the environment is healthy — it includes the session-start gate (`scripts/guard-subagents.sh --phase start`, D-023): missing checkboxes are auto-added (`[FIX]`), and `make check` stays RED until the ARCH-GATE line is `✅ + evidence` or `N/A — reason`
 5. Read `feature_list.json` to see current feature state
 6. Review recent commits with `git log --oneline -5`
 7. Read `progress.md` and `session-handoff.md` if present
-8. Architectural gate: if this session touches architecture (feature crossing module boundaries, new dependency, schema/ER change, unresolved design question) — dispatch the `architect` subagent in `canon-check` mode on the session plan before any code; compact dispatch only (plan path + question + canon pointers, no file dumps — it reads on demand); findings fixed or explicitly ruled before implementation starts; record the verdict in the session file's ARCH-GATE line (guard-enforced: `scripts/guard-subagents.sh`)
+8. Architectural gate: if this session touches architecture (feature crossing module boundaries, new dependency, schema/ER change, unresolved design question) — dispatch the `architect` subagent in `canon-check` mode on the session plan before any code; compact dispatch only (plan path + question + canon pointers, no file dumps — it reads on demand); findings fixed or explicitly ruled before implementation starts; record the verdict in the session file's ARCH-GATE line (guard-enforced: `scripts/guard-subagents.sh` — start phase red-lines `make check` until the line is filled)
 
 If baseline verification is failing, repair that first — do not add new scope on a broken baseline.
 
