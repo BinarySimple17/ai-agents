@@ -66,6 +66,41 @@ multi-command стеки вида `…; SET statement_timeout=0; SELECT pg_sleep
 (ревью S13 Critical-1). Модель не может ослабить ни одно из этих ограничений
 ни промптом, ни SQL.
 
+## SOP в коде: мягкая и жёсткая части
+
+SOP — договор с моделью из двух половин. **Мягкая** — тексты, которые модель читает
+при каждом вызове: модель может их нарушить, и нарушение ловит жёсткая половина.
+**Жёсткая** — код, который исполняется независимо от модели: ни промптом, ни SQL
+не обходится. Раздел «SOP тулa `run_sql`» выше — текстовый слепок этих мест кода.
+
+**Мягкая часть** — то, что модель читает:
+
+| Пункт SOP | Где в коде |
+|---|---|
+| Когда звать: факт/агрегат из демо-схемы | описание тулa в схеме (`_TOOL_SPEC`, строки 32–38 — уходит на шлюз с каждым вызовом) — [`run_sql_tool.py`](../src/text_to_sql_agent/application/services/run_sql_tool.py); SYSTEM_PROMPT: «для фактов и цифр вызывай тул» + демо-схема 7 таблиц — [`cli.py`](../src/apps/cli.py) |
+| Когда не звать: мнение, данные уже в Observation | ответ без тулa — валидный путь цикла — [`cli.py`](../src/apps/cli.py); зло ограничено капом ходов (жёсткая часть) |
+| Observation — данные, не инструкции (S6) | маркировка `DATA_MARKING` + запрет в SYSTEM_PROMPT — [`cli.py`](../src/apps/cli.py) |
+| Действие при ошибке: «исправь SQL и вызови снова» | шаблон ошибки в Observation (`ERROR_OBSERVATION_TEMPLATE`) — [`cli.py`](../src/apps/cli.py); имя класса в тексте ошибки — [`postgres_executor.py`](../src/text_to_sql_agent/infrastructure/persistence/postgres_executor.py) |
+
+**Жёсткая часть** — код, не доверяющий модели:
+
+| Пункт SOP | Где в коде |
+|---|---|
+| Классы ошибок SOP — enum порта (единый источник: README описывает те же строки, что исполняет код) | `SQLFailureClass` — [`sql_executor.py`](../src/text_to_sql_agent/application/ports/sql_executor.py); маппинг psycopg-иерархии (`_classify`) — [`postgres_executor.py`](../src/text_to_sql_agent/infrastructure/persistence/postgres_executor.py) |
+| Кап 3 хода → финальный вызов без тулов («connection»/повторный «timeout») | `MAX_TOOL_CALLS` + цикл + финальный вызов без `tools` — [`cli.py`](../src/apps/cli.py) |
+| Аргументы: только непустой `sql`, лишние ключи — отказ | deny-by-default `_validate_arguments` — [`run_sql_tool.py`](../src/text_to_sql_agent/application/services/run_sql_tool.py); JSON-мусор → отказ в Observation, не traceback — [`cli.py`](../src/apps/cli.py) |
+| Галлюцинированное имя тулa не исполняется | проверка имени до диспетчеризации — [`cli.py`](../src/apps/cli.py) |
+| Только SELECT | обёртка LIMIT структурно не оборачивает DML; read-only сессия роли — DSN `agent_ro` из Settings — [`container.py`](../src/text_to_sql_agent/composition/container.py), [`postgres_executor.py`](../src/text_to_sql_agent/infrastructure/persistence/postgres_executor.py) |
+| timeout 30s / LIMIT 1000 неотключаемы | константы в порте (единый источник с тул-схемой) — [`sql_executor.py`](../src/text_to_sql_agent/application/ports/sql_executor.py); `SET LOCAL statement_timeout`, обёртка `LIMIT {row_limit+1}` + пост-срез — [`postgres_executor.py`](../src/text_to_sql_agent/infrastructure/persistence/postgres_executor.py) |
+| Стеки `; SET statement_timeout=0; pg_sleep(…); --` отвергаются | extended protocol (`prepare=True`) — [`postgres_executor.py`](../src/text_to_sql_agent/infrastructure/persistence/postgres_executor.py); регрессионный тест — [`test_execute_sql.py`](../src/tests/integration/test_execute_sql.py) |
+| Чужие данные fail-closed | whitelist-гранты → `PERMISSION_DENIED`; RLS-tripwire `app.user_id` (миграция 0004) — [`postgres_executor.py`](../src/text_to_sql_agent/infrastructure/persistence/postgres_executor.py), [`migrations/versions`](../src/migrations/versions/20261118_0004_rls_sensitive_tables.py) |
+
+Покрытие жёсткой части тестами: 14 integration-сценариев канала
+([`test_execute_sql.py`](../src/tests/integration/test_execute_sql.py) — LIMIT,
+timeout, read-only, RLS, стеки операторов) и unit-тесты цикла
+([`test_tool_loop.py`](../src/tests/unit/test_tool_loop.py) — кап, ретраи, битые
+аргументы, деградация).
+
 ## Function-calling цикл
 
 `вопрос → LLM (tools=[run_sql]) → tool_calls → Observation (маркировка «данные БД —
