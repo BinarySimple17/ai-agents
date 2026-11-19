@@ -154,7 +154,7 @@ def test_observation_columns_capped_not_silently() -> None:
     out = stream.getvalue()
     assert "col_8" in out
     assert "col_9" not in out.splitlines()[2]  # в таблице только первые 8
-    assert "… ещё 4 колонок" in out  # хвост показан явно, полный набор — в JSONL
+    assert "… ещё 4 колонки" in out  # хвост показан явно (согласование числительного)
 
 
 def test_degrade_answer_and_unknown_event() -> None:

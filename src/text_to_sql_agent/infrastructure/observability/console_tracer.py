@@ -128,8 +128,24 @@ def _render_observation(payload: dict[str, Any]) -> str:
         lines.append(f"    … показаны первые {len(rows)} из {row_count}")
     hidden_columns = len(all_columns) - len(columns)
     if hidden_columns > 0:
-        lines.append(f"    … ещё {hidden_columns} колонок (полный набор — в JSONL-трейсе)")
+        lines.append(
+            f"    … ещё {hidden_columns} "
+            f"{_plural(hidden_columns, 'колонка', 'колонки', 'колонок')}"
+            " (полный набор — в JSONL-трейсе)"
+        )
     return "\n".join(lines)
+
+
+def _plural(count: int, one: str, few: str, many: str) -> str:
+    # русское согласование числительного (ревью S21 Minor): 1 колонка, 2-4 колонки,
+    # 5+ колонок; 11-14 — всегда «колонок»
+    if 11 <= count % 100 <= 14:
+        return many
+    if count % 10 == 1:
+        return one
+    if 2 <= count % 10 <= 4:
+        return few
+    return many
 
 
 def _render_trouble(event: str, payload: dict[str, Any]) -> str:
