@@ -32,8 +32,12 @@ class JsonlTracer:
         try:
             self._path.parent.mkdir(parents=True, exist_ok=True)
             with self._lock, self._path.open("a", encoding="utf-8") as fh:
-                fh.write(json.dumps(record, ensure_ascii=False) + "\n")
-        except OSError as exc:
+                # default=str — psycopg отдаёт Decimal/date/datetime (регрессия S21
+                # Critical-1: агентные события несут сырые rows_preview, без default
+                # запись падала TypeError, --quiet ронял CLI, с TeeTracer событие
+                # молча терялось из JSONL)
+                fh.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
+        except (OSError, TypeError, ValueError) as exc:
             warnings.warn(
                 f"JsonlTracer: запись не удалась ({exc}) — трейс потерян, запрос продолжается",
                 RuntimeWarning,

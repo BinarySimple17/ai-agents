@@ -52,7 +52,8 @@ def test_tool_call_sql_truncated_to_one_line() -> None:
     assert line.startswith("  → run_sql: ")
     assert "\n" not in line  # SQL одной строкой
     assert line.endswith("…")
-    assert len(line) < 150  # 120 символов SQL + префикс
+    sql_part = line.removeprefix("  → run_sql: ")
+    assert len(sql_part) <= 120  # критерий Task 4: SQL ≤120 (точный ассерт, ревью S21)
 
 
 def test_observation_table_max_five_rows() -> None:
@@ -92,7 +93,11 @@ def test_observation_cell_truncated() -> None:
             },
         )
     )
-    assert "…" in stream.getvalue()
+    out = stream.getvalue()
+    assert "…" in out
+    row_line = out.splitlines()[2]  # первая строка данных таблицы
+    cells = [part.strip() for part in row_line.split("│") if part.strip()]
+    assert cells and all(len(cell) <= 20 for cell in cells)  # критерий Task 4: ячейка ≤20
 
 
 def test_observation_error_line() -> None:

@@ -7,6 +7,7 @@ LLM и executor — моки (S00 правило 7); скриптованный 
 import json
 from datetime import date
 from decimal import Decimal
+from types import SimpleNamespace
 
 from apps.cli import (
     DATA_MARKING,
@@ -15,6 +16,8 @@ from apps.cli import (
     MAX_TOOL_CALLS,
     OBSERVATION_MAX_ROWS,
     OBSERVATION_PREVIEW_ROWS,
+    SYSTEM_PROMPT,
+    main,
     run_tool_loop,
 )
 from tests.unit.fakes import UNIT_CTX, FakeExecutor, RecordingTracer
@@ -25,6 +28,7 @@ from text_to_sql_agent.application.ports.sql_executor import (
     SQLFailureClass,
 )
 from text_to_sql_agent.application.services.run_sql_tool import RunSqlTool
+from text_to_sql_agent.infrastructure.observability.jsonl_tracer import JsonlTracer
 
 
 class FakeLLM:
@@ -316,3 +320,56 @@ def test_events_gateway_degradation() -> None:
     assert "шлюз LLM недоступен" in answer
     assert tracer.names()[-1] == "agent.degrade"
     assert "circuit breaker" in tracer.events[-1].payload["reason"]
+
+
+def test_observation_event_with_native_types_survives_jsonl_tracer(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    # Регрессия S21 Critical-1 (ревью): psycopg отдаёт Decimal/date — payload
+    # события нёс сырые rows_preview, JsonlTracer без default=str падал TypeError
+    # (--quiet ронял CLI), с TeeTracer событие observation молча терялось из JSONL
+    typed_rows = QueryResult(
+        columns=["total", "day"],
+        rows=[{"total": Decimal("12.50"), "day": date(2026, 1, 15)}],
+        row_count=1,
+    )
+    executor = FakeExecutor(result=typed_rows)
+    llm = FakeLLM([_tool_call(), _text("Готово")])
+    trace_path = tmp_path / "trace.jsonl"
+    run_tool_loop(
+        "вопрос", llm=llm, tool=RunSqlTool(executor), ctx=UNIT_CTX, tracer=JsonlTracer(trace_path)
+    )
+    records = [json.loads(line) for line in trace_path.read_text(encoding="utf-8").splitlines()]
+    observations = [record for record in records if record["event"] == "agent.observation"]
+    assert len(observations) == 1  # событие дошло до файла, а не потерялось с warning'ом
+    assert observations[0]["payload"]["rows_preview"] == [
+        {"total": "12.50", "day": "2026-01-15"}
+    ]
+
+
+def test_task6_rows_last_and_prompt_semantics() -> None:
+    # Guard ревью S21 (Minor): откат фикса «row_count: 1» должен падать тестом —
+    # значения в конце payload (recency для малой модели) + пояснение в SYSTEM_PROMPT
+    executor = FakeExecutor(result=QueryResult(columns=["n"], rows=[{"n": 7}], row_count=1))
+    llm = FakeLLM([_tool_call(), _text("Готово")])
+    _loop(llm, executor)
+    content = llm.calls[1]["messages"][-1]["content"]
+    payload = json.loads(content.splitlines()[1])
+    assert list(payload)[-1] == "rows"
+    assert "row_count/shown_rows" in SYSTEM_PROMPT
+
+
+def test_main_quiet_flag_disables_console_trace(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    # Ревью S21 (Minor): проводка --quiet → build_container(console_trace=False)
+    # держалась только живым прогоном; переворот флага при рефакторинге — тест
+    captured: dict[str, bool] = {}
+
+    def fake_build_container(settings=None, *, console_trace=False):  # type: ignore[no-untyped-def]
+        captured["console_trace"] = console_trace
+        return SimpleNamespace(
+            llm=CircuitOpenLLM(), run_sql_tool=RunSqlTool(FakeExecutor()), tracer=RecordingTracer()
+        )
+
+    monkeypatch.setattr("apps.cli.build_container", fake_build_container)
+    assert main(["--quiet", "вопрос"]) == 0
+    assert captured["console_trace"] is False
+    assert main(["вопрос"]) == 0
+    assert captured["console_trace"] is True
