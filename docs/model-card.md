@@ -23,7 +23,9 @@
 LM Studio `http://127.0.0.1:1234/v1`, все три роли → `qwen3.8-9b` (9B, Q4_K_M,
 tool_use capable; reasoning включён по умолчанию — `reasoning_content` идёт отдельно
 от `content`; финальный ответ может уйти целиком в `reasoning_content` при пустом
-`content` — провайдер берёт его фолбэком, только если нет ни текста, ни тулов),
+`content` — провайдер берёт его фолбэком, только если нет ни текста, ни тулов и
+`finish_reason` не в {length, content_filter, tool_calls, function_call} (иначе —
+ретрай/деградация; provenance — `text_from_reasoning` в трейсе)),
 цены 0 (прогон бесплатен, бюджетный кап не срабатывает); эмбеддер —
 `text-embedding-bge-m3` (S06). Экономика ADR-007 §4 и тарифы §1 — только облачный контур.
 

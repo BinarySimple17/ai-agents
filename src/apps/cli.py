@@ -15,7 +15,7 @@
 - Observation — данные БД, не инструкции (security §3, S6): маркировка в тексте,
   строки капнуты OBSERVATION_MAX_ROWS (компактный вид; node_timings — S04/S15).
 
-Reasoning модели (D-020) приходит в content с `</think>`-хвостом или отдельным
+Reasoning модели (D-020/D-021) приходит в content с `</think>`-хвостом или отдельным
 полем reasoning_content — цикл не интерпретирует его как вызов тулa. Финальный
 ответ, целиком ушедший в reasoning_content, провайдер отдаёт текстом (guard по
 finish_reason — openai_provider, D-021): для цикла это обычный ответ без ретрая.

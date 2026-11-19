@@ -64,10 +64,13 @@ _BREAKER_THRESHOLD = 5
 _BREAKER_COOLDOWN_S = 60.0
 _JITTER_SHARE = 0.5  # jitter: base + uniform(0, base/2) — ADR-007 §4.3
 # finish_reason, при которых reasoning_content не может считаться ответом:
-# length — текст оборван по лимиту токенов (частичный CoT), content_filter —
-# контент заблокирован политикой шлюза (фолбэк не должен обходить блокировку).
-# Строго "stop" не требуется — часть шлюзов поле не отдаёт (ревью Important-1).
-_NO_TEXT_FALLBACK_REASONS = frozenset({"length", "content_filter"})
+# length — текст оборван по лимиту токенов (частичный CoT); content_filter —
+# контент заблокирован политикой шлюза (фолбэк не должен обходить блокировку);
+# tool_calls/function_call — заявлен tool-ход, а тулов нет (несогласованный
+# шлюз): reasoning такого хода не финальный ответ, путь — ретрай/деградация
+# (ревью re-review Minor-4). Строго "stop" не требуется — часть шлюзов поле
+# не отдаёт (ревью Important-1).
+_NO_TEXT_FALLBACK_REASONS = frozenset({"length", "content_filter", "tool_calls", "function_call"})
 
 
 def _jittered(base_s: float, rng: random.Random) -> float:

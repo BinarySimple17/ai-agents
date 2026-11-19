@@ -302,6 +302,14 @@ def test_real_sdk_finish_reason_length_does_not_promote_reasoning() -> None:
     assert provider2.complete("mid", _MESSAGES).text is None
 
 
+def test_real_sdk_finish_reason_tool_calls_without_tools_no_reasoning_text() -> None:
+    # Re-review Minor-4: finish_reason заявляет tool-ход, а тулов в сообщении нет
+    # (несогласованный шлюз) — reasoning такого хода не финальный ответ, путь
+    # CLI — ретрай/деградация, как до фолбэка.
+    provider, _, _, _ = _provider([_sdk_completion("tool_calls", "надо вызвать run_sql…")])
+    assert provider.complete("mid", _MESSAGES).text is None
+
+
 def test_trace_records_reasoning_provenance(tmp_path: Path) -> None:
     # M2: по трейсу видно, что текст пришёл из think-поля, и почему
     # (finish_reason) — инцидент 2026-11-19 был в трейсе неотличим от нормы.
