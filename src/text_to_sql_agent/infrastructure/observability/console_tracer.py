@@ -7,32 +7,38 @@
 для ответа (пайпинг `cli … | tail -1` отдаёт ровно ответ).
 
 Данные БД в наблюдении (`rows_preview`) — вид оператора-человека: консоль
-показывает до _PREVIEW_ROWS_MAX строк результата; контекст модели это не
-затрагивает (S6 защищает модель, а не экран). Все лимиты дисплея — константы
-ниже. Рендер best-effort: сбой печати не рвёт запрос (политика JsonlTracer).
+показывает до OBSERVATION_PREVIEW_ROWS строк результата; контекст модели это
+не затрагивает (S6 защищает модель, а не экран). Лимит превью и имена событий —
+константы порта `tracer` (единый источник с эмиттером — ревью S21 I1/I2);
+лимиты дисплея — константы ниже. Рендер best-effort: сбой печати не рвёт запрос
+(политика JsonlTracer).
 """
 
 import sys
 import warnings
 from typing import Any
 
+from text_to_sql_agent.application.ports.tracer import (
+    EVENT_AGENT_ANSWER,
+    EVENT_AGENT_CAP_EXHAUSTED,
+    EVENT_AGENT_DEGRADE,
+    EVENT_AGENT_EMPTY_RETRY,
+    EVENT_AGENT_OBSERVATION,
+    EVENT_AGENT_ROUND,
+    EVENT_AGENT_START,
+    EVENT_AGENT_TOOL_CALL,
+    OBSERVATION_PREVIEW_ROWS,
+)
 from text_to_sql_agent.domain.entities import Trace
 
-_CELL_MAX_CHARS = 20  # ячейка таблицы результата — компактность строки консоли
-_COLUMN_WIDTH_MAX = 24  # ширина колонки — выравнивание, не простыня
+_CELL_MAX_CHARS = 20  # ячейка таблицы результата (и имя колонки) — компактность строки
+_COLUMNS_MAX = 8  # колонок в таблице — защита от раздутой строки консоли
 _SQL_DISPLAY_MAX_CHARS = 120  # SQL тулa — одна строка консоли
-_MESSAGE_MAX_CHARS = 120  # текст ошибки — одна строка консоли
-_PREVIEW_ROWS_MAX = 5  # требование владельца: данные строками, хоть обрезанными
+_MESSAGE_MAX_CHARS = 120  # текст ошибки / вопрос / причина — одна строка консоли
 _MS_PER_S = 1000.0
 
 # События-неполадки шлюза: однострочные «!»-строки с ключевыми полями payload.
-_TROUBLE_TEMPLATES: dict[str, str] = {
-    "llm.retry": "  ! шлюз: повтор (попытка {attempt}, причина {status_code})",
-    "llm.timeout": "  ! шлюз: таймаут ({role}, {elapsed_ms}мс)",
-    "llm.reject": "  ! шлюз: отказ HTTP {status_code} ({role})",
-    "llm.breaker_open": "  ! breaker открыт ({detail})",
-    "llm.budget_stop": "  ! бюджет исчерпан ({budget_used_rub}₽ из {cap_rub}₽)",
-}
+_TROUBLE_EVENTS = {"llm.retry", "llm.timeout", "llm.reject", "llm.breaker_open", "llm.budget_stop"}
 
 
 def _truncate(text: str, limit: int) -> str:
@@ -41,33 +47,36 @@ def _truncate(text: str, limit: int) -> str:
     return text[: limit - 1] + "…"
 
 
+def _one_line(text: Any, limit: int) -> str:
+    return _truncate(" ".join(str(text).split()), limit)
+
+
 def _cell(value: Any) -> str:
-    text = " ".join(str(value).split())
-    return _truncate(text, _CELL_MAX_CHARS)
+    return _one_line(value, _CELL_MAX_CHARS)
 
 
 def _render(trace: Trace) -> str:
     event, payload = trace.event, trace.payload
-    if event == "agent.start":
-        return f"▶ Вопрос: {payload.get('question', '')}"
-    if event == "agent.round":
+    if event == EVENT_AGENT_START:
+        return f"▶ Вопрос: {_one_line(payload.get('question', ''), _MESSAGE_MAX_CHARS)}"
+    if event == EVENT_AGENT_ROUND:
         return f"─ Ход {payload.get('call', '?')}"
     if event == "llm.complete":
         return _render_llm_complete(payload)
-    if event == "agent.tool_call":
-        sql = _truncate(" ".join(str(payload.get("sql", "")).split()), _SQL_DISPLAY_MAX_CHARS)
+    if event == EVENT_AGENT_TOOL_CALL:
+        sql = _one_line(payload.get("sql", ""), _SQL_DISPLAY_MAX_CHARS)
         return f"  → {payload.get('name', '?')}: {sql}"
-    if event == "agent.observation":
+    if event == EVENT_AGENT_OBSERVATION:
         return _render_observation(payload)
-    if event == "agent.empty_retry":
+    if event == EVENT_AGENT_EMPTY_RETRY:
         return f"  ! пустой ответ — повтор (осталось {payload.get('left', '?')})"
-    if event == "agent.cap_exhausted":
+    if event == EVENT_AGENT_CAP_EXHAUSTED:
         return "  … кап ходов — финальный вызов без тулов"
-    if event == "agent.degrade":
-        return f"✗ деградация: {payload.get('reason', '')}"
-    if event == "agent.answer":
+    if event == EVENT_AGENT_DEGRADE:
+        return f"✗ деградация: {_one_line(payload.get('reason', ''), _MESSAGE_MAX_CHARS)}"
+    if event == EVENT_AGENT_ANSWER:
         return f"✓ ответ ({payload.get('source', '')})"
-    if event in _TROUBLE_TEMPLATES:
+    if event in _TROUBLE_EVENTS:
         return _render_trouble(event, payload)
     return f"  · {event}"  # неизвестное событие — generic (устойчивость к будущим agent.*)
 
@@ -87,20 +96,18 @@ def _render_llm_complete(payload: dict[str, Any]) -> str:
 def _render_observation(payload: dict[str, Any]) -> str:
     if not payload.get("ok", False):
         error_class = payload.get("error_class", "?")
-        message = _truncate(" ".join(str(payload.get("error", "")).split()), _MESSAGE_MAX_CHARS)
+        message = _one_line(payload.get("error", ""), _MESSAGE_MAX_CHARS)
         return f"  ← ОШИБКА {error_class}: {message}"
     truncated = "да" if payload.get("truncated") else "нет"
     header = f"  ← {payload.get('row_count', 0)} строк (усечён: {truncated})"
-    columns = [str(column) for column in (payload.get("columns") or [])]
-    rows = list(payload.get("rows_preview") or [])[:_PREVIEW_ROWS_MAX]
+    columns = [str(column) for column in (payload.get("columns") or [])[:_COLUMNS_MAX]]
+    rows = list(payload.get("rows_preview") or [])[:OBSERVATION_PREVIEW_ROWS]
     if not columns:
         return header
-    names = [_truncate(column, _CELL_MAX_CHARS) for column in columns]
+    names = [_cell(column) for column in columns]
     cells = [[_cell(row.get(column)) for column in columns] for row in rows]
-    widths = [
-        min(max([len(name), *(len(row[i]) for row in cells)]), _COLUMN_WIDTH_MAX)
-        for i, name in enumerate(names)
-    ]
+    # ширина = максимум по колонке; ячейки и имена уже ≤ _CELL_MAX_CHARS, капа не нужно
+    widths = [max(len(name), *(len(row[i]) for row in cells)) for i, name in enumerate(names)]
     lines = [
         header,
         "    │ "
@@ -120,20 +127,34 @@ def _render_observation(payload: dict[str, Any]) -> str:
 
 
 def _render_trouble(event: str, payload: dict[str, Any]) -> str:
-    payload = dict(payload)
+    # .get-стиль (ревью S21 Minor): переименование поля у провайдера даёт «?»,
+    # а не KeyError-потерю строки
+    if event == "llm.retry":
+        attempt = payload.get("attempt", "?")
+        reason = payload.get("status_code", "?")
+        return f"  ! шлюз: повтор (попытка {attempt}, причина {reason})"
+    if event == "llm.timeout":
+        return f"  ! шлюз: таймаут ({payload.get('role', '?')}, {payload.get('elapsed_ms', '?')}мс)"
+    if event == "llm.reject":
+        return (
+            f"  ! шлюз: отказ HTTP {payload.get('status_code', '?')} ({payload.get('role', '?')})"
+        )
     if event == "llm.breaker_open":
-        payload["detail"] = payload.get("reason") or f"сбоев подряд: {payload.get('failures', '?')}"
+        detail = payload.get("reason") or f"сбоев подряд: {payload.get('failures', '?')}"
+        return f"  ! breaker открыт ({detail})"
     if event == "llm.budget_stop":
-        payload["budget_used_rub"] = f"{payload.get('budget_used_rub', 0):.2f}"
-        payload["cap_rub"] = f"{payload.get('cap_rub', 0):.2f}"
-    return _TROUBLE_TEMPLATES[event].format(**payload)
+        used = float(payload.get("budget_used_rub", 0))
+        cap = float(payload.get("cap_rub", 0))
+        return f"  ! бюджет исчерпан ({used:.2f}₽ из {cap:.2f}₽)"
+    return f"  · {event}"  # недостижимо из _render (контроль полноты словаря событий)
 
 
 class ConsoleTracer:
     """Адаптер `Tracer`: человекочитаемые этапы агента в stderr (best-effort)."""
 
     def __init__(self, stream: Any = None) -> None:
-        # Инъекция потока — для тестов (capsys перехватывает системный stderr).
+        # Инъекция потока — для тестов; по умолчанию системный stderr, захваченный
+        # на момент конструирования (адаптер не пере-разрешает его на каждый вызов).
         self._stream = stream if stream is not None else sys.stderr
 
     def record(self, trace: Trace) -> None:

@@ -8,19 +8,20 @@
 
 import warnings
 
+from text_to_sql_agent.application.ports.tracer import Tracer
 from text_to_sql_agent.domain.entities import Trace
 
 
 class TeeTracer:
     """Композит `Tracer`: рассылает каждое событие всем приёмникам."""
 
-    def __init__(self, *tracers: object) -> None:  # приёмники — реализации Tracer
+    def __init__(self, *tracers: Tracer) -> None:
         self._tracers = tracers
 
     def record(self, trace: Trace) -> None:
         for tracer in self._tracers:
             try:
-                tracer.record(trace)  # type: ignore[attr-defined] — утинная типизация порта
+                tracer.record(trace)
             except Exception as exc:  # best-effort: приёмник не рвёт запрос и остальных
                 warnings.warn(
                     f"TeeTracer: приёмник {type(tracer).__name__} не записал событие "

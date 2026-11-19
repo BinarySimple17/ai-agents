@@ -1,0 +1,437 @@
+2026-11-19 22:25:34 [DEBUG]
+ Received request: POST to /v1/chat/completions with body  {
+  "model": "qwen3.8-9b",
+  "messages": [
+    {
+      "role": "system",
+      "content": "Ты — аналитик данных демо-схемы. Отвечай на бизнес... <Truncated in logs> ...); bonuses(bonus_id, employee_id, period, amount)."
+    },
+    {
+      "role": "user",
+      "content": "Сколько заказов у Всех клиентов из RU?"
+    }
+  ],
+  "temperature": 0,
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "run_sql",
+        "description": "Выполнить ОДИН SELECT-запрос к демо-схеме (read-on... <Truncated in logs> ...ользуй её для исправления SQL и повторного вызова.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "sql": {
+              "type": "string",
+              "description": "Один SELECT-запрос на PostgreSQL. Свои LIMIT/OFFSET разрешены; итог всё равно капится 1000 строками."
+            }
+          },
+          "required": [
+            "sql"
+          ],
+          "additionalProperties": false
+        }
+      }
+    }
+  ]
+}
+2026-11-19 22:25:34  [INFO]
+ [qwen3.8-9b] Running chat completion on conversation with 2 messages.
+2026-11-19 22:25:34 [DEBUG]
+ 65.51.819.431 I slot get_availabl: id  3 | task -1 | selected slot by LCP similarity, f_sim_best = 0.986 (> 0.100 thold), f_keep = 0.763
+2026-11-19 22:25:34 [DEBUG]
+ 65.51.819.796 I slot launch_slot_: id  3 | task 2020 | processing task, is_child = 0
+2026-11-19 22:25:34  [INFO]
+ [qwen3.8-9b] Prompt processing progress: 0.0%
+2026-11-19 22:25:34  [INFO]
+ [qwen3.8-9b] Prompt processing progress: 81.0%
+2026-11-19 22:25:34  [INFO]
+ [qwen3.8-9b] Prompt processing progress: 100.0%
+2026-11-19 22:25:36  [INFO]
+ [qwen3.8-9b] Start to generate a tool call...
+2026-11-19 22:25:36  [INFO]
+ [qwen3.8-9b] Tool name generated:  run_sql
+2026-11-19 22:25:36 [DEBUG]
+ 65.54.189.090 I slot print_timing: id  3 | task 2020 | prompt eval time =     305.45 ms /    21 tokens (   14.55 ms per token,    68.75 tokens per second)
+65.54.189.094 I slot print_timing: id  3 | task 2020 |        eval time =    2063.48 ms /   122 tokens (   17.05 ms per token,    58.64 tokens per second)
+65.54.189.095 I slot print_timing: id  3 | task 2020 |       total time =    2368.93 ms /   143 tokens
+65.54.189.102 I slot print_timing: id  3 | task 2020 |    graphs reused =       1837
+65.54.189.108 I slot print_timing: id  3 | task 2020 | draft acceptance = 0.63492 (   80 accepted /   126 generated), mean len =  2.90
+2026-11-19 22:25:36  [INFO]
+ [qwen3.8-9b] Model generated a tool call.
+2026-11-19 22:25:36  [INFO]
+ [qwen3.8-9b] Model generated tool calls:  [run_sql(sql="SELECT COUNT(*) AS total_orde...")]
+2026-11-19 22:25:36  [INFO]
+ [qwen3.8-9b] Generated prediction:  {
+  "id": "chatcmpl-bx8xv8c55nuo9tn4duubz",
+  "object": "chat.completion",
+  "created": 1795116334,
+  "model": "qwen3.8-9b",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "",
+        "reasoning_content": "Пользователь спрашивает о количестве заказов всех клиентов из России (RU). Мне нужно:\n1. Найти клиентов из страны 'RU' в таблице customers\n2. Посчитать количество их заказов в таблице orders\n\nЯ выполню SELECT-запрос, который объединяет эти таблицы и считает заказы для клиентов из RU.\n",
+        "tool_calls": [
+          {
+            "type": "function",
+            "id": "YJ9rgB5MeFy5lbm9hVAfkbtG3f4nNeRu",
+            "function": {
+              "name": "run_sql",
+              "arguments": "{\"sql\":\"SELECT COUNT(*) AS total_orders FROM orders o JOIN customers c ON o.customer_id = c.customer_id WHERE c.country = 'RU';\"}"
+            }
+          }
+        ]
+      },
+      "logprobs": null,
+      "finish_reason": "tool_calls"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 627,
+    "completion_tokens": 122,
+    "total_tokens": 749,
+    "completion_tokens_details": {
+      "reasoning_tokens": 67
+    }
+  },
+  "stats": {
+    "total_draft_tokens_count": 126,
+    "accepted_draft_tokens_count": 80,
+    "rejected_draft_tokens_count": 46
+  },
+  "system_fingerprint": "qwen3.8-9b"
+}
+2026-11-19 22:25:36 [DEBUG]
+ 65.54.189.221 I slot      release: id  3 | task 2020 | stop processing: n_tokens = 750, truncated = 0
+2026-11-19 22:25:36 [DEBUG]
+ Received request: POST to /v1/chat/completions with body  {
+  "model": "qwen3.8-9b",
+  "messages": [
+    {
+      "role": "system",
+      "content": "Ты — аналитик данных демо-схемы. Отвечай на бизнес... <Truncated in logs> ...); bonuses(bonus_id, employee_id, period, amount)."
+    },
+    {
+      "role": "user",
+      "content": "Сколько заказов у Всех клиентов из RU?"
+    },
+    {
+      "role": "assistant",
+      "content": null,
+      "tool_calls": [
+        {
+          "id": "YJ9rgB5MeFy5lbm9hVAfkbtG3f4nNeRu",
+          "type": "function",
+          "function": {
+            "name": "run_sql",
+            "arguments": "{\"sql\":\"SELECT COUNT(*) AS total_orders FROM order... <Truncated in logs> ...tomer_id = c.customer_id WHERE c.country = 'RU';\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "YJ9rgB5MeFy5lbm9hVAfkbtG3f4nNeRu",
+      "content": "[Observation: данные БД (результат тулa run_sql)]\n... <Truncated in logs> ... \"shown_rows\": 1, \"rows\": [{\"total_orders\": 100}]}"
+    }
+  ],
+  "temperature": 0,
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "run_sql",
+        "description": "Выполнить ОДИН SELECT-запрос к демо-схеме (read-on... <Truncated in logs> ...ользуй её для исправления SQL и повторного вызова.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "sql": {
+              "type": "string",
+              "description": "Один SELECT-запрос на PostgreSQL. Свои LIMIT/OFFSET разрешены; итог всё равно капится 1000 строками."
+            }
+          },
+          "required": [
+            "sql"
+          ],
+          "additionalProperties": false
+        }
+      }
+    }
+  ]
+}
+2026-11-19 22:25:36  [INFO]
+ [qwen3.8-9b] Running chat completion on conversation with 4 messages.
+2026-11-19 22:25:36 [DEBUG]
+ 65.54.225.399 I slot get_availabl: id  3 | task -1 | selected slot by LCP similarity, f_sim_best = 0.829 (> 0.100 thold), f_keep = 0.835
+2026-11-19 22:25:36 [DEBUG]
+ 65.54.225.736 I slot launch_slot_: id  3 | task 2065 | processing task, is_child = 0
+2026-11-19 22:25:36  [INFO]
+ [qwen3.8-9b] Prompt processing progress: 0.0%
+2026-11-19 22:25:37  [INFO]
+ [qwen3.8-9b] Prompt processing progress: 97.0%
+2026-11-19 22:25:37  [INFO]
+ [qwen3.8-9b] Prompt processing progress: 100.0%
+2026-11-19 22:25:38 [DEBUG]
+ 65.56.010.958 I slot print_timing: id  3 | task 2065 | prompt eval time =     201.39 ms /   132 tokens (    1.53 ms per token,   655.45 tokens per second)
+65.56.010.962 I slot print_timing: id  3 | task 2065 |        eval time =    1583.64 ms /    84 tokens (   19.08 ms per token,    52.41 tokens per second)
+65.56.010.962 I slot print_timing: id  3 | task 2065 |       total time =    1785.03 ms /   216 tokens
+65.56.010.963 I slot print_timing: id  3 | task 2065 |    graphs reused =       1868
+65.56.010.980 I slot print_timing: id  3 | task 2065 | draft acceptance = 0.51515 (   51 accepted /    99 generated), mean len =  2.55
+65.56.011.041 I slot      release: id  3 | task 2065 | stop processing: n_tokens = 839, truncated = 0
+2026-11-19 22:25:38  [INFO]
+ [qwen3.8-9b] Model generated tool calls:  []
+2026-11-19 22:25:38  [INFO]
+ [qwen3.8-9b] Generated prediction:  {
+  "id": "chatcmpl-p8ewpollvye6hvwjlbv27",
+  "object": "chat.completion",
+  "created": 1795116336,
+  "model": "qwen3.8-9b",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "У всех клиентов из RU **100** заказов.",
+        "reasoning_content": "В результате запроса показано: total_orders = 100. Это число строк в таблице результатов (row_count=1), а не ответ на вопрос. Ответ — значение поля total_orders в строке результата, то есть 100.\n\nФинальный ответ: 100 заказов у всех клиентов из RU.\n",
+        "tool_calls": []
+      },
+      "logprobs": null,
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 755,
+    "completion_tokens": 84,
+    "total_tokens": 839,
+    "completion_tokens_details": {
+      "reasoning_tokens": 69
+    }
+  },
+  "stats": {
+    "total_draft_tokens_count": 99,
+    "accepted_draft_tokens_count": 51,
+    "rejected_draft_tokens_count": 48
+  },
+  "system_fingerprint": "qwen3.8-9b"
+}
+2026-11-19 22:25:42 [DEBUG]
+ Received request: POST to /v1/chat/completions with body  {
+  "model": "qwen3.8-9b",
+  "messages": [
+    {
+      "role": "system",
+      "content": "Ты — аналитик данных демо-схемы. Отвечай на бизнес... <Truncated in logs> ...); bonuses(bonus_id, employee_id, period, amount)."
+    },
+    {
+      "role": "user",
+      "content": "Сколько заказов у Всех клиентов из РФ?"
+    }
+  ],
+  "temperature": 0,
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "run_sql",
+        "description": "Выполнить ОДИН SELECT-запрос к демо-схеме (read-on... <Truncated in logs> ...ользуй её для исправления SQL и повторного вызова.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "sql": {
+              "type": "string",
+              "description": "Один SELECT-запрос на PostgreSQL. Свои LIMIT/OFFSET разрешены; итог всё равно капится 1000 строками."
+            }
+          },
+          "required": [
+            "sql"
+          ],
+          "additionalProperties": false
+        }
+      }
+    }
+  ]
+}
+2026-11-19 22:25:42  [INFO]
+ [qwen3.8-9b] Running chat completion on conversation with 2 messages.
+2026-11-19 22:25:42 [DEBUG]
+ 65.59.468.307 I slot get_availabl: id  3 | task -1 | selected slot by LCP similarity, f_sim_best = 0.986 (> 0.100 thold), f_keep = 0.737
+2026-11-19 22:25:42 [DEBUG]
+ 65.59.468.652 I slot launch_slot_: id  3 | task 2101 | processing task, is_child = 0
+2026-11-19 22:25:42  [INFO]
+ [qwen3.8-9b] Prompt processing progress: 0.0%
+2026-11-19 22:25:42  [INFO]
+ [qwen3.8-9b] Prompt processing progress: 81.0%
+2026-11-19 22:25:42  [INFO]
+ [qwen3.8-9b] Prompt processing progress: 100.0%
+2026-11-19 22:25:43  [INFO]
+ [qwen3.8-9b] Start to generate a tool call...
+2026-11-19 22:25:43  [INFO]
+ [qwen3.8-9b] Tool name generated:  run_sql
+2026-11-19 22:25:44 [DEBUG]
+ 66.01.892.775 I slot print_timing: id  3 | task 2101 | prompt eval time =     273.00 ms /    21 tokens (   13.00 ms per token,    76.92 tokens per second)
+66.01.892.780 I slot print_timing: id  3 | task 2101 |        eval time =    2150.89 ms /   130 tokens (   16.67 ms per token,    59.98 tokens per second)
+66.01.892.781 I slot print_timing: id  3 | task 2101 |       total time =    2423.89 ms /   151 tokens
+66.01.892.781 I slot print_timing: id  3 | task 2101 |    graphs reused =       1910
+66.01.892.786 I slot print_timing: id  3 | task 2101 | draft acceptance = 0.67442 (   87 accepted /   129 generated), mean len =  3.02
+66.01.892.842 I slot      release: id  3 | task 2101 | stop processing: n_tokens = 759, truncated = 0
+2026-11-19 22:25:44  [INFO]
+ [qwen3.8-9b] Model generated a tool call.
+2026-11-19 22:25:44  [INFO]
+ [qwen3.8-9b] Model generated tool calls:  [run_sql(sql="SELECT COUNT(*) AS total_orde...")]
+2026-11-19 22:25:44  [INFO]
+ [qwen3.8-9b] Generated prediction:  {
+  "id": "chatcmpl-rmeykwwh86aqm3pjrnxb4",
+  "object": "chat.completion",
+  "created": 1795116342,
+  "model": "qwen3.8-9b",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "",
+        "reasoning_content": "Пользователь спрашивает о количестве заказов всех клиентов из России. Мне нужно:\n1. Найти клиентов из РФ (country = 'Russia' или 'RU')\n2. Посчитать количество их заказов\n\nНапишу SQL-запрос, который объединяет таблицы customers и orders через customer_id и считает количество заказов.\n",
+        "tool_calls": [
+          {
+            "type": "function",
+            "id": "9tGkzBMXRJZ9zvYVRytS56wTExoTpwii",
+            "function": {
+              "name": "run_sql",
+              "arguments": "{\"sql\":\"SELECT COUNT(*) AS total_orders FROM orders o JOIN customers c ON o.customer_id = c.customer_id WHERE c.country = 'Russia' OR c.country = 'RU';\"}"
+            }
+          }
+        ]
+      },
+      "logprobs": null,
+      "finish_reason": "tool_calls"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 627,
+    "completion_tokens": 130,
+    "total_tokens": 757,
+    "completion_tokens_details": {
+      "reasoning_tokens": 68
+    }
+  },
+  "stats": {
+    "total_draft_tokens_count": 129,
+    "accepted_draft_tokens_count": 87,
+    "rejected_draft_tokens_count": 42
+  },
+  "system_fingerprint": "qwen3.8-9b"
+}
+2026-11-19 22:25:44 [DEBUG]
+ Received request: POST to /v1/chat/completions with body  {
+  "model": "qwen3.8-9b",
+  "messages": [
+    {
+      "role": "system",
+      "content": "Ты — аналитик данных демо-схемы. Отвечай на бизнес... <Truncated in logs> ...); bonuses(bonus_id, employee_id, period, amount)."
+    },
+    {
+      "role": "user",
+      "content": "Сколько заказов у Всех клиентов из РФ?"
+    },
+    {
+      "role": "assistant",
+      "content": null,
+      "tool_calls": [
+        {
+          "id": "9tGkzBMXRJZ9zvYVRytS56wTExoTpwii",
+          "type": "function",
+          "function": {
+            "name": "run_sql",
+            "arguments": "{\"sql\":\"SELECT COUNT(*) AS total_orders FROM order... <Truncated in logs> ... WHERE c.country = 'Russia' OR c.country = 'RU';\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "9tGkzBMXRJZ9zvYVRytS56wTExoTpwii",
+      "content": "[Observation: данные БД (результат тулa run_sql)]\n... <Truncated in logs> ... \"shown_rows\": 1, \"rows\": [{\"total_orders\": 100}]}"
+    }
+  ],
+  "temperature": 0,
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "run_sql",
+        "description": "Выполнить ОДИН SELECT-запрос к демо-схеме (read-on... <Truncated in logs> ...ользуй её для исправления SQL и повторного вызова.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "sql": {
+              "type": "string",
+              "description": "Один SELECT-запрос на PostgreSQL. Свои LIMIT/OFFSET разрешены; итог всё равно капится 1000 строками."
+            }
+          },
+          "required": [
+            "sql"
+          ],
+          "additionalProperties": false
+        }
+      }
+    }
+  ]
+}
+2026-11-19 22:25:44  [INFO]
+ [qwen3.8-9b] Running chat completion on conversation with 4 messages.
+2026-11-19 22:25:44 [DEBUG]
+ 66.01.938.377 I slot get_availabl: id  3 | task -1 | selected slot by LCP similarity, f_sim_best = 0.822 (> 0.100 thold), f_keep = 0.825
+2026-11-19 22:25:44 [DEBUG]
+ 66.01.938.735 I slot launch_slot_: id  3 | task 2147 | processing task, is_child = 0
+2026-11-19 22:25:44  [INFO]
+ [qwen3.8-9b] Prompt processing progress: 0.0%
+2026-11-19 22:25:44  [INFO]
+ [qwen3.8-9b] Prompt processing progress: 97.1%
+2026-11-19 22:25:44  [INFO]
+ [qwen3.8-9b] Prompt processing progress: 100.0%
+2026-11-19 22:25:45 [DEBUG]
+ 66.02.993.446 I slot print_timing: id  3 | task 2147 | prompt eval time =     225.29 ms /   139 tokens (    1.62 ms per token,   616.99 tokens per second)
+66.02.993.450 I slot print_timing: id  3 | task 2147 |        eval time =     829.19 ms /    48 tokens (   17.64 ms per token,    56.68 tokens per second)
+66.02.993.451 I slot print_timing: id  3 | task 2147 |       total time =    1054.48 ms /   187 tokens
+66.02.993.452 I slot print_timing: id  3 | task 2147 |    graphs reused =       1925
+66.02.993.457 I slot print_timing: id  3 | task 2147 | draft acceptance = 0.60784 (   31 accepted /    51 generated), mean len =  2.82
+66.02.993.515 I slot      release: id  3 | task 2147 | stop processing: n_tokens = 810, truncated = 0
+2026-11-19 22:25:45  [INFO]
+ [qwen3.8-9b] Model generated tool calls:  []
+2026-11-19 22:25:45  [INFO]
+ [qwen3.8-9b] Generated prediction:  {
+  "id": "chatcmpl-jg077x1ogpqk2v836aj9",
+  "object": "chat.completion",
+  "created": 1795116344,
+  "model": "qwen3.8-9b",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "У всех клиентов из РФ — **100 заказов**.",
+        "reasoning_content": "В результате запроса показано, что у всех клиентов из РФ (Russia/RU) всего 100 заказов.\n\nОтвет: **100**\n",
+        "tool_calls": []
+      },
+      "logprobs": null,
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 762,
+    "completion_tokens": 48,
+    "total_tokens": 810,
+    "completion_tokens_details": {
+      "reasoning_tokens": 33
+    }
+  },
+  "stats": {
+    "total_draft_tokens_count": 51,
+    "accepted_draft_tokens_count": 31,
+    "rejected_draft_tokens_count": 20
+  },
+  "system_fingerprint": "qwen3.8-9b"
+}

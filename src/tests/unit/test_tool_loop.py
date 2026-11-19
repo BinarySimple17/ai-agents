@@ -340,9 +340,7 @@ def test_observation_event_with_native_types_survives_jsonl_tracer(tmp_path) -> 
     records = [json.loads(line) for line in trace_path.read_text(encoding="utf-8").splitlines()]
     observations = [record for record in records if record["event"] == "agent.observation"]
     assert len(observations) == 1  # событие дошло до файла, а не потерялось с warning'ом
-    assert observations[0]["payload"]["rows_preview"] == [
-        {"total": "12.50", "day": "2026-01-15"}
-    ]
+    assert observations[0]["payload"]["rows_preview"] == [{"total": "12.50", "day": "2026-01-15"}]
 
 
 def test_task6_rows_last_and_prompt_semantics() -> None:

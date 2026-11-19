@@ -35,7 +35,18 @@ from text_to_sql_agent.application.ports.llm_provider import (
     ToolCall,
 )
 from text_to_sql_agent.application.ports.sql_executor import QueryResult, SQLExecutionError
-from text_to_sql_agent.application.ports.tracer import Tracer
+from text_to_sql_agent.application.ports.tracer import (
+    EVENT_AGENT_ANSWER,
+    EVENT_AGENT_CAP_EXHAUSTED,
+    EVENT_AGENT_DEGRADE,
+    EVENT_AGENT_EMPTY_RETRY,
+    EVENT_AGENT_OBSERVATION,
+    EVENT_AGENT_ROUND,
+    EVENT_AGENT_START,
+    EVENT_AGENT_TOOL_CALL,
+    OBSERVATION_PREVIEW_ROWS,
+    Tracer,
+)
 from text_to_sql_agent.application.services.run_sql_tool import SQL_ARGUMENT, TOOL_NAME, RunSqlTool
 from text_to_sql_agent.composition.container import build_container
 from text_to_sql_agent.domain.entities import RunContext, Trace
@@ -43,7 +54,6 @@ from text_to_sql_agent.domain.entities import RunContext, Trace
 MAX_TOOL_CALLS = 3  # зеркалирует per-node предохранитель ≤3 (S00 стык 1, политика M1)
 EMPTY_RESPONSE_RETRIES = 2  # пустой/битый ответ ходы капа не расходуют: ≤3 попыток = M1
 OBSERVATION_MAX_ROWS = 20  # компактный Observation в контексте модели; полный компакт — V4
-OBSERVATION_PREVIEW_ROWS = 5  # консольный/трейсовый превью результата — BL-004 (данные строками)
 DEV_USER_ID = "cli-dev"  # identity вне скоупа MVP (DevTokenAuth — S05); CLI — dev-контур
 DEFAULT_ROLE = "mid"  # роль генерирующего узла по матрице (hw-01 §4.2, ADR-007)
 # Наблюдение S13 (layer-3): reasoning-модель при temp 0 иногда печатает вызов тулa
@@ -117,7 +127,7 @@ def run_tool_loop(
             question, llm=llm, tool=tool, ctx=ctx, max_tool_calls=max_tool_calls, tracer=tracer
         )
     except LLMProviderError as exc:
-        _emit(tracer, "agent.degrade", trace_id=ctx.trace_id, reason=f"шлюз недоступен: {exc}")
+        _emit(tracer, EVENT_AGENT_DEGRADE, trace_id=ctx.trace_id, reason=f"шлюз недоступен: {exc}")
         return LLM_DEGRADED_TEMPLATE.format(error=exc)
 
 
@@ -137,10 +147,10 @@ def _run_loop(
     tool_rounds_used = 0
     model_calls = 0
     empty_retries_left = EMPTY_RESPONSE_RETRIES
-    _emit(tracer, "agent.start", trace_id=ctx.trace_id, question=question)
+    _emit(tracer, EVENT_AGENT_START, trace_id=ctx.trace_id, question=question)
     while tool_rounds_used < max_tool_calls:
         model_calls += 1
-        _emit(tracer, "agent.round", trace_id=ctx.trace_id, call=model_calls)
+        _emit(tracer, EVENT_AGENT_ROUND, trace_id=ctx.trace_id, call=model_calls)
         response = llm.complete(DEFAULT_ROLE, messages, tools=[tool.tool_spec])
         if response.tool_calls:
             tool_rounds_used += 1
@@ -148,38 +158,38 @@ def _run_loop(
             for call in response.tool_calls:
                 _emit(
                     tracer,
-                    "agent.tool_call",
+                    EVENT_AGENT_TOOL_CALL,
                     trace_id=ctx.trace_id,
                     name=call.name,
                     sql=_tool_sql(call),
                 )
                 content, obs = _observation(call, tool, ctx)
                 messages.append(_tool_message(call, content))
-                _emit(tracer, "agent.observation", trace_id=ctx.trace_id, **obs)
+                _emit(tracer, EVENT_AGENT_OBSERVATION, trace_id=ctx.trace_id, **obs)
             continue
         if response.text and not _is_malformed_tool_call(response.text):
-            _emit(tracer, "agent.answer", trace_id=ctx.trace_id, source="text")
+            _emit(tracer, EVENT_AGENT_ANSWER, trace_id=ctx.trace_id, source="text")
             return response.text
         if empty_retries_left > 0:
             empty_retries_left -= 1
-            _emit(tracer, "agent.empty_retry", trace_id=ctx.trace_id, left=empty_retries_left)
+            _emit(tracer, EVENT_AGENT_EMPTY_RETRY, trace_id=ctx.trace_id, left=empty_retries_left)
             continue
         _emit(
             tracer,
-            "agent.degrade",
+            EVENT_AGENT_DEGRADE,
             trace_id=ctx.trace_id,
             reason="модель не вернула ни текста, ни вызова тулa после повторов",
         )
         return DEGRADED_ANSWER
     # Кап исчерпан: финальный вызов без тулов — модель формулирует ответ из Observation.
-    _emit(tracer, "agent.cap_exhausted", trace_id=ctx.trace_id, rounds=tool_rounds_used)
+    _emit(tracer, EVENT_AGENT_CAP_EXHAUSTED, trace_id=ctx.trace_id, rounds=tool_rounds_used)
     final = llm.complete(DEFAULT_ROLE, messages)
     if final.text and not _is_malformed_tool_call(final.text):
-        _emit(tracer, "agent.answer", trace_id=ctx.trace_id, source="final_no_tools")
+        _emit(tracer, EVENT_AGENT_ANSWER, trace_id=ctx.trace_id, source="final_no_tools")
         return final.text
     _emit(
         tracer,
-        "agent.degrade",
+        EVENT_AGENT_DEGRADE,
         trace_id=ctx.trace_id,
         reason="финальный вызов без тулов не дал текста",
     )
