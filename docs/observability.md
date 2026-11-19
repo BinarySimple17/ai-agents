@@ -1,6 +1,6 @@
 # Observability — наблюдаемость Text-to-SQL Agent
 
-- **Статус:** Принято v1.4 (2026-11-18 — синхронизация с ревью-03: OTel-instrumentation fastapi/psycopg/httpx (развёртывание N1 — c4-l2 v1.8); аудит S8 — отдельная append-only таблица `agent_audit`, отдельно от трейсов; PII-редакция. v1.3 — источник `/metrics`: Streamlit-демо; v1.2 — live-стек (ADR-010): Jaeger вместо Tempo, без коллектора)
+- **Статус:** Принято v1.5 (2026-11-19 — консольные этапы CLI: события `agent.*` через порт Tracer, ConsoleTracer/TeeTracer, stderr/stdout-политика — S21/BL-004, D-022. v1.4 — 2026-11-18: синхронизация с ревью-03: OTel-instrumentation fastapi/psycopg/httpx (развёртывание N1 — c4-l2 v1.8); аудит S8 — отдельная append-only таблица `agent_audit`, отдельно от трейсов; PII-редакция. v1.3 — источник `/metrics`: Streamlit-демо; v1.2 — live-стек (ADR-010): Jaeger вместо Tempo, без коллектора)
 - **Назначение:** операционный уровень поверх prd FR-11 и NFR-1/2/6/8: что собираем,
   где хранится, что считаем, на какие пороги смотрим. Состав стека и его альтернативы —
   ADR-010; здесь — контракты сигналов и реакции. PII-политика телеметрии согласована
@@ -86,6 +86,11 @@ JSON-строка на событие (не free-text), docker logs / journald +
   идентификаторы, счётчики, латентности, категории ошибок. PII-маскирование
   (security §3) применяется до записи. High-cardinality значения (`user_id`) — в
   теле события/лога, не в лейблах метрик (кардинальность — правило §2.3).
+  Исключение — dev-sink `.harness/traces/` (S21/BL-004, D-022): локальный JSONL
+  вне git (`.gitignore`), демо-синтетика; `agent.observation` несёт `rows_preview`
+  (≤5 строк) для разбора прогонов. Триггер пересмотра — реальные данные или
+  прод-контур: маскирование до записи (security §3) и/или перенос превью только
+  в консоль.
 - **Best-effort:** лог и экспорт телеметрии не блокируют запрос; потеря строки
   допустима (истина — в `query_trace`).
 
@@ -115,6 +120,35 @@ SDK — тот же крошечный HTTP-сервер, что `/livez`/`/read
 SQL-представления над `query_trace` (`v_metrics_daily`, `v_metrics_per_node`)
 **не выброшены** — это аналитический слой: отчёты по горизонту, eval-сет, сверка
 live-метрик с бизнес-истиной. Operational сигнал — Prometheus; отчёт — SQL.
+
+### 2.4. Консольные этапы CLI — события `agent.*` (порт Tracer; S21/BL-004, D-022)
+
+Канонический шов — порт `Tracer` (`record(Trace(event, payload))`): провайдер
+эмитит `llm.*`, цикл агента CLI — `agent.*`. Адаптеры: `JsonlTracer`
+(`.harness/traces/trace.jsonl` — локальная персистентность, всегда),
+`ConsoleTracer` (человекочитаемый рендер в **stderr** — stdout остаётся чистым
+для ответа, пайпинг не ломается; `--quiet` глушит консоль), `TeeTracer` (fan-out,
+best-effort — сбой приёмника не рвёт запрос). Сборка —
+`build_container(console_trace=...)`; compose-решение — в composition root.
+
+| Событие | Payload | Этап |
+|---|---|---|
+| `agent.start` | question, trace_id | вопрос принят |
+| `agent.round` | call | вызов модели (порядковый номер) |
+| `agent.tool_call` | name, sql | модель позвала тул |
+| `agent.observation` | ok; columns, rows_preview (≤5 строк), row_count, truncated — либо error_class, error | результат тулa / отказ |
+| `agent.empty_retry` | left | пустой/битый ответ — повтор |
+| `agent.cap_exhausted` | rounds | кап ходов — финальный вызов без тулов |
+| `agent.degrade` | reason | деградация-исход (S00 правило 8) |
+| `agent.answer` | source: text / final_no_tools | финальный ответ |
+
+`llm.complete / retry / timeout / reject / breaker_open / budget_stop` — события
+провайдера (включая `text_from_reasoning` и `finish_reason` — D-021). Эскалации
+M1 (S09/S10/S14) лягут в тот же поток без изменения рендера — события generic,
+неизвестное имя — generic-строка. `rows_preview` — данные БД на экране оператора
+и в dev-sink `.harness/traces/` (исключение к §2.2 оформлено там: локально, вне
+git, синтетика; триггер пересмотра — реальные данные). Имена событий и лимит
+превью — константы порта `tracer` (единый источник эмиттера и рендерера).
 
 ## 3. Корреляция: один запрос — один trace_id
 
@@ -184,5 +218,5 @@ cause-сигналы — дашборд/тикет, разбор на вехе. 
 
 ## Трассировка
 
-Ревизии: v1.4 · Связанные ADR: ADR-002, ADR-007, **ADR-010** · Канон: hw-01/README.md §6 ·
+Ревизии: v1.5 · Связанные ADR: ADR-002, ADR-007, **ADR-010** · Канон: hw-01/README.md §6 ·
 Хранилище бизнес-трейса: er-data-model.md (`query_trace`) · Аудит S8: er-data-model.md (`agent_audit`) · Пороги: prd.md (NFR-1/2/6/8)
