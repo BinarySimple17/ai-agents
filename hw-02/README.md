@@ -110,7 +110,10 @@ tools; ни text, ни tool_calls — до двух повторов (`EMPTY_RES
 затем деградация-ответ. Локальный reasoning-шлюз (D-021): финальный ответ может
 прийти в `reasoning_content` при пустом `content` — провайдер отдаёт его текстом
 (guard по `finish_reason`: обрезанный или отфильтрованный reasoning ответом не
-становится); provenance — в трейсе (`text_from_reasoning`).
+становится); provenance — в трейсе (`text_from_reasoning`). Семантика полей
+Observation для модели (S21 Task 6): ответ — значения в `rows`; `row_count`/
+`shown_rows` — число строк таблицы результата, не ответ (COUNT(*) возвращает
+одну строку со значением).
 
 ## Прогон
 
@@ -121,25 +124,28 @@ uv run python -m apps.cli "Сколько заказов у клиентов и�
 
 Этапы работы агента идут в stderr (S21/BL-004, D-022): вызовы модели с токами/
 латентностью, SQL тулa, результат строками (≤5), ошибки, ретраи, деградация;
-`--quiet` глушит этапы — stdout остаётся только с ответом:
+`--quiet` глушит этапы — stdout остаётся только с ответом. Фрагмент реального
+прогона (stderr; скриншот — [CLI.png](CLI.png), лог шлюза инцидента
+самокоррекции — [lmstudio-logs.txt](lmstudio-logs.txt)):
 
 ```text
 ▶ Вопрос: Сколько заказов у клиентов из Москвы?
 ─ Ход 1
-  · qwen3.8-9b · 584→212 ток · 4.1с · 0.00₽
-  → run_sql: SELECT COUNT(*) AS order_count FROM orders o JOIN customers c
-      ON o.customer_id = c.customer_id WHERE c.country = 'Russia' AND c.city = 'Moscow'
-  ← ОШИБКА syntax: БД отклонила запрос (syntax): column c.city does not exist
+  · qwen3.8-9b · 584→212 ток · 4.0с · 0.00₽
+  → run_sql: SELECT COUNT(*) AS order_count FROM orders o JOIN customers c ON o.customer_id = c.customer_id WHERE c.country = 'Russi…
+  ← ОШИБКА syntax: БД отклонила запрос (syntax): column c.city does not exist LINE 1: ...id = c.customer_id WHERE c.country = 'Russia' AND…
 ─ Ход 2
-  · qwen3.8-9b · 725→64 ток · 1.2с · 0.00₽
-  → run_sql: SELECT customer_id, name, country FROM customers LIMIT 5
+  · qwen3.8-9b · 725→64 ток · 1.3с · 0.00₽
+  → run_sql: SELECT customer_id, name, country FROM customers LIMIT 5;
   ← 5 строк (усечён: нет)
-    │ customer_id │ name       │ country
-    │ 1           │ Иванов     │ Russia
-    │ 2           │ Петрова    │ Russia
-    │ …
+    │ customer_id │ name       │ country │
+    │ 1           │ Customer 1 │ KZ      │
+    │ 2           │ Customer 2 │ DE      │
+    │ 3           │ Customer 3 │ BY      │
+    │ 4           │ Customer 4 │ RU      │
+    │ 5           │ Customer 5 │ KZ      │
 ─ Ход 3
-  · qwen3.8-9b · 943→91 ток · 1.7с · 0.00₽
+  · qwen3.8-9b · 943→91 ток · 2.0с · 0.00₽ [ответ из reasoning]
 ✓ ответ (text)
 ```
 
