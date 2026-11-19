@@ -37,11 +37,13 @@ for f in "$SESSIONS"/*.md; do
 done
 
 # ── 2. Закрытые беклоги → backlog/archive/ ─────────────────────────────────────
+# HTML-комментарии срезаются до проверки: легенда «<!-- открыт | закрыт … -->» в строке
+# статуса не должна считаться признаком закрытия (ловушка BL-006, 2026-11-19)
 mkdir -p "$BACKLOG/archive"
 for f in "$BACKLOG"/BL-*.md; do
   [ -e "$f" ] || break
   name="$(basename "$f")"
-  if head -10 "$f" | grep -qi 'Статус:.*закрыт'; then
+  if head -10 "$f" | sed 's/<!--.*-->//' | grep -qi 'Статус:.*закрыт'; then
     mv "$f" "$BACKLOG/archive/"
     echo "archived: solution/backlog/archive/$name"
     moved=$((moved + 1))
