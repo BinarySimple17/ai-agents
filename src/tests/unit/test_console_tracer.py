@@ -115,7 +115,8 @@ def test_observation_error_line() -> None:
     line = stream.getvalue().rstrip("\n")
     assert line.startswith("  ← ОШИБКА syntax: ")
     assert "\n" not in line
-    assert len(line) < 150  # текст ошибки ≤120 + префикс
+    message_part = line.removeprefix("  ← ОШИБКА syntax: ")
+    assert len(message_part) <= 120  # точный ассерт (ревью S21): текст ошибки ≤120
 
 
 def test_observation_empty_result_only_header() -> None:
@@ -133,6 +134,27 @@ def test_observation_empty_result_only_header() -> None:
         )
     )
     assert stream.getvalue() == "  ← 0 строк (усечён: нет)\n"
+
+
+def test_observation_columns_capped_not_silently() -> None:
+    # Ревью S21 (Minor): кап колонок не молчит — оператор видит хвост
+    tracer, stream = _tracer()
+    tracer.record(
+        Trace(
+            event="agent.observation",
+            payload={
+                "ok": True,
+                "columns": [f"col_{n}" for n in range(1, 13)],  # 12 колонок
+                "rows_preview": [{f"col_{n}": n for n in range(1, 13)}],
+                "row_count": 1,
+                "truncated": False,
+            },
+        )
+    )
+    out = stream.getvalue()
+    assert "col_8" in out
+    assert "col_9" not in out.splitlines()[2]  # в таблице только первые 8
+    assert "… ещё 4 колонок" in out  # хвост показан явно, полный набор — в JSONL
 
 
 def test_degrade_answer_and_unknown_event() -> None:

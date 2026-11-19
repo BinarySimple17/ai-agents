@@ -33,7 +33,9 @@ from text_to_sql_agent.domain.entities import Trace
 
 _CELL_MAX_CHARS = 20  # ячейка таблицы результата (и имя колонки) — компактность строки
 _COLUMNS_MAX = 8  # колонок в таблице — защита от раздутой строки консоли
-_SQL_DISPLAY_MAX_CHARS = 120  # SQL тулa — одна строка консоли
+# 100, не 120: с префиксом «  → run_sql: » (13) влезает в строку терминала —
+# 120 давал визуальный перенос на скриншоте владельца (CLI.png, ревью S21)
+_SQL_DISPLAY_MAX_CHARS = 100
 _MESSAGE_MAX_CHARS = 120  # текст ошибки / вопрос / причина — одна строка консоли
 _MS_PER_S = 1000.0
 
@@ -100,7 +102,8 @@ def _render_observation(payload: dict[str, Any]) -> str:
         return f"  ← ОШИБКА {error_class}: {message}"
     truncated = "да" if payload.get("truncated") else "нет"
     header = f"  ← {payload.get('row_count', 0)} строк (усечён: {truncated})"
-    columns = [str(column) for column in (payload.get("columns") or [])[:_COLUMNS_MAX]]
+    all_columns = [str(column) for column in (payload.get("columns") or [])]
+    columns = all_columns[:_COLUMNS_MAX]  # кап не молча: хвост отображается ниже (ревью S21)
     rows = list(payload.get("rows_preview") or [])[:OBSERVATION_PREVIEW_ROWS]
     if not columns:
         return header
@@ -123,6 +126,9 @@ def _render_observation(payload: dict[str, Any]) -> str:
     row_count = payload.get("row_count", 0)
     if row_count > len(rows):
         lines.append(f"    … показаны первые {len(rows)} из {row_count}")
+    hidden_columns = len(all_columns) - len(columns)
+    if hidden_columns > 0:
+        lines.append(f"    … ещё {hidden_columns} колонок (полный набор — в JSONL-трейсе)")
     return "\n".join(lines)
 
 

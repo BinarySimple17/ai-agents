@@ -13,7 +13,7 @@
 | `services/join_graph` | — | — | — | — | feat-007 |
 | `services/db` (execute/seed) | A | A | A | A | feat-002 ✅ + feat-013 ✅ (миграции 0001–0004; исполнитель agent_ro — extended protocol, LIMIT 1001+пост-срез, SET LOCAL timeout, RLS-tripwire — 14 integration; чистая комната); заявки/ETL-гранты — S07/S10 |
 | `services/cache` | — | — | — | — | feat-016 |
-| `cli/` | A | A | A | A | feat-013 ✅ + S21 ✅ (function-calling цикл: кап 3 хода, ретраи пустых/битых не расходуют кап, деградация шлюза — 23 unit; события `agent.*` через порт Tracer + рендер ConsoleTracer/TeeTracer в stderr — 11 unit, observability §2.4, D-022; layer-3 живые прогоны на LM Studio D-020); FSM-подключение — feat-004 |
+| `cli/` | A | A | A | A | feat-013 ✅ + S21 ✅ (function-calling цикл: кап 3 хода, ретраи пустых/битых не расходуют кап, деградация шлюза — 26 unit; события `agent.*` через порт Tracer + рендер ConsoleTracer/TeeTracer в stderr — 13 unit, observability §2.4, D-022; layer-3 живые прогоны на LM Studio D-020); FSM-подключение — feat-004 |
 
 ## How to Update
 
