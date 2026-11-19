@@ -170,6 +170,165 @@ def test_tools_passed_through() -> None:
     assert completions.kwargs[0]["tools"] == tools
 
 
+# --- reasoning_content: локальный шлюз (D-020) уносит ответ в think-поле ---
+def _reasoning_response(
+    *,
+    content: str | None,
+    reasoning: str | None,
+    tool_calls: list[Any] | None,
+) -> Any:
+    """Шлюз в форме «reasoning отдельным полем» (прогон 2026-11-19)."""
+    return SimpleNamespace(
+        model="mid-1",
+        usage=SimpleNamespace(prompt_tokens=100, completion_tokens=20),
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(
+                    content=content,
+                    reasoning_content=reasoning,
+                    tool_calls=tool_calls,
+                )
+            )
+        ],
+    )
+
+
+_TOOL_CALL = SimpleNamespace(
+    id="t1",
+    function=SimpleNamespace(name="run_sql", arguments='{"sql":"SELECT 1"}'),
+)
+
+
+def test_reasoning_content_used_as_text_when_content_empty() -> None:
+    # Регрессия на прогон 2026-11-19: финальный ответ в reasoning_content при
+    # content="" — раньше цикл получал «ни текста, ни тулов» и уходил в
+    # деградацию, хотя ответ у модели был.
+    provider, _, _, _ = _provider(
+        [
+            _reasoning_response(
+                content="", reasoning="Ответ: невозможно определить.", tool_calls=None
+            )
+        ]
+    )
+    response = provider.complete("mid", _MESSAGES)
+    assert response.text == "Ответ: невозможно определить."
+    assert response.tool_calls == []
+
+
+def test_content_takes_precedence_over_reasoning_content() -> None:
+    # Финальный текст из content всегда главнее think-поля.
+    provider, _, _, _ = _provider(
+        [
+            _reasoning_response(
+                content="Финальный ответ", reasoning="черновик размышления", tool_calls=None
+            )
+        ]
+    )
+    assert provider.complete("mid", _MESSAGES).text == "Финальный ответ"
+
+
+def test_reasoning_content_ignored_when_tool_calls_present() -> None:
+    # Ход с тулом: reasoning не становится текстом ответа — content пуст это
+    # норма хода с тулом, историю формирует блок tool_calls.
+    provider, _, _, _ = _provider(
+        [_reasoning_response(content="", reasoning="какой SQL звать?", tool_calls=[_TOOL_CALL])]
+    )
+    response = provider.complete("mid", _MESSAGES)
+    assert response.text is None
+    assert [call.name for call in response.tool_calls] == ["run_sql"]
+
+
+def test_gateway_without_reasoning_field_unchanged() -> None:
+    # Сообщение вовсе без поля reasoning_content (чужой шлюз / облако):
+    # getattr-фолбэк не ломает — прежнее поведение (text=None).
+    ok = _ok_response()
+    ok.choices[0].message = SimpleNamespace(content=None, tool_calls=None)
+    provider, _, _, _ = _provider([ok])
+    assert provider.complete("mid", _MESSAGES).text is None
+
+
+def test_whitespace_content_falls_back_to_reasoning() -> None:
+    # Whitespace-only content = «текста нет»: CLI печатал бы визуально пустой
+    # ответ вместо ретрая (ревью Minor-4); reasoning берётся с обрезкой краёв.
+    provider, _, _, _ = _provider(
+        [
+            _reasoning_response(
+                content="   ", reasoning="  Ответ по краям в пробелах.  ", tool_calls=None
+            )
+        ]
+    )
+    assert provider.complete("mid", _MESSAGES).text == "Ответ по краям в пробелах."
+
+
+# --- настоящий SDK-объект: поле reasoning_content выживает через extra="allow" ---
+def _sdk_completion(finish_reason: str, reasoning: str) -> Any:
+    return openai.types.chat.ChatCompletion.model_validate(
+        {
+            "id": "chatcmpl-test",
+            "object": "chat.completion",
+            "created": 1795112403,
+            "model": "mid-1",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": "",
+                        "reasoning_content": reasoning,
+                    },
+                    "finish_reason": finish_reason,
+                }
+            ],
+            "usage": {"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120},
+        }
+    )
+
+
+def test_real_sdk_reasoning_stop_becomes_text() -> None:
+    # M3: SimpleNamespace не гарантирует поведение SDK — на настоящем
+    # ChatCompletionMessage extra-поле должно дожить до фолбэка (иначе апгрейд
+    # SDK мог бы молча отключить его, оставив тесты зелёными).
+    provider, _, _, _ = _provider([_sdk_completion("stop", "Ответ из reasoning.")])
+    assert provider.complete("mid", _MESSAGES).text == "Ответ из reasoning."
+
+
+def test_real_sdk_finish_reason_length_does_not_promote_reasoning() -> None:
+    # Регрессия I1 (ревью): reasoning, оборванный по лимиту токенов (length) или
+    # заблокированный фильтром (content_filter), — не ответ; фолбэк обходит их,
+    # иначе пользователь получает частичный CoT / обход политики шлюза.
+    provider, _, _, _ = _provider([_sdk_completion("length", "оборванная мысль…")])
+    assert provider.complete("mid", _MESSAGES).text is None
+    provider2, _, _, _ = _provider([_sdk_completion("content_filter", "заблокировано")])
+    assert provider2.complete("mid", _MESSAGES).text is None
+
+
+def test_real_sdk_finish_reason_tool_calls_without_tools_no_reasoning_text() -> None:
+    # Re-review Minor-4: finish_reason заявляет tool-ход, а тулов в сообщении нет
+    # (несогласованный шлюз) — reasoning такого хода не финальный ответ, путь
+    # CLI — ретрай/деградация, как до фолбэка.
+    provider, _, _, _ = _provider([_sdk_completion("tool_calls", "надо вызвать run_sql…")])
+    assert provider.complete("mid", _MESSAGES).text is None
+
+
+def test_trace_records_reasoning_provenance(tmp_path: Path) -> None:
+    # M2: по трейсу видно, что текст пришёл из think-поля, и почему
+    # (finish_reason) — инцидент 2026-11-19 был в трейсе неотличим от нормы.
+    tracer = JsonlTracer(tmp_path / "trace.jsonl")
+    provider, _, _, _ = _provider(
+        [_reasoning_response(content="", reasoning="Ответ.", tool_calls=None)],
+        tracer=tracer,
+    )
+    provider.complete("mid", _MESSAGES)
+    record = json.loads((tmp_path / "trace.jsonl").read_text(encoding="utf-8").splitlines()[0])
+    assert record["event"] == "llm.complete"
+    assert record["payload"]["text_from_reasoning"] is True
+    assert record["payload"]["finish_reason"] is None  # мок без поля — guard пропускает
+    provider2, _, _, _ = _provider([_sdk_completion("stop", "Ответ.")], tracer=tracer)
+    provider2.complete("mid", _MESSAGES)
+    record2 = json.loads((tmp_path / "trace.jsonl").read_text(encoding="utf-8").splitlines()[-1])
+    assert record2["payload"]["finish_reason"] == "stop"
+
+
 def test_usage_counts_toward_budget() -> None:
     provider, _, _, _ = _provider([_ok_response()])
     provider.complete("cheap", _MESSAGES)
