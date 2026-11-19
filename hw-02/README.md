@@ -119,6 +119,30 @@ make infra-up && make infra-migrate
 uv run python -m apps.cli "Сколько заказов у клиентов из Москвы?"
 ```
 
+Этапы работы агента идут в stderr (S21/BL-004, D-022): вызовы модели с токами/
+латентностью, SQL тулa, результат строками (≤5), ошибки, ретраи, деградация;
+`--quiet` глушит этапы — stdout остаётся только с ответом:
+
+```text
+▶ Вопрос: Сколько заказов у клиентов из Москвы?
+─ Ход 1
+  · qwen3.8-9b · 584→212 ток · 4.1с · 0.00₽
+  → run_sql: SELECT COUNT(*) AS order_count FROM orders o JOIN customers c
+      ON o.customer_id = c.customer_id WHERE c.country = 'Russia' AND c.city = 'Moscow'
+  ← ОШИБКА syntax: БД отклонила запрос (syntax): column c.city does not exist
+─ Ход 2
+  · qwen3.8-9b · 725→64 ток · 1.2с · 0.00₽
+  → run_sql: SELECT customer_id, name, country FROM customers LIMIT 5
+  ← 5 строк (усечён: нет)
+    │ customer_id │ name       │ country
+    │ 1           │ Иванов     │ Russia
+    │ 2           │ Петрова    │ Russia
+    │ …
+─ Ход 3
+  · qwen3.8-9b · 943→91 ток · 1.7с · 0.00₽
+✓ ответ (text)
+```
+
 LLM — локальный LM Studio (D-020: пустой `LLM_BASE_URL` → `http://127.0.0.1:1234/v1`,
 `qwen3.8-9b`); облако routerai.ru — по `.env.example`. Верификация фичи —
 `make verify-feature F=feat-013`.
