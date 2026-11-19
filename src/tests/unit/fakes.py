@@ -4,7 +4,7 @@ from text_to_sql_agent.application.ports.sql_executor import (
     QueryResult,
     SQLExecutionError,
 )
-from text_to_sql_agent.domain.entities import RunContext
+from text_to_sql_agent.domain.entities import RunContext, Trace
 
 UNIT_CTX = RunContext(trace_id="unit-s13", user_id="tester")
 
@@ -28,3 +28,16 @@ class FakeExecutor:
         if self.error is not None:
             raise self.error
         return self.result
+
+
+class RecordingTracer:
+    """Двойник `Tracer`: собирает события — проверки последовательности и payload."""
+
+    def __init__(self) -> None:
+        self.events: list[Trace] = []
+
+    def record(self, trace: Trace) -> None:
+        self.events.append(trace)
+
+    def names(self) -> list[str]:
+        return [trace.event for trace in self.events]

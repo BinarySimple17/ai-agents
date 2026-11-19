@@ -11,11 +11,13 @@ from decimal import Decimal
 from apps.cli import (
     DATA_MARKING,
     DEGRADED_ANSWER,
+    EMPTY_RESPONSE_RETRIES,
     MAX_TOOL_CALLS,
     OBSERVATION_MAX_ROWS,
+    OBSERVATION_PREVIEW_ROWS,
     run_tool_loop,
 )
-from tests.unit.fakes import UNIT_CTX, FakeExecutor
+from tests.unit.fakes import UNIT_CTX, FakeExecutor, RecordingTracer
 from text_to_sql_agent.application.ports.llm_provider import CircuitOpenError, LLMResponse, ToolCall
 from text_to_sql_agent.application.ports.sql_executor import (
     QueryResult,
@@ -58,9 +60,9 @@ def _tool_call(sql: str = "SELECT 1", call_id: str = "call-1") -> LLMResponse:
     )
 
 
-def _loop(llm: FakeLLM, executor: FakeExecutor | None = None) -> str:
+def _loop(llm: FakeLLM, executor: FakeExecutor | None = None, tracer: object | None = None) -> str:
     tool = RunSqlTool(executor or FakeExecutor())
-    return run_tool_loop("вопрос", llm=llm, tool=tool, ctx=UNIT_CTX)
+    return run_tool_loop("вопрос", llm=llm, tool=tool, ctx=UNIT_CTX, tracer=tracer)  # type: ignore[arg-type]
 
 
 def test_immediate_answer_without_tool() -> None:
@@ -225,3 +227,92 @@ def test_llm_provider_error_degrades_not_traceback() -> None:
     answer = run_tool_loop("вопрос", llm=llm, tool=RunSqlTool(FakeExecutor()), ctx=UNIT_CTX)
     assert "шлюз LLM недоступен" in answer
     assert "circuit breaker" in answer
+
+
+# --- события agent.* через порт Tracer (S21 Task 4, BL-004/D-022) ---
+def test_events_sequence_tool_call_flow() -> None:
+    tracer = RecordingTracer()
+    llm = FakeLLM([_tool_call("SELECT 40 + 2"), _text("Ответ: 42")])
+    assert _loop(llm, tracer=tracer) == "Ответ: 42"
+    assert tracer.names() == [
+        "agent.start",
+        "agent.round",
+        "agent.tool_call",
+        "agent.observation",
+        "agent.round",
+        "agent.answer",
+    ]
+    start = tracer.events[0].payload
+    assert start["question"] == "вопрос"
+    assert start["trace_id"] == UNIT_CTX.trace_id  # корреляция §3 observability
+    tool_event = tracer.events[2].payload
+    assert tool_event["name"] == "run_sql"
+    assert tool_event["sql"] == "SELECT 40 + 2"
+    obs = tracer.events[3].payload
+    assert obs["ok"] is True
+    assert obs["columns"] == ["id"]
+    assert obs["rows_preview"] == [{"id": 1}]
+    assert obs["row_count"] == 1
+    assert obs["truncated"] is False
+    assert tracer.events[-1].payload["source"] == "text"
+
+
+def test_observation_event_preview_capped_at_five() -> None:
+    # BL-004 (требование владельца): результат строками, но превью ≤5;
+    # контекст модели не меняется (OBSERVATION_MAX_ROWS=20 остаётся)
+    rows = [{"n": n} for n in range(1, 11)]
+    executor = FakeExecutor(result=QueryResult(columns=["n"], rows=rows, row_count=10))
+    tracer = RecordingTracer()
+    llm = FakeLLM([_tool_call(), _text("Готово")])
+    _loop(llm, executor, tracer)
+    obs = tracer.events[3].payload
+    assert len(obs["rows_preview"]) == OBSERVATION_PREVIEW_ROWS
+    assert obs["row_count"] == 10
+
+
+def test_observation_error_event_carries_class() -> None:
+    executor = FakeExecutor(
+        error=SQLExecutionError("БД отклонила запрос (timeout)", SQLFailureClass.TIMEOUT)
+    )
+    tracer = RecordingTracer()
+    llm = FakeLLM([_tool_call(), _text("Готово")])
+    _loop(llm, executor, tracer)
+    obs = tracer.events[3].payload
+    assert obs["ok"] is False
+    assert obs["error_class"] == "timeout"
+    assert "timeout" in obs["error"]
+
+
+def test_events_empty_retry_and_degrade() -> None:
+    empty = LLMResponse(text=None, model="fake-1")
+    tracer = RecordingTracer()
+    llm = FakeLLM([empty, empty, empty])
+    assert _loop(llm, tracer=tracer) == DEGRADED_ANSWER
+    assert tracer.names().count("agent.empty_retry") == EMPTY_RESPONSE_RETRIES
+    assert tracer.names()[-1] == "agent.degrade"
+
+
+def test_events_cap_exhausted_and_final_no_tools() -> None:
+    tracer = RecordingTracer()
+    script = [_tool_call(call_id=f"call-{n}") for n in range(MAX_TOOL_CALLS)]
+    script.append(_text("Финал"))
+    llm = FakeLLM(script)
+    assert _loop(llm, tracer=tracer) == "Финал"
+    names = tracer.names()
+    assert names.count("agent.tool_call") == MAX_TOOL_CALLS
+    assert "agent.cap_exhausted" in names
+    assert tracer.events[-1].payload["source"] == "final_no_tools"
+
+
+def test_events_gateway_degradation() -> None:
+    tracer = RecordingTracer()
+    answer = run_tool_loop(
+        "вопрос",
+        llm=CircuitOpenLLM(),
+        tool=RunSqlTool(FakeExecutor()),
+        ctx=UNIT_CTX,
+        tracer=tracer,  # type: ignore[arg-type] — тестовый двойник порта
+    )
+    assert "шлюз LLM недоступен" in answer
+    assert tracer.names()[-1] == "agent.degrade"
+    assert "circuit breaker" in tracer.events[-1].payload["reason"]

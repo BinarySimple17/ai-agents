@@ -103,10 +103,14 @@ def _render_observation(payload: dict[str, Any]) -> str:
     ]
     lines = [
         header,
-        "    " + "│".join(f" {name:<{width}} " for name, width in zip(names, widths, strict=True)),
+        "    │ "
+        + " │ ".join(f"{name:<{width}}" for name, width in zip(names, widths, strict=True))
+        + " │",
     ]
     lines.extend(
-        "    " + "│".join(f" {cell:<{width}} " for cell, width in zip(row, widths, strict=True))
+        "    │ "
+        + " │ ".join(f"{cell:<{width}}" for cell, width in zip(row, widths, strict=True))
+        + " │"
         for row in cells
     )
     row_count = payload.get("row_count", 0)
