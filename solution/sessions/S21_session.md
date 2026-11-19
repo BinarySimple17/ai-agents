@@ -37,7 +37,7 @@ Observation в контекст модели не меняется (OBSERVATION_
 ## Предусловия
 
 - [ ] S03 закрыта: `make check` → зелёный (провайдер + трейсер в наборе)
-- [ ] S13 закрыта: `uv run pytest src/tests/unit/test_tool_loop.py -q` → 18 passed
+- [ ] S13 закрыта: `uv run pytest src/tests/unit/test_tool_loop.py -q` → 17 passed
 - [ ] `make check` зелёный (baseline репозитория)
 - [ ] Зависимостей-фич нет (сессия без фичи); ветка `s21-cli-stage-observability` от `dev`
 
@@ -93,7 +93,7 @@ uv run python -c "from text_to_sql_agent.infrastructure.observability.console_tr
 **✅ Самопроверка:**
 
 ```bash
-uv run pytest src/tests/unit/test_tool_loop.py -q   # прежние 18 passed (совместимость)
+uv run pytest src/tests/unit/test_tool_loop.py -q   # прежние 17 passed (совместимость)
 ```
 
 ---
