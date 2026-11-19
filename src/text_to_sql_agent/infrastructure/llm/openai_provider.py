@@ -263,8 +263,17 @@ class OpenAIProvider:
             ToolCall(id=call.id, name=call.function.name, arguments=call.function.arguments)
             for call in (message.tool_calls or [])
         ]
+        text = message.content or None  # пустая строка шлюза = «текста нет» (порт: str | None)
+        if text is None and not tool_calls:
+            # Локальный контур (D-020): reasoning-модель может унести финальный
+            # ответ в reasoning_content — ответ внутри think-блока, content пуст
+            # (прогон 2026-11-19: content="" при готовом ответе). Без фолбэка
+            # цикл видит «ни текста, ни тулов» и уходит в деградацию с живым
+            # ответом в руке. Поле — расширение шлюза, читается getattr: шлюз
+            # без него ведёт себя как прежде (text остаётся None).
+            text = getattr(message, "reasoning_content", None) or None
         llm_response = LLMResponse(
-            text=message.content,
+            text=text,
             tool_calls=tool_calls,
             usage=usage,
             model=response.model,

@@ -170,6 +170,83 @@ def test_tools_passed_through() -> None:
     assert completions.kwargs[0]["tools"] == tools
 
 
+# --- reasoning_content: локальный шлюз (D-020) уносит ответ в think-поле ---
+def _reasoning_response(
+    *,
+    content: str | None,
+    reasoning: str | None,
+    tool_calls: list[Any] | None,
+) -> Any:
+    """Шлюз в форме «reasoning отдельным полем» (прогон 2026-11-19)."""
+    return SimpleNamespace(
+        model="mid-1",
+        usage=SimpleNamespace(prompt_tokens=100, completion_tokens=20),
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(
+                    content=content,
+                    reasoning_content=reasoning,
+                    tool_calls=tool_calls,
+                )
+            )
+        ],
+    )
+
+
+_TOOL_CALL = SimpleNamespace(
+    id="t1",
+    function=SimpleNamespace(name="run_sql", arguments='{"sql":"SELECT 1"}'),
+)
+
+
+def test_reasoning_content_used_as_text_when_content_empty() -> None:
+    # Регрессия на прогон 2026-11-19: финальный ответ в reasoning_content при
+    # content="" — раньше цикл получал «ни текста, ни тулов» и уходил в
+    # деградацию, хотя ответ у модели был.
+    provider, _, _, _ = _provider(
+        [
+            _reasoning_response(
+                content="", reasoning="Ответ: невозможно определить.", tool_calls=None
+            )
+        ]
+    )
+    response = provider.complete("mid", _MESSAGES)
+    assert response.text == "Ответ: невозможно определить."
+    assert response.tool_calls == []
+
+
+def test_content_takes_precedence_over_reasoning_content() -> None:
+    # Финальный текст из content всегда главнее think-поля.
+    provider, _, _, _ = _provider(
+        [
+            _reasoning_response(
+                content="Финальный ответ", reasoning="черновик размышления", tool_calls=None
+            )
+        ]
+    )
+    assert provider.complete("mid", _MESSAGES).text == "Финальный ответ"
+
+
+def test_reasoning_content_ignored_when_tool_calls_present() -> None:
+    # Ход с тулом: reasoning не становится текстом ответа — content пуст это
+    # норма хода с тулом, историю формирует блок tool_calls.
+    provider, _, _, _ = _provider(
+        [_reasoning_response(content="", reasoning="какой SQL звать?", tool_calls=[_TOOL_CALL])]
+    )
+    response = provider.complete("mid", _MESSAGES)
+    assert response.text is None
+    assert [call.name for call in response.tool_calls] == ["run_sql"]
+
+
+def test_gateway_without_reasoning_field_unchanged() -> None:
+    # Сообщение вовсе без поля reasoning_content (чужой шлюз / облако):
+    # getattr-фолбэк не ломает — прежнее поведение (text=None).
+    ok = _ok_response()
+    ok.choices[0].message = SimpleNamespace(content=None, tool_calls=None)
+    provider, _, _, _ = _provider([ok])
+    assert provider.complete("mid", _MESSAGES).text is None
+
+
 def test_usage_counts_toward_budget() -> None:
     provider, _, _, _ = _provider([_ok_response()])
     provider.complete("cheap", _MESSAGES)
