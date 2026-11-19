@@ -63,6 +63,11 @@ _BACKOFF_ATTEMPTS = 4  # попытки 0..3: паузы 1(+j), 2(+j), 4(+j) —
 _BREAKER_THRESHOLD = 5
 _BREAKER_COOLDOWN_S = 60.0
 _JITTER_SHARE = 0.5  # jitter: base + uniform(0, base/2) — ADR-007 §4.3
+# finish_reason, при которых reasoning_content не может считаться ответом:
+# length — текст оборван по лимиту токенов (частичный CoT), content_filter —
+# контент заблокирован политикой шлюза (фолбэк не должен обходить блокировку).
+# Строго "stop" не требуется — часть шлюзов поле не отдаёт (ревью Important-1).
+_NO_TEXT_FALLBACK_REASONS = frozenset({"length", "content_filter"})
 
 
 def _jittered(base_s: float, rng: random.Random) -> float:
@@ -259,19 +264,26 @@ class OpenAIProvider:
 
         choice = response.choices[0]
         message = choice.message
+        finish_reason = getattr(choice, "finish_reason", None)
         tool_calls = [
             ToolCall(id=call.id, name=call.function.name, arguments=call.function.arguments)
             for call in (message.tool_calls or [])
         ]
-        text = message.content or None  # пустая строка шлюза = «текста нет» (порт: str | None)
-        if text is None and not tool_calls:
-            # Локальный контур (D-020): reasoning-модель может унести финальный
-            # ответ в reasoning_content — ответ внутри think-блока, content пуст
-            # (прогон 2026-11-19: content="" при готовом ответе). Без фолбэка
-            # цикл видит «ни текста, ни тулов» и уходит в деградацию с живым
-            # ответом в руке. Поле — расширение шлюза, читается getattr: шлюз
-            # без него ведёт себя как прежде (text остаётся None).
-            text = getattr(message, "reasoning_content", None) or None
+        # Пустой/whitespace-only content = «текста нет» (порт: str | None) —
+        # иначе CLI печатает визуально пустой ответ вместо ретрая (ревью Minor-4).
+        text = (message.content or "").strip() or None
+        text_from_reasoning = False
+        if text is None and not tool_calls and finish_reason not in _NO_TEXT_FALLBACK_REASONS:
+            # Любой шлюз может отдать финальный ответ в reasoning_content — ответ
+            # внутри think-блока при пустом content (наблюдение 2026-11-19,
+            # локальный qwen3.8-9b; облачные reasoning-модели — тот же риск).
+            # Без фолбэка цикл видит «ни текста, ни тулов» и уходит в деградацию
+            # с живым ответом в руке. Поле — расширение шлюза, читается getattr:
+            # шлюз без него ведёт себя как прежде (text остаётся None). Guard по
+            # finish_reason: обрезанный/отфильтрованный reasoning — не ответ
+            # (ревью Important-1); provenance виден в трейсе (text_from_reasoning).
+            text = (getattr(message, "reasoning_content", None) or "").strip() or None
+            text_from_reasoning = text is not None
         llm_response = LLMResponse(
             text=text,
             tool_calls=tool_calls,
@@ -285,6 +297,8 @@ class OpenAIProvider:
             tokens_in=usage.tokens_in,
             tokens_out=usage.tokens_out,
             usage_missing=raw_usage is None,  # шлюз без usage — стоимость 0 не маскируется
+            text_from_reasoning=text_from_reasoning,  # ответ из think-поля, не из content
+            finish_reason=finish_reason,
             cost_rub=round(cost_rub, 6),
             latency_ms=round(latency_s * 1000),
             budget_used_rub=round(self._budget_used_rub, 6),

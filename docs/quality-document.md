@@ -6,7 +6,7 @@
 
 | Module | Correctness | Arch compliance | Test coverage | Verification evidence | Notes |
 |---|---|---|---|---|---|
-| `services/llm` (Settings + LLMProvider + OpenAIProvider + Tracer) | A | A | A | A | feat-003 ✅ + D-020 (41 unit на моках + 14 infra; ARCH-GATE rulings; REVIEW-GATE fix-волны → re-review; fuse best-effort — жёсткий контроль S15; embed — S06; smoke Layer 3 выполнен локально — D-020: LM Studio qwen3.8-9b, 3 роли, cost 0) |
+| `services/llm` (Settings + LLMProvider + OpenAIProvider + Tracer) | A | A | A | A | feat-003 ✅ + D-020 + D-021 (45 unit на моках + 14 infra; ARCH-GATE rulings; REVIEW-GATE fix-волны → re-review; reasoning_content-фолбэк с guard по finish_reason и trace-провенансом — D-021; fuse best-effort — жёсткий контроль S15; embed — S06; smoke Layer 3 выполнен локально — D-020: LM Studio qwen3.8-9b, 3 роли, cost 0) |
 | `graph/` (state machine) | — | — | — | — | feat-004 |
 | `domain/` (validate/rbac) | — | — | — | — | feat-005, feat-011 |
 | `services/vector` | — | — | — | — | feat-006 |
