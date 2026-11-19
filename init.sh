@@ -14,6 +14,15 @@ if [ -d .githooks ]; then
   chmod +x .githooks/* 2>/dev/null || true
 fi
 
+# Гейт старта сессии (D-023, AGENTS.md Startup Workflow шаг 8): консистентность файла
+# сессии + ARCH-GATE обязателен ДО старта работ. Отсутствие активной сессии (свежий
+# клон / всё заархивировано) — WARN, не блокер; недозаполненные чекбоксы — [FIX].
+# Незаполненный ARCH-GATE = FAIL: make check остаётся красным до canon-check (✅/N/A).
+# Fail-fast: до uv-шагов — сессия не начинается с незакрытым архитектурным контролем.
+if [ -f scripts/guard-subagents.sh ]; then
+  bash scripts/guard-subagents.sh --phase start
+fi
+
 if [ -f pyproject.toml ]; then
   echo "=== Running Python verification (uv) ==="
   command -v uv >/dev/null 2>&1 || {
@@ -39,6 +48,12 @@ if [ -f pyproject.toml ]; then
 
   # Синтаксис всех исходников (код, миграции, тесты — всё в src/)
   uv run python -m compileall -q src
+
+  # Self-test гварда субагентов: он — гейт в этой цепочке, поэтому верифицируется
+  # на каждом прогоне (фикстурные кейсы обеих фаз, см. шапку теста)
+  if [ -f scripts/tests/test-guard-subagents.sh ]; then
+    bash scripts/tests/test-guard-subagents.sh
+  fi
 else
   echo "No recognized package manifest detected."
   echo "Ожидается pyproject.toml в корне проекта (см. feat-001 в feature_list.json)."
