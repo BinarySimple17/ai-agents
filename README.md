@@ -1,4 +1,4 @@
-# ai-agents — Text-to-SQL аналитик данных (ДЗ 1)
+# ai-agents — Text-to-SQL аналитик данных
 
 Агент-аналитик данных: принимает бизнес-вопрос на естественном языке, строит
 многотабличный SQL по графу связей, безопасно выполняет его под read-only
@@ -6,7 +6,6 @@
 
 - **Живые прикладные требования**: [docs/prd.md](docs/prd.md) (трекаемый архитектурный пакет — вся работа здесь)
 - **Историческая полная спецификация** (READ ONLY, вне гита): `.docs/hw-01/README.md`
-- **Решение ДЗ-1** (подготовленный к сдаче документ): [hw-01/README.md](hw-01/README.md) — папки `hw-NN/` содержат решения ДЗ NN
 - **Архитектурный пакет v1.8** (11 ADR, C4 L1–L3, FSM, ER, prd, security): [docs/arch-package.md](docs/arch-package.md)
 - **Краткие свёртки для агента**: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), [docs/PRODUCT.md](docs/PRODUCT.md), канон — [solution/sessions/S00_session.md](solution/sessions/S00_session.md)
 - **Правила работы ИИ-агента**: [AGENTS.md](AGENTS.md) — старт сессии, правило «одна фича за раз», Definition of Done, End of Session
@@ -19,7 +18,7 @@
 cp .env.example .env          # локально ничего; для облака — LLM_BASE_URL + ключ
 ./init.sh                     # установка зависимостей + верификация (make check)
 make infra-up                 # PostgreSQL + Valkey (по требованию)
-make dev Q="Сколько заказов у клиентов из Москвы?"
+make dev Q="Сколько заказов у клиентов из РФ?"
 ```
 
 Верификация фич — `make verify-feature F=feat-XXX`; состояние фич — `feature_list.json`.

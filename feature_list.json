@@ -99,7 +99,7 @@
         },
         {
           "label": "layer-3-e2e",
-          "cmd": "uv run python -m apps.cli \"Сколько заказов у клиентов из Москвы?\" (заглушки: порядок узлов в выводе)",
+          "cmd": "uv run python -m apps.cli \"Сколько заказов у клиентов из РФ?\" (заглушки: порядок узлов в выводе)",
           "repair": "Fix composition root / CLI wiring, re-run manually."
         }
       ]
@@ -334,7 +334,7 @@
         },
         {
           "label": "layer-3-e2e",
-          "cmd": "uv run python -m apps.cli \"Сколько заказов у клиентов из Москвы?\" — LLM сам вызывает run_sql и комментирует результат (ручной прогон, нужен LLM_API_KEY; hw-plan §2)",
+          "cmd": "uv run python -m apps.cli \"Сколько заказов у клиентов из РФ?\" — LLM сам вызывает run_sql и комментирует результат (ручной прогон, нужен LLM_API_KEY; hw-plan §2)",
           "repair": "Fix JSON-схему тулa / function-calling цикл в apps.cli, re-run manually."
         }
       ]

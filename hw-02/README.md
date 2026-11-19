@@ -119,34 +119,27 @@ Observation для модели (S21 Task 6): ответ — значения в
 
 ```bash
 make infra-up && make infra-migrate
-uv run python -m apps.cli "Сколько заказов у клиентов из Москвы?"
+uv run python -m apps.cli "Сколько заказов у клиентов из РФ?"
 ```
 
 Этапы работы агента идут в stderr (S21/BL-004, D-022): вызовы модели с токами/
 латентностью, SQL тулa, результат строками (≤5), ошибки, ретраи, деградация;
 `--quiet` глушит этапы — stdout остаётся только с ответом. Фрагмент реального
-прогона (stderr; скриншот — [CLI.png](CLI.png), лог шлюза инцидента
-самокоррекции — [lmstudio-logs.txt](lmstudio-logs.txt)):
+прогона (stderr; скриншот — [CLI.png](CLI.png), лог шлюза штатного прогона (2 вопроса) — [lmstudio-logs.txt](lmstudio-logs.txt)):
 
 ```text
-▶ Вопрос: Сколько заказов у клиентов из Москвы?
+▶ Вопрос: Сколько заказов у Всех клиентов из РФ?
 ─ Ход 1
-  · qwen3.8-9b · 584→212 ток · 4.0с · 0.00₽
-  → run_sql: SELECT COUNT(*) AS order_count FROM orders o JOIN customers c ON o.customer_id = c.customer_id WHER…
-  ← ОШИБКА syntax: БД отклонила запрос (syntax): column c.city does not exist LINE 1: ...id = c.customer_id WHERE c.country = 'Russia' AND…
+  · qwen3.8-9b · 627→130 ток · 2.5с · 0.00₽
+  → run_sql: SELECT COUNT(*) AS total_orders FROM orders o JOIN customers c ON o.customer_id = c.customer_id WHERE c.cou
+ntry = 'Russ…
+  ← 1 строк (усечён: нет)
+    │ total_orders │
+    │ 100          │
 ─ Ход 2
-  · qwen3.8-9b · 725→64 ток · 1.3с · 0.00₽
-  → run_sql: SELECT customer_id, name, country FROM customers LIMIT 5;
-  ← 5 строк (усечён: нет)
-    │ customer_id │ name       │ country │
-    │ 1           │ Customer 1 │ KZ      │
-    │ 2           │ Customer 2 │ DE      │
-    │ 3           │ Customer 3 │ BY      │
-    │ 4           │ Customer 4 │ RU      │
-    │ 5           │ Customer 5 │ KZ      │
-─ Ход 3
-  · qwen3.8-9b · 943→91 ток · 2.0с · 0.00₽ [ответ из reasoning]
+  · qwen3.8-9b · 762→48 ток · 1.1с · 0.00₽
 ✓ ответ (text)
+У всех клиентов из РФ — **100 заказов**.
 ```
 
 LLM — локальный LM Studio (D-020: пустой `LLM_BASE_URL` → `http://127.0.0.1:1234/v1`,
