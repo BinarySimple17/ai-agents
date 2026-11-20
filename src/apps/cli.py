@@ -182,7 +182,7 @@ def _run_loop(
     tool_rounds_used = 0
     model_calls = 0
     empty_retries_left = EMPTY_RESPONSE_RETRIES
-    _emit(tracer, EVENT_AGENT_START, trace_id=ctx.trace_id, question=question)
+    _emit(tracer, EVENT_AGENT_START, trace_id=ctx.trace_id, question=question, mode="tool_loop")
     while tool_rounds_used < max_tool_calls:
         model_calls += 1
         _emit(tracer, EVENT_AGENT_ROUND, trace_id=ctx.trace_id, call=model_calls)

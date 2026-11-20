@@ -21,7 +21,7 @@ DTO стыка — pydantic и живут здесь (прецедент: `sql_e
 from enum import StrEnum
 from typing import Protocol, runtime_checkable
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from text_to_sql_agent.domain.entities import RunContext
 
@@ -58,6 +58,17 @@ class KnowledgeDocument(BaseModel):
     model_version: str = Field(min_length=1)
     source_ref: str = Field(min_length=1)  # ключ идемпотентного upsert
     score: float | None = None  # близость к запросу — пишет адаптер при поиске
+
+    @model_validator(mode="after")
+    def _anchor_is_declared(self) -> "KnowledgeDocument":
+        # Defense-in-depth (ревью-2): якорь без объявления сделал бы документ
+        # публичным при '{}' — таблица-якорь обязана быть в referenced_tables
+        if self.table_name is not None and self.table_name not in self.referenced_tables:
+            raise ValueError(
+                f"table_name={self.table_name!r} не объявлена в referenced_tables "
+                f"{self.referenced_tables} — пустой список сделал бы документ публичным"
+            )
+        return self
 
 
 @runtime_checkable

@@ -64,6 +64,7 @@ def _doc(content: str, ref: str, table: str | None = "orders") -> KnowledgeDocum
     return KnowledgeDocument(
         doc_kind=DocKind.DDL,
         table_name=table,
+        referenced_tables=[table] if table else [],  # якорь обязан быть объявлен (C1)
         content=content,
         model_version="test-embedder",
         source_ref=ref,

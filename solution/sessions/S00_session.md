@@ -72,7 +72,7 @@ src/
 │   ├── orchestration/         # LangGraph: graph.py (StateGraph) + routing.py (условные переходы) — только рёбра
 │   ├── config/                # settings.py (pydantic-settings) — единственная точка чтения env
 │   └── composition/           # container.py — единственное место сборки зависимостей
-├── apps/                      # презентационный слой: cli.py, streamlit_app.py (демо RBAC)
+├── apps/                      # презентационный слой: cli.py, index_knowledge.py, streamlit_app.py
 ├── migrations/                # Alembic: env.py, versions/ — единственный способ создать схему (правило 5)
 └── tests/                     # unit / integration / e2e + conftest.py (скипы БД-тестов без инфры)
 alembic.ini                    # конфиг Alembic (script_location = src/migrations)

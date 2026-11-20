@@ -25,7 +25,11 @@ import psycopg
 from psycopg.rows import dict_row
 
 from text_to_sql_agent.application.ports.sql_executor import CONNECT_TIMEOUT_S, STATEMENT_TIMEOUT_S
-from text_to_sql_agent.application.ports.vector_store import DocKind, KnowledgeDocument
+from text_to_sql_agent.application.ports.vector_store import (
+    DocKind,
+    KnowledgeDocument,
+    VectorStoreError,
+)
 
 # 7 бизнес-таблиц демо-схемы (миграция 0001); agent_* — служебные, не индексируются
 BUSINESS_TABLES = (
@@ -154,7 +158,8 @@ def relationship_documents(dsn: str, *, model_version: str) -> list[KnowledgeDoc
             conn.execute(f"SET LOCAL statement_timeout = '{STATEMENT_TIMEOUT_S}s'")  # правило 9
             rows = conn.execute(query).fetchall()
     except psycopg.Error as exc:
-        raise RuntimeError(f"реестр связей недоступен: {exc}") from exc
+        # Типизированная ошибка стыка (прецедент адаптера памяти), не сырой psycopg
+        raise VectorStoreError(f"реестр связей недоступен: {exc}") from exc
     for row in rows:
         lines = [
             f"[связь: {row['left_table']} → {row['right_table']}] "
@@ -184,8 +189,13 @@ def markdown_documents(
     Заголовок остаётся в чанке (якорь термина/примера); позиция после тире —
     одна таблица, список через запятую (кросс-табличный контент) или `null`
     (общий документ). doc_kind — явно (опечатка в префиксе не должна молча
-    проиндексировать few-shot как глоссарий — ревью S06 Minor-4).
+    проиндексировать few-shot как глоссарий — ревью S06 Minor-4); сторонний
+    DocKind не маппится молча (ревью-2: неверный source_ref-префикс).
     """
+    if doc_kind not in (DocKind.GLOSSARY, DocKind.FEW_SHOT):
+        raise ValueError(
+            f"markdown-разделы индексируются только как glossary/few_shot, получен {doc_kind}"
+        )
     text = path.read_text(encoding="utf-8")
     matches = list(_SECTION_RE.finditer(text))
     if not matches:

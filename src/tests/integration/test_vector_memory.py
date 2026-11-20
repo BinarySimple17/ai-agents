@@ -15,6 +15,8 @@ behavior feat-006: поиск по эмбеддингу возвращает т�
 адаптера (попутно покрывает upsert на живой БД); очистка — по префиксу source_ref.
 """
 
+import re
+
 import psycopg
 import pytest
 
@@ -217,6 +219,54 @@ def test_unknown_user_gets_only_common_documents(store, seeded) -> None:
     assert f"{_REF_PREFIX}glossary-common" in _refs(docs)
 
 
+def test_migration_backfill_restores_list_from_content(store) -> None:
+    """Регресс ревью-2 I2: строка в промежуточном состоянии ('{}' при упоминании
+    таблиц в контенте) после backfill миграции 0007 получает полный список —
+    инвариант прав держится сразу после make infra-migrate, без ручного шага."""
+    import importlib.util
+    from pathlib import Path as _Path
+
+    mig_path = (
+        _Path(__file__).resolve().parents[2]
+        / "migrations"
+        / "versions"
+        / "20261120_0007_knowledge_refs_backfill.py"
+    )
+    spec = importlib.util.spec_from_file_location("mig0007", mig_path)
+    mig = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mig)
+    service_dsn = load_settings().postgres_dsn.get_secret_value()
+    with psycopg.connect(service_dsn) as conn:
+        conn.execute(
+            f"DELETE FROM agent_knowledge WHERE source_ref = '{_REF_PREFIX}backfill-test';"
+        )
+        conn.execute(
+            "INSERT INTO agent_knowledge (doc_kind, table_name, referenced_tables, content,"
+            " embedding, model_version, source_ref)"
+            " VALUES ('glossary', 'bonuses', '{}', '[термин: backfill-test] премии"
+            " employees и bonuses: b.amount', '[" + "0," * 1023 + "0]'::vector, 'synthetic',"
+            " %s)",
+            (f"{_REF_PREFIX}backfill-test",),
+        )
+    try:
+        with psycopg.connect(service_dsn) as conn:
+            conn.execute(mig._BACKFILL_SQL)
+            row = conn.execute(
+                "SELECT referenced_tables FROM agent_knowledge WHERE source_ref = %s",
+                (f"{_REF_PREFIX}backfill-test",),
+            ).fetchone()
+        assert set(row[0]) == {"employees", "bonuses"}  # восстановлен из контента
+        # Вектор ортогонален V_ORDERS/V_BONUSES-кластерам — релевантность не важна:
+        # документ скрыт от u_analyst (ни employees, ни bonuses ему недоступны)
+        docs = store.search(V_ORDERS, ctx=CTX_ANALYST, top_k=50)
+        assert f"{_REF_PREFIX}backfill-test" not in _refs(docs)
+    finally:
+        with psycopg.connect(service_dsn) as conn:
+            conn.execute(
+                f"DELETE FROM agent_knowledge WHERE source_ref = '{_REF_PREFIX}backfill-test';"
+            )
+
+
 def test_real_corpus_leaks_no_tables_outside_rights(store) -> None:
     """Инвариант C1 на живом корпусе (make index-knowledge): всё, что видит
     u_analyst, ссылается только на его таблицы (orders/order_items/products)."""
@@ -232,7 +282,17 @@ def test_real_corpus_leaks_no_tables_outside_rights(store) -> None:
     real = [d for d in docs if not d.source_ref.startswith(_REF_PREFIX)]
     assert real, "живой корпус должен быть виден разрешённому пользователю"
     allowed = {"orders", "order_items", "products"}
+    mentioned_re = re.compile(
+        r"(customers|campaigns|products|orders|order_items|employees|bonuses)"
+    )
     for d in real:
         assert set(d.referenced_tables) <= allowed, (
             f"{d.source_ref}: referenced_tables {d.referenced_tables} выходят за права u_analyst"
         )
+        # content-scan (ревью-2): упомянутые в контенте таблицы ⊆ объявленным —
+        # под-declaration не пронесёт имя недоступной таблицы в контекст
+        mentioned = set(mentioned_re.findall(d.content))
+        assert mentioned <= set(d.referenced_tables), (
+            f"{d.source_ref}: контент упоминает {mentioned}, объявлено {d.referenced_tables}"
+        )
+        assert mentioned <= allowed, f"{d.source_ref}: контент упоминает таблицы вне прав"
