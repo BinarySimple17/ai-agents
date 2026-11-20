@@ -27,7 +27,7 @@ Intent-Based роутингом «узел → навык → модель» (ch
 | `src/apps/` (cli, index_knowledge, streamlit_app) | точки входа: CLI-прогон и Streamlit-демо RBAC (живой выбор пользователя) | Python, argparse / streamlit |
 | `src/text_to_sql_agent/orchestration/` | LangGraph state machine: граф и условные переходы — только рёбра | langgraph |
 | `.../application/services/` | по одному классу на узел (clarify, plan_joins, generate_sql, …) | чистая логика + порты |
-| `.../application/ports/` | Protocol-интерфейсы: LLMProvider (complete с tools/usage + embed), VectorStore, SchemaGraphStore, SQLExecutor, SemanticCache, AuthProvider, Tracer, BudgetGuard | typing.Protocol |
+| `.../application/ports/` | Protocol-интерфейсы: LLMProvider (complete с tools/usage, complete_stream — S19, embed), VectorStore, SchemaGraphStore, SQLExecutor, SemanticCache, AuthProvider, Tracer, BudgetGuard | typing.Protocol |
 | `.../domain/` | сущности (AgentState, JoinPlan), value objects, ошибки — без внешних зависимостей | Python + pydantic |
 | `.../infrastructure/` | адаптеры портов: openai_provider, pgvector_store, neo4j_graph_store, postgres_executor, valkey_cache, guardrails (sqlglot-валидатор), jsonl_tracer | psycopg, openai SDK, neo4j, redis-py, sqlglot |
 | `.../config/` | pydantic-settings: единственная точка чтения env | pydantic-settings |

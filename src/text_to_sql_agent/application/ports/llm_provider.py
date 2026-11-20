@@ -10,7 +10,7 @@ FSM, не провайдер). Бюджетный учёт — порт `BudgetG
 резидент в адаптере `infrastructure/llm/openai_provider.py` (решение ARCH-GATE S03).
 """
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from typing import Any, Literal, Protocol, runtime_checkable
 
 from pydantic import BaseModel, Field
@@ -20,6 +20,16 @@ Embedding = list[float]
 # OpenAI-формат сообщений/тулов: узлы строят dicts, адаптер передаёт как есть.
 Messages = Sequence[Mapping[str, Any]]
 ToolSpec = Mapping[str, Any]
+
+# finish_reason, при которых reasoning_content не может считаться ответом (D-021):
+# length — текст оборван по лимиту токенов (частичный CoT); content_filter —
+# контент заблокирован политикой шлюза (фолбэк не должен обходить блокировку);
+# tool_calls/function_call — заявлен tool-ход, а тулов нет (несогласованный
+# шлюз): reasoning такого хода не финальный ответ, путь — ретрай/деградация.
+# Строго "stop" не требуется — часть шлюзов поле не отдаёт (ревью S03 Important-1).
+# Константа живёт в порту с S19: guard общий для буферного complete() и стрима
+# (ruling W4 ARCH-GATE S19 — единый источник, без дубля в адаптере).
+NO_TEXT_FALLBACK_REASONS = frozenset({"length", "content_filter", "tool_calls", "function_call"})
 
 
 class ToolCall(BaseModel):
@@ -44,6 +54,35 @@ class LLMResponse(BaseModel):
     tool_calls: list[ToolCall] = Field(default_factory=list)
     usage: Usage = Field(default_factory=Usage)
     model: str  # фактическое имя модели — роль → модель резолвит адаптер из Settings
+
+
+class StreamChunk(BaseModel):
+    """Дельта ответа стрима (S19, стык 2): печатается вызывающим по мере генерации.
+
+    Конкатенация всех text_delta генератора = полный текст ответа (семантика
+    LLMResponse.text буферного пути). Reasoning-дельты в потоке не появляются —
+    адаптер буферизует их и отдаёт одним чанком-фолбэком по guard'у
+    finish_reason (D-021-аналог, ruling W4 ARCH-GATE S19).
+    """
+
+    text_delta: str
+
+
+class StreamFinal(BaseModel):
+    """Терминальный элемент стрима: метаданные завершённого вызова (S19, стык 2).
+
+    usage может быть пустым (Usage()) — не все шлюзы шлют usage в стриме
+    (finding ARCH-GATE S19): вызывающий отличает по событию llm.complete
+    (`usage_missing=true`), стоимость 0 не маскируется. yield'ится ровно один,
+    последним элементом генератора. finish_reason=None (стрим закрылся без
+    явного статуса и без сбоя) — возможная тихая усечённость ответа шлюзом:
+    интерпретирует это вызывающий (ревью S19 M6; «incomplete»-политика — V4/feat-015).
+    """
+
+    usage: Usage = Field(default_factory=Usage)
+    finish_reason: str | None = None
+    model: str
+    text_from_reasoning: bool = False  # чанки стрима пришли из think-поля (фолбэк)
 
 
 class LLMProviderError(Exception):
@@ -74,6 +113,31 @@ class LLMProvider(Protocol):
         tools: Sequence[ToolSpec] | None = None,
     ) -> LLMResponse:
         """Один вызов шлюза ролью из политики ретраев M1 (попытка 1 — роль узла)."""
+        ...
+
+    def complete_stream(
+        self,
+        role: Role,
+        messages: Messages,
+        *,
+        tools: Sequence[ToolSpec] | None = None,
+    ) -> Iterator[StreamChunk | StreamFinal]:
+        """Потоковый вызов шлюза той же ролью (S19, ДЗ-03): дельты по мере генерации.
+
+        Контракт (ruling W2/W3 ARCH-GATE S19): генератор `StreamChunk`-дельт,
+        терминальный элемент — ровно один `StreamFinal` (usage/finish_reason/
+        model). Гарантии `complete()` — те же: бюджет/breaker guard'ы ДО вызова,
+        backoff-политика ДО первого чанка; после первого чанка ретраев нет —
+        частично напечатанный ответ ретраем не чинится, сбой → `LLMRequestError`
+        (деградацию решает вызывающий, S00 правило 8). Деградация провайдера —
+        те же классы ошибок, новых категорий не вводится. Существующий
+        `complete()` не меняется — тул-контур и узлы FSM остаются на нём.
+
+        Отказ от генератора до терминала (break/close — ревью M7): HTTP-стрим
+        закрывается (`finally`), но учёт бюджета/событие llm.complete не
+        выполняются — вызов «не завершён» (консуматор сам виноват в потере
+        метаданных; Ctrl+C пользователя — тот же путь).
+        """
         ...
 
     def embed(self, texts: Sequence[str]) -> list[Embedding]:

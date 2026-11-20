@@ -45,6 +45,28 @@ def test_llm_complete_line_with_reasoning_mark() -> None:
     assert stream.getvalue() == "  · qwen3.8-9b · 584→212 ток · 4.1с · 0.00₽ [ответ из reasoning]\n"
 
 
+def test_llm_complete_line_with_stream_ttft() -> None:
+    # S19 (NFR-1): стрим-вызов несёт ttft_ms — рендер видит время до первого чанка
+    tracer, stream = _tracer()
+    tracer.record(
+        Trace(
+            event="llm.complete",
+            payload={
+                "model": "qwen3.8-9b",
+                "tokens_in": 584,
+                "tokens_out": 212,
+                "latency_ms": 4123,
+                "cost_rub": 0.0,
+                "stream": True,
+                "ttft_ms": 430,
+            },
+        )
+    )
+    assert stream.getvalue() == "  · qwen3.8-9b · 584→212 ток · 4.1с · 0.00₽ · первый чанк 430мс\n"
+    tracer.record(Trace(event="llm.complete", payload={"model": "m"}))  # буферный путь: поля нет
+    assert "первый чанк" not in stream.getvalue().splitlines()[-1]
+
+
 def test_tool_call_sql_truncated_to_one_line() -> None:
     tracer, stream = _tracer()
     tracer.record(Trace(event="agent.tool_call", payload={"name": "run_sql", "sql": "x" * 300}))
@@ -208,3 +230,15 @@ def test_tee_fanout_and_resilience() -> None:
     # событие дошло в ОБА живых приёмника, несмотря на сбой между ними
     assert "✓ ответ (text)" in stream_a.getvalue()
     assert "✓ ответ (text)" in stream_b.getvalue()
+
+
+def test_llm_reject_stream_abort_renders_reason() -> None:
+    # S19 (ревью-2 m5): обрыв стрима — llm.reject без HTTP-статуса, с reason
+    tracer, stream = _tracer()
+    tracer.record(
+        Trace(
+            event="llm.reject",
+            payload={"role": "mid", "status_code": None, "reason": "stream_abort"},
+        )
+    )
+    assert "  ! шлюз: отказ stream_abort (mid)" in stream.getvalue()

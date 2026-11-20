@@ -88,6 +88,11 @@ def _render_llm_complete(payload: dict[str, Any]) -> str:
     latency = f"{payload.get('latency_ms', 0) / _MS_PER_S:.1f}с"
     cost = f"{payload.get('cost_rub', 0.0):.2f}₽"
     line = f"  · {payload.get('model', '?')} · {tokens} · {latency} · {cost}"
+    ttft_ms = payload.get("ttft_ms")  # стрим-путь (S19, NFR-1): время до первого чанка
+    if ttft_ms is not None:
+        # Миллисекунды (как elapsed у llm.timeout): суб-секундный TTFT в секундах
+        # с одной десятичной — «0.0с», порог NFR-1 (≤ 3s) нечитаем (ревью M4)
+        line += f" · первый чанк {ttft_ms}мс"
     if payload.get("usage_missing"):
         line += " (шлюз без usage)"
     if payload.get("text_from_reasoning"):
@@ -158,9 +163,10 @@ def _render_trouble(event: str, payload: dict[str, Any]) -> str:
     if event == "llm.timeout":
         return f"  ! шлюз: таймаут ({payload.get('role', '?')}, {payload.get('elapsed_ms', '?')}мс)"
     if event == "llm.reject":
-        return (
-            f"  ! шлюз: отказ HTTP {payload.get('status_code', '?')} ({payload.get('role', '?')})"
-        )
+        status = payload.get("status_code")
+        reason = payload.get("reason")  # стрим-путь (S19): HTTP-статуса нет — причина
+        detail = f"HTTP {status}" if status is not None else (reason or "?")
+        return f"  ! шлюз: отказ {detail} ({payload.get('role', '?')})"
     if event == "llm.breaker_open":
         detail = payload.get("reason") or f"сбоев подряд: {payload.get('failures', '?')}"
         return f"  ! breaker открыт ({detail})"

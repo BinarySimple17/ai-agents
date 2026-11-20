@@ -32,16 +32,26 @@ usage недоступен до ответа, поэтому один вызов
 `llm.breaker_open`/`llm.budget_stop`; сборка агрегата `node_timings` — S04/S15
 (ревью S03 Important-5). Часы/sleep/rng — инъекция (ловушка 3: тесты breaker
 не растягивают прогон реальными sleep); в проде — monotonic/time.sleep/random.
+
+Стрим (S19, `complete_stream`) — тот же словарь событий: llm.complete несёт
+`stream=true` + `ttft_ms` (NFR-1, время до первого чанка); usage — из
+терминального чанка шлюза (шлют не все — `usage_missing=true`, стоимость 0 не
+маскируется, finding ARCH-GATE S19). Reasoning-дельты буферизуются, наружу —
+фолбэком одним чанком по guard'у `NO_TEXT_FALLBACK_REASONS` из порта (D-021-
+аналог, ruling W4 ARCH-GATE S19).
 """
 
+import json
 import random
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from typing import Any
 
+import httpx
 import openai
 
 from text_to_sql_agent.application.ports.llm_provider import (
+    NO_TEXT_FALLBACK_REASONS,
     BudgetExceededError,
     CircuitOpenError,
     Embedding,
@@ -50,6 +60,8 @@ from text_to_sql_agent.application.ports.llm_provider import (
     LLMResponse,
     Messages,
     Role,
+    StreamChunk,
+    StreamFinal,
     ToolCall,
     ToolSpec,
     Usage,
@@ -63,14 +75,6 @@ _BACKOFF_ATTEMPTS = 4  # попытки 0..3: паузы 1(+j), 2(+j), 4(+j) —
 _BREAKER_THRESHOLD = 5
 _BREAKER_COOLDOWN_S = 60.0
 _JITTER_SHARE = 0.5  # jitter: base + uniform(0, base/2) — ADR-007 §4.3
-# finish_reason, при которых reasoning_content не может считаться ответом:
-# length — текст оборван по лимиту токенов (частичный CoT); content_filter —
-# контент заблокирован политикой шлюза (фолбэк не должен обходить блокировку);
-# tool_calls/function_call — заявлен tool-ход, а тулов нет (несогласованный
-# шлюз): reasoning такого хода не финальный ответ, путь — ретрай/деградация
-# (ревью re-review Minor-4). Строго "stop" не требуется — часть шлюзов поле
-# не отдаёт (ревью Important-1).
-_NO_TEXT_FALLBACK_REASONS = frozenset({"length", "content_filter", "tool_calls", "function_call"})
 
 
 def _jittered(base_s: float, rng: random.Random) -> float:
@@ -174,12 +178,54 @@ class OpenAIProvider:
     ) -> LLMResponse:
         self._guard_budget()
         self._guard_breaker()
+        model = self._resolve_model(role)
+        request_kwargs = self._request_kwargs(messages, tools, model)
+        started = self._clock()
+        response = self._create_with_backoff(request_kwargs, role=role, started=started)
+        return self._on_success(role, response, latency_s=self._clock() - started)
+
+    def complete_stream(
+        self,
+        role: Role,
+        messages: Messages,
+        *,
+        tools: Sequence[ToolSpec] | None = None,
+    ) -> Iterator[StreamChunk | StreamFinal]:
+        """Стрим той же роли (S19, стык 2 — см. контракт в порте).
+
+        Guard'ы бюджета/breaker и backoff-цикл — общие с `complete()` (стрим
+        расходует бюджет как обычный вызов, Task 2 плана); ретраи — только ДО
+        первого чанка (backoff вокруг SDK-create), mid-stream сбой — без ретрая
+        (частично напечатанный ответ ретраем дублируется, Ловушки-1).
+        `stream_options={"include_usage": True}` — запрос usage у шлюза (ревью
+        I1: без него OpenAI-совместимые шлюзы usage не шлют и кап бюджета в
+        стрим-пути инертен; шлюз, не знающий параметр, может отвечать без
+        usage — тогда usage_missing=true, стоимость 0 не маскируется).
+        """
+        self._guard_budget()
+        self._guard_breaker()
+        model = self._resolve_model(role)
+        request_kwargs = self._request_kwargs(messages, tools, model)
+        request_kwargs["stream"] = True
+        request_kwargs["stream_options"] = {"include_usage": True}
+        started = self._clock()
+        stream = self._create_with_backoff(request_kwargs, role=role, started=started)
+        return self._stream_response(role, stream, model=model, started=started)
+
+    def _resolve_model(self, role: Role) -> str:
         model = self._models.get(role)
         if model is None:
             raise LLMProviderError(
                 f"неизвестная роль модели: {role!r} (ожидаются cheap/mid/strong)"
             )
+        return model
 
+    def _request_kwargs(
+        self,
+        messages: Messages,
+        tools: Sequence[ToolSpec] | None,
+        model: str,
+    ) -> dict[str, Any]:
         payload: list[dict[str, Any]] = [dict(m) for m in messages]
         request_kwargs: dict[str, Any] = {
             "model": model,
@@ -188,12 +234,21 @@ class OpenAIProvider:
         }
         if tools:
             request_kwargs["tools"] = [dict(t) for t in tools]
+        return request_kwargs
 
-        started = self._clock()
+    def _create_with_backoff(
+        self, request_kwargs: dict[str, Any], *, role: str, started: float
+    ) -> Any:
+        """SDK-create в backoff-цикле (ADR-007 §4.3) — общий путь буферного
+        `complete()` и стрима (S19): 4 попытки, ретраятся только 429/5xx/сеть;
+        таймаут — отказ без ретрая и без инкремента breaker (W2 S03); прочие 4xx —
+        конфиг-ошибка без ретрая; возвращает ответ шлюза (буферный объект или
+        стрим-итератор — S19; ошибки ИТЕРАЦИИ стрима мапит `_stream_response`).
+        """
         last_error: Exception | None = None
         for attempt in range(_BACKOFF_ATTEMPTS):
             try:
-                response = self._client.chat.completions.create(**request_kwargs)
+                return self._client.chat.completions.create(**request_kwargs)
             except openai.APITimeoutError as exc:
                 # W2: таймаут — отказ узла БЕЗ инкремента breaker и без ретраев
                 self._emit(
@@ -216,8 +271,6 @@ class OpenAIProvider:
                 # прочие SDK-ошибки (в т.ч. APIResponseValidationError) — наружу
                 # типизированно, без ретрая и без счётчика breaker (семантика неизвестна)
                 raise LLMRequestError(f"SDK-ошибка шлюза: {exc}") from exc
-            else:
-                return self._on_success(role, response, latency_s=self._clock() - started)
             if attempt < _BACKOFF_ATTEMPTS - 1:
                 # llm.retry — только когда ретрай реально будет: последняя попытка
                 # видна в итоговом LLMRequestError (ревью S03, нит к Important-5)
@@ -233,6 +286,124 @@ class OpenAIProvider:
         raise LLMRequestError(
             f"шлюз не ответил после {_BACKOFF_ATTEMPTS} попыток на роли {role}"
         ) from last_error
+
+    def _stream_response(
+        self, role: str, stream: Any, *, model: str, started: float
+    ) -> Iterator[StreamChunk | StreamFinal]:
+        """Итерация стрима шлюза (S19): контент-дельты наружу, reasoning — буфер
+        с фолбэком одним куском по guard'у finish_reason (D-021-аналог, ruling
+        W4 ARCH-GATE S19 — константа из порта). Mid-stream сбой — ретрая нет:
+        `_register_failure` (breaker считает обрыв стрима сбоем шлюза) +
+        `LLMRequestError`. usage — из терминального чанка шлюза, если он его
+        шлёт; отсутствие фиксируется `usage_missing=true` в llm.complete
+        (finding ARCH-GATE S19 — стоимость 0 не маскируется).
+
+        ВАЖНО (ревью C1): при ошибке ИТЕРАЦИИ SDK пробрасывает СЫРЫЕ httpx-
+        исключения (ReadError/ReadTimeout/RemoteProtocolError — openai оборачивает
+        только SSE-error payload и ошибки первоначального send), поэтому транспорт
+        ловится здесь — httpx.HTTPError + openai.APIError. Таймаут карвется
+        ДО generic-ветки: W2 S03 — «breaker считает ошибки, не медлительность»
+        (таймаут между чанками не инкрементит breaker)."""
+        ttft_ms: int | None = None  # NFR-1: время до первого чанка
+        content_parts: list[str] = []
+        reasoning_parts: list[str] = []
+        finish_reason: str | None = None
+        raw_usage: Any = None
+        actual_model = ""
+        try:
+            for event in stream:
+                event_usage = getattr(event, "usage", None)
+                if event_usage is not None:
+                    raw_usage = event_usage
+                choices = getattr(event, "choices", None) or []
+                if not choices:
+                    continue  # терминальный usage-чанк без выбора / служебные события
+                if ttft_ms is None:
+                    ttft_ms = round((self._clock() - started) * 1000)
+                actual_model = getattr(event, "model", "") or actual_model
+                delta = getattr(choices[0], "delta", None)
+                text = getattr(delta, "content", None) or ""
+                if text:
+                    content_parts.append(text)
+                    yield StreamChunk(text_delta=text)
+                reasoning = getattr(delta, "reasoning_content", None) or ""
+                if reasoning:
+                    reasoning_parts.append(reasoning)  # буфер: в stdout не печатается
+                if getattr(choices[0], "finish_reason", None):
+                    finish_reason = choices[0].finish_reason
+        except (httpx.TimeoutException, openai.APITimeoutError) as exc:
+            # W2-паритет: таймаут ПОСЛЕ начала стрима (модель молчит между чанками
+            # дольше llm_request_timeout_s) — медлительность, не сбой breaker. Оба
+            # слоя: SDK может отдать и сырой httpx.ReadTimeout, и обёрнутый
+            # APITimeoutError («Request timed out.») — регресс-тест фиксирует фактическую
+            # форму (обёртку) и ловит обе (ревью C1 fix-волна)
+            self._emit(
+                "llm.timeout",
+                role=role,
+                elapsed_ms=round((self._clock() - started) * 1000),
+                stream=True,
+            )
+            raise LLMRequestError(
+                f"таймаут шлюза посреди стрима ({self._settings.llm_request_timeout_s}s)"
+            ) from exc
+        except (
+            httpx.HTTPError,
+            openai.APIError,
+            json.JSONDecodeError,
+            UnicodeDecodeError,
+        ) as exc:
+            # Обрыв соединения/чтения посреди стрима — СБОЙ шлюза: breaker считает
+            # (W3); наружу типизированная ошибка — деградацию решает вызывающий.
+            # Ревью-2 m1: SDK не оборачивает malformed SSE-кадр (json.JSONDecodeError
+            # из sse.json()) — прокси, вставивший HTML в SSE-поток, идёт тем же путём;
+            # UnicodeDecodeError — битые байты кадра. pydantic ValidationError (тоже
+            # ValueError) сознательно НЕ ловим — это наш контракт-баг, не шлюз.
+            self._register_failure()
+            self._emit(
+                "llm.reject",
+                role=role,
+                status_code=None,  # не HTTP-ответ — статус-кода нет (ревью-2 m5)
+                reason="stream_abort",
+                stream=True,
+            )
+            raise LLMRequestError(f"стрим оборван шлюзом: {exc}") from exc
+        finally:
+            close = getattr(stream, "close", None)
+            if close is not None:
+                close()
+
+        text_from_reasoning = False
+        # Паритет с буферным complete() (ревью M2): whitespace-only content —
+        # «текста нет», reasoning-буфер становится ответом
+        if not "".join(content_parts).strip() and finish_reason not in NO_TEXT_FALLBACK_REASONS:
+            fallback = "".join(reasoning_parts).strip()
+            if fallback:
+                # Пустой content при живом reasoning — фолбэк одним чанком;
+                # вызывающий печатает как обычную дельту (W4)
+                text_from_reasoning = True
+                yield StreamChunk(text_delta=fallback)
+        usage, cost_rub = self._register_success_usage(role, raw_usage)
+        self._emit(
+            "llm.complete",
+            role=role,
+            model=actual_model or model,
+            tokens_in=usage.tokens_in,
+            tokens_out=usage.tokens_out,
+            usage_missing=raw_usage is None,
+            text_from_reasoning=text_from_reasoning,
+            finish_reason=finish_reason,
+            cost_rub=round(cost_rub, 6),
+            latency_ms=round((self._clock() - started) * 1000),
+            budget_used_rub=round(self._budget_used_rub, 6),
+            stream=True,
+            ttft_ms=ttft_ms,
+        )
+        yield StreamFinal(
+            usage=usage,
+            finish_reason=finish_reason,
+            model=actual_model or model,
+            text_from_reasoning=text_from_reasoning,
+        )
 
     def embed(self, texts: Sequence[str]) -> list[Embedding]:
         """Эмбеддинг батча текстов одним запросом (S06, model-card; D-025).
@@ -292,8 +463,10 @@ class OpenAIProvider:
             self._probe_pending = True  # после паузы — один пробный запрос
             self._emit("llm.breaker_open", failures=_BREAKER_THRESHOLD)
 
-    def _on_success(self, role: str, response: Any, *, latency_s: float) -> LLMResponse:
-        raw_usage = getattr(response, "usage", None)
+    def _register_success_usage(self, role: str, raw_usage: Any) -> tuple[Usage, float]:
+        """Учёт успешного вызова: usage → ₽ в копилку запроса + сброс счётчика
+        сбоев (общий для буферного `complete()` и стрима, S19: стрим расходует
+        бюджет как обычный вызов — Task 2 плана)."""
         usage = Usage(
             tokens_in=getattr(raw_usage, "prompt_tokens", 0) or 0,
             tokens_out=getattr(raw_usage, "completion_tokens", 0) or 0,
@@ -303,6 +476,11 @@ class OpenAIProvider:
         self._budget_used_rub += cost_rub
         self._consecutive_failures = 0
         self._probe_pending = False
+        return usage, cost_rub
+
+    def _on_success(self, role: str, response: Any, *, latency_s: float) -> LLMResponse:
+        raw_usage = getattr(response, "usage", None)
+        usage, cost_rub = self._register_success_usage(role, raw_usage)
 
         choice = response.choices[0]
         message = choice.message
@@ -315,7 +493,7 @@ class OpenAIProvider:
         # иначе CLI печатает визуально пустой ответ вместо ретрая (ревью Minor-4).
         text = (message.content or "").strip() or None
         text_from_reasoning = False
-        if text is None and not tool_calls and finish_reason not in _NO_TEXT_FALLBACK_REASONS:
+        if text is None and not tool_calls and finish_reason not in NO_TEXT_FALLBACK_REASONS:
             # Любой шлюз может отдать финальный ответ в reasoning_content — ответ
             # внутри think-блока при пустом content (наблюдение 2026-11-19,
             # локальный qwen3.8-9b; облачные reasoning-модели — тот же риск).
