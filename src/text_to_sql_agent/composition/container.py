@@ -31,11 +31,18 @@ class Container:
     vector_store: PgVectorStore
 
 
-def build_container(settings: Settings | None = None, *, console_trace: bool = False) -> Container:
+def build_container(
+    settings: Settings | None = None,
+    *,
+    console_trace: bool = False,
+    knowledge_writer: bool = False,
+) -> Container:
     """Дефолтная сборка; `settings=None` → fail-fast чтение окружения.
 
     `console_trace=True` — этапы работы агента дублируются в stderr (ConsoleTracer,
-    BL-004/D-022); JSONL-персистентность включена всегда.
+    BL-004/D-022); JSONL-персистентность включена всегда. `knowledge_writer=True` —
+    только офлайн-индексатор (make index-knowledge): runtime-контур не держит
+    сервисный DSN записи в память знаний (ruling W1, ревью S06 Important-2).
     """
     settings = settings or load_settings()
     tracer: Tracer = JsonlTracer(settings.trace_jsonl_path)
@@ -50,7 +57,7 @@ def build_container(settings: Settings | None = None, *, console_trace: bool = F
     # make index-knowledge; runtime-роли в память знаний не пишут (ruling W1).
     vector_store = PgVectorStore(
         settings.agent_planner_dsn,
-        write_dsn=settings.postgres_dsn.get_secret_value(),
+        write_dsn=settings.postgres_dsn.get_secret_value() if knowledge_writer else None,
     )
     return Container(
         settings=settings,

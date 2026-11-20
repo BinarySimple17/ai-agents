@@ -16,6 +16,7 @@ from pathlib import Path
 from text_to_sql_agent.application.ports.vector_store import DocKind, KnowledgeDocument
 from text_to_sql_agent.composition.container import Container, build_container
 from text_to_sql_agent.infrastructure.memory.knowledge_sources import (
+    check_declared_references,
     ddl_documents,
     markdown_documents,
     relationship_documents,
@@ -37,13 +38,14 @@ def build_documents(container: Container) -> list[KnowledgeDocument]:
     service_dsn = container.settings.postgres_dsn.get_secret_value()
     docs = ddl_documents(_MIGRATION_0001, model_version=model_version)
     docs += relationship_documents(service_dsn, model_version=model_version)
-    docs += markdown_documents(_GLOSSARY_MD, ref_prefix="glossary", model_version=model_version)
-    docs += markdown_documents(_FEWSHOT_MD, ref_prefix="few_shot", model_version=model_version)
+    docs += markdown_documents(_GLOSSARY_MD, doc_kind=DocKind.GLOSSARY, model_version=model_version)
+    docs += markdown_documents(_FEWSHOT_MD, doc_kind=DocKind.FEW_SHOT, model_version=model_version)
+    check_declared_references(docs)  # guard прав: содержимое ⊆ объявленные таблицы (C1)
     return docs
 
 
 def main() -> int:
-    container = build_container()
+    container = build_container(knowledge_writer=True)
     docs = build_documents(container)
     vectors: list[list[float]] = []
     for start in range(0, len(docs), _EMBED_BATCH):

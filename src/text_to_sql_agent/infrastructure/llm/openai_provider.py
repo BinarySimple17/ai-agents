@@ -252,6 +252,13 @@ class OpenAIProvider:
         except openai.APIError as exc:
             raise LLMRequestError(f"шлюз эмбеддера отклонил запрос: {exc}") from exc
         data = sorted(response.data, key=lambda item: item.index)
+        # Парность «текст ↔ вектор» — контракт стыка: неполный ответ шлюза
+        # (пустой/урезанный data) — ошибка, а не молчаливая потеря (ревью M6;
+        # иначе llm.embed([q])[0] в retrieval-контуре падал IndexError'ом)
+        if len(data) != len(texts):
+            raise LLMRequestError(
+                f"шлюз эмбеддера вернул {len(data)} векторов на {len(texts)} текстов"
+            )
         return [list(item.embedding) for item in data]
 
     # --- внутреннее ---

@@ -6,8 +6,14 @@ cosine distance по эмбеддингу; механика качества (г
 
 Права — deny-by-default (ADR-005 «граница знаний = граница прав», NFR-4
 ACL-leak = 0): фильтр прав живёт в самом запросе поиска (джойн с правами,
-ADR-003 §4), не пост-фильтрация выдачи — документ недоступной таблицы не
-участвует в поиске вообще.
+ADR-003 §4), не пост-фильтрация выдачи. Инвариант — по **всем таблицам,
+упомянутым в документе** (`referenced_tables`), а не только по таблице-якорю:
+кураторский few-shot «выручка по кампаниям» ссылается на orders И campaigns —
+пользователь без прав на campaigns документ не видит (ревью S06 Critical-1).
+
+Ошибки стыка типизированы (прецедент `SQLExecutionError`): `VectorStoreError` —
+сбой хранилища (соединение/БД); нарушение контракта вызова (размерность,
+параллельные списки) — ValueError.
 
 DTO стыка — pydantic и живут здесь (прецедент: `sql_executor.py`).
 """
@@ -34,13 +40,20 @@ class DocKind(StrEnum):
     FEW_SHOT = "few_shot"  # кураторский пример «вопрос → SQL» (автонаполнение запрещено)
 
 
+class VectorStoreError(Exception):
+    """Сбой векторной памяти (соединение/БД): человекочитаемое сообщение, не traceback."""
+
+
 class KnowledgeDocument(BaseModel):
     """Документ векторной памяти (строка agent_knowledge)."""
 
     model_config = ConfigDict(frozen=True)
 
     doc_kind: DocKind
-    table_name: str | None = None  # null = общий документ (не привязан к таблице)
+    table_name: str | None = None  # якорь-таблица (null = общий документ); не фильтр
+    # Таблицы, упомянутые в содержимом: права проверяются по ВСЕМ (NFR-4 ACL-leak=0,
+    # ревью S06 Critical-1). Пусто = общий документ без табличных ссылок.
+    referenced_tables: list[str] = Field(default_factory=list)
     content: str = Field(min_length=1)
     model_version: str = Field(min_length=1)
     source_ref: str = Field(min_length=1)  # ключ идемпотентного upsert
@@ -53,12 +66,11 @@ class VectorStore(Protocol):
 
     `upsert` — параллельные списки (documents[i] ↔ embeddings[i]); запись
     идемпотентна по source_ref (повторная индексация обновляет, не дублирует).
-    `search` — dense-поиск: top_k документов, чьи таблицы разрешены ctx.user_id.
+    `search` — dense-поиск: top_k документов, у которых права ctx.user_id
+    покрывают все referenced_tables.
     """
 
-    def upsert(
-        self, documents: list[KnowledgeDocument], embeddings: list[list[float]]
-    ) -> int: ...
+    def upsert(self, documents: list[KnowledgeDocument], embeddings: list[list[float]]) -> int: ...
 
     def search(
         self, query_embedding: list[float], *, ctx: RunContext, top_k: int

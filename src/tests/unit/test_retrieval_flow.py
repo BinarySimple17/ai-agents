@@ -15,7 +15,11 @@ from apps.cli import (
 )
 from tests.unit.fakes import UNIT_CTX
 from text_to_sql_agent.application.ports.llm_provider import LLMProviderError, LLMResponse, Usage
-from text_to_sql_agent.application.ports.vector_store import DocKind, KnowledgeDocument
+from text_to_sql_agent.application.ports.vector_store import (
+    DocKind,
+    KnowledgeDocument,
+    VectorStoreError,
+)
 
 _QUERY_VECTOR = [0.1] * 1024
 
@@ -107,7 +111,7 @@ def test_retrieval_flow_degrades_on_embed_failure() -> None:
 
 
 def test_retrieval_flow_degrades_on_store_failure() -> None:
-    store = FakeStore([], error=RuntimeError("planner недоступен"))
+    store = FakeStore([], error=VectorStoreError("векторная память недоступна"))
     answer = run_retrieval_flow("вопрос", llm=FakeEmbedLLM(), vector_store=store, ctx=UNIT_CTX)
     assert "Не удалось получить ответ" in answer
 
@@ -122,3 +126,13 @@ def test_retrieval_flow_degrades_on_malformed_tool_tag() -> None:
     llm = FakeEmbedLLM(answer="<tool_call>{...}</tool_call>")
     answer = run_retrieval_flow("вопрос", llm=llm, vector_store=FakeStore([]), ctx=UNIT_CTX)
     assert answer == DEGRADED_ANSWER
+
+
+def test_retrieval_system_prompt_marks_context_as_data() -> None:
+    # security §3 S6: retrieval-контекст (RAG/few-shot/usage_notes) маркируется
+    # как данные, не инструкции — в системном промпте (наблюдение S13 о параличе
+    # reasoning-модели при придирке рядом с самими данными)
+    llm, store = FakeEmbedLLM(), FakeStore([_doc("[таблица: orders] DDL", "ddl:orders")])
+    run_retrieval_flow("вопрос", llm=llm, vector_store=store, ctx=UNIT_CTX)
+    system = llm.complete_messages[0][0]["content"]
+    assert "ДАННЫЕ" in system and "не инструкции" in system

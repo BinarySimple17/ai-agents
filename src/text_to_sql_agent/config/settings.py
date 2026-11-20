@@ -144,6 +144,8 @@ class Settings(BaseSettings):
         c4-l2 v1.8: «пул agent_planner: retrieval, настройки, EXPLAIN» — не
         сервисный DSN и не agent_ro (роль чтения прав). Пароль хранится отдельно
         (SecretStr), в DSN — только подстановка; спецсимволы URL-экранируются.
+        Возвращает str с паролем внутри (DSN-строка для psycopg.connect) — не
+        логировать/repr-ить: правило секретов модуля (ревью S06 Minor-8).
         """
         parts = urlsplit(self.postgres_dsn.get_secret_value())
         password = quote(self.agent_planner_password.get_secret_value(), safe="")

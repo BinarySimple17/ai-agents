@@ -4,8 +4,9 @@ behavior feat-006: поиск по эмбеддингу возвращает т�
 таблиц; в выдаче есть глоссарий и few-shot релевантных таблиц; недоступные
 таблицы не попадают в контекст даже при близком совпадении эмбеддинга
 (NFR-4 ACL-leak = 0). Фильтр прав — джойн в SQL поиска (ADR-005 deny-by-default,
-не пост-фильтрация); чтение — роль agent_planner, запись — сервисный DSN
-(ruling W1 ARCH-GATE S06). Скипаются без инфры с понятной причиной (conftest).
+не пост-фильтрация), инвариант по всем referenced_tables (ревью S06 C1);
+чтение — роль agent_planner, запись — сервисный DSN (ruling W1 ARCH-GATE S06).
+Скипаются без инфры с понятной причиной (conftest).
 
 Эмбеддинги в тестах — синтетические (S00 правило 7: реальный шлюз в тестах не
 вызывается): ортонормированные 1024-мерные векторы образуют «кластеры» таблиц
@@ -44,10 +45,16 @@ V_COMMON = [0.7071 if j in (0, 1) else 0.0 for j in range(_DIM)]
 
 
 def _seed_docs() -> tuple[list[KnowledgeDocument], list[list[float]]]:
-    def doc(kind: DocKind, table: str | None, content: str, ref: str) -> KnowledgeDocument:
+    def doc(
+        kind: DocKind,
+        tables: list[str],
+        content: str,
+        ref: str,
+    ) -> KnowledgeDocument:
         return KnowledgeDocument(
             doc_kind=kind,
-            table_name=table,
+            table_name=tables[0] if tables else None,
+            referenced_tables=tables,
             content=content,
             model_version=_MODEL,
             source_ref=f"{_REF_PREFIX}{ref}",  # префикс — ключ очистки тестового сида
@@ -56,36 +63,44 @@ def _seed_docs() -> tuple[list[KnowledgeDocument], list[list[float]]]:
     docs = [
         doc(
             DocKind.DDL,
-            "orders",
+            ["orders"],
             "[таблица: orders] DDL: orders(order_id, customer_id, total)",
             "ddl-orders",
         ),
         doc(
             DocKind.DDL,
-            "bonuses",
+            ["bonuses"],
             "[таблица: bonuses] DDL: bonuses(bonus_id, employee_id, amount)",
             "ddl-bonuses",
         ),
         doc(
             DocKind.GLOSSARY,
-            "orders",
+            ["orders"],
             "[термин: выручка-test] выручка = SUM(orders.total)",
             "glossary-orders",
         ),
         doc(
             DocKind.FEW_SHOT,
-            "orders",
+            ["orders"],
             "[few-shot: test] Сколько заказов? → SELECT COUNT(*) FROM orders",
             "few-shot-orders",
         ),
         doc(
             DocKind.GLOSSARY,
-            None,
+            [],
             "[термин: общий-test] термин без привязки к таблице",
             "glossary-common",
         ),
+        # Регресс ревью S06 C1: документ привязан к разрешённой analyst'у orders,
+        # но упоминает недоступную bonuses — скрыт по referenced_tables целиком
+        doc(
+            DocKind.FEW_SHOT,
+            ["orders", "bonuses"],
+            "[few-shot: кросс-test] выручка и премии: orders.total + bonuses.amount",
+            "few-shot-cross",
+        ),
     ]
-    vectors = [V_ORDERS, V_BONUSES, V_ORDERS, V_ORDERS, V_COMMON]
+    vectors = [V_ORDERS, V_BONUSES, V_ORDERS, V_ORDERS, V_COMMON, V_ORDERS]
     return docs, vectors
 
 
@@ -113,6 +128,10 @@ def seeded(store) -> None:
     _cleanup(service_dsn)
 
 
+def _refs(docs: list[KnowledgeDocument]) -> set[str]:
+    return {d.source_ref for d in docs}
+
+
 def test_upsert_is_idempotent_by_source_ref(store) -> None:
     docs, vectors = _seed_docs()
     service_dsn = load_settings().postgres_dsn.get_secret_value()
@@ -136,18 +155,17 @@ def test_upsert_is_idempotent_by_source_ref(store) -> None:
 
 def test_search_returns_only_allowed_tables(store, seeded) -> None:
     docs = store.search(V_ORDERS, ctx=CTX_ANALYST, top_k=50)
-    tables = {d.table_name for d in docs}
+    tables = {t for d in docs for t in d.referenced_tables}
     assert "bonuses" not in tables  # недоступная таблица — не существует в мире агента
     assert "employees" not in tables  # и вторая HR-таблица тоже
-    assert f"{_REF_PREFIX}ddl-orders" in {d.source_ref for d in docs}  # разрешённая — в выдаче
+    assert f"{_REF_PREFIX}ddl-orders" in _refs(docs)  # разрешённая — в выдаче
 
 
 def test_glossary_and_few_shot_surface_for_relevant_tables(store, seeded) -> None:
-    # Векторы glossary-orders/few-shot-orders совпадают с запросом → топ выдачи
+    # Векторы ddl/glossary/few-shot orders совпадают с запросом → топ выдачи
     docs = store.search(V_ORDERS, ctx=CTX_ANALYST, top_k=3)
-    kinds = {d.doc_kind for d in docs[:3]}
-    assert {DocKind.GLOSSARY, DocKind.FEW_SHOT, DocKind.DDL} == kinds
-    refs = {d.source_ref for d in docs}
+    assert {DocKind.GLOSSARY, DocKind.FEW_SHOT, DocKind.DDL} <= {d.doc_kind for d in docs}
+    refs = _refs(docs)
     assert f"{_REF_PREFIX}glossary-orders" in refs
     assert f"{_REF_PREFIX}few-shot-orders" in refs
 
@@ -156,16 +174,65 @@ def test_denied_table_never_surfaces_even_with_exact_match(store, seeded) -> Non
     # Запрос = вектор документа bonuses: без фильтра это cosine distance 0 (топ-1).
     # u_analyst без прав на bonuses → документ не в выдаче вообще (NFR-4 ACL-leak = 0)
     analyst_docs = store.search(V_BONUSES, ctx=CTX_ANALYST, top_k=50)
-    assert f"{_REF_PREFIX}ddl-bonuses" not in {d.source_ref for d in analyst_docs}
-    assert "bonuses" not in {d.table_name for d in analyst_docs}
+    assert f"{_REF_PREFIX}ddl-bonuses" not in _refs(analyst_docs)
+    assert "bonuses" not in {t for d in analyst_docs for t in d.referenced_tables}
     # Позитивный контроль: u_hr с правами на bonuses видит тот же документ
     hr_docs = store.search(V_BONUSES, ctx=CTX_HR, top_k=5)
-    assert f"{_REF_PREFIX}ddl-bonuses" in {d.source_ref for d in hr_docs}
+    assert f"{_REF_PREFIX}ddl-bonuses" in _refs(hr_docs)
+
+
+def test_cross_table_doc_hidden_without_rights_on_referenced_table(store, seeded) -> None:
+    # Регресс ревью S06 C1: few-shot-cross привязан к разрешённой orders и упоминает
+    # bonuses — для u_analyst скрыт (до фикса возвращался: фильтр смотрел только якорь)
+    analyst_docs = store.search(V_ORDERS, ctx=CTX_ANALYST, top_k=50)
+    assert f"{_REF_PREFIX}few-shot-cross" not in _refs(analyst_docs)
+    # Позитивный контроль: временный пользователь с правами на ОБЕ таблицы видит документ
+    service_dsn = load_settings().postgres_dsn.get_secret_value()
+    with psycopg.connect(service_dsn) as conn:
+        conn.execute(
+            "DELETE FROM agent_user_roles WHERE user_id = 'it-cross-user';"
+            "DELETE FROM agent_permissions WHERE role = 'it_cross_viewer';"
+            "INSERT INTO agent_permissions (role, table_name, columns, updated_by) VALUES"
+            " ('it_cross_viewer', 'orders', '*', 'it'), ('it_cross_viewer', 'bonuses', '*', 'it');"
+            "INSERT INTO agent_user_roles (user_id, role)"
+            " VALUES ('it-cross-user', 'it_cross_viewer');"
+        )
+    try:
+        ctx_cross = RunContext(trace_id="it-vector", user_id="it-cross-user")
+        cross_docs = store.search(V_ORDERS, ctx=ctx_cross, top_k=50)
+        assert f"{_REF_PREFIX}few-shot-cross" in _refs(cross_docs)
+    finally:
+        with psycopg.connect(service_dsn) as conn:
+            conn.execute(
+                "DELETE FROM agent_user_roles WHERE user_id = 'it-cross-user';"
+                "DELETE FROM agent_permissions WHERE role = 'it_cross_viewer';"
+            )
 
 
 def test_unknown_user_gets_only_common_documents(store, seeded) -> None:
-    # Deny-by-default: нет строки в agent_user_roles → только table_name IS NULL
+    # Deny-by-default: нет строки в agent_user_roles → только referenced_tables = '{}'
     docs = store.search(V_COMMON, ctx=CTX_UNKNOWN, top_k=50)
     assert docs, "общие документы видны и без ролей"
-    assert all(d.table_name is None for d in docs)
-    assert f"{_REF_PREFIX}glossary-common" in {d.source_ref for d in docs}
+    assert all(not d.referenced_tables for d in docs)
+    assert f"{_REF_PREFIX}glossary-common" in _refs(docs)
+
+
+def test_real_corpus_leaks_no_tables_outside_rights(store) -> None:
+    """Инвариант C1 на живом корпусе (make index-knowledge): всё, что видит
+    u_analyst, ссылается только на его таблицы (orders/order_items/products)."""
+    settings = load_settings()
+    with psycopg.connect(settings.postgres_dsn.get_secret_value()) as conn:
+        row = conn.execute(
+            "SELECT count(*) FROM agent_knowledge WHERE source_ref NOT LIKE %s",
+            (f"{_REF_PREFIX}%",),
+        ).fetchone()
+    if row[0] == 0:
+        pytest.skip("корпус не проиндексирован — выполните make index-knowledge")
+    docs = store.search(V_ORDERS, ctx=CTX_ANALYST, top_k=100)  # > размера корпуса
+    real = [d for d in docs if not d.source_ref.startswith(_REF_PREFIX)]
+    assert real, "живой корпус должен быть виден разрешённому пользователю"
+    allowed = {"orders", "order_items", "products"}
+    for d in real:
+        assert set(d.referenced_tables) <= allowed, (
+            f"{d.source_ref}: referenced_tables {d.referenced_tables} выходят за права u_analyst"
+        )

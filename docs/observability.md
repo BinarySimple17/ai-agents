@@ -133,14 +133,15 @@ best-effort — сбой приёмника не рвёт запрос). Сбо�
 
 | Событие | Payload | Этап |
 |---|---|---|
-| `agent.start` | question, trace_id | вопрос принят |
+| `agent.start` | question, trace_id, mode (tool_loop / retrieval) | вопрос принят |
+| `agent.retrieve` | docs, source_refs | retrieval-контур ДЗ-03: контекст знаний собран (после фильтра прав) |
 | `agent.round` | call | вызов модели (порядковый номер) |
 | `agent.tool_call` | name, sql | модель позвала тул |
 | `agent.observation` | ok; columns, rows_preview (≤5 строк), row_count, truncated — либо error_class, error | результат тулa / отказ |
 | `agent.empty_retry` | left | пустой/битый ответ — повтор |
 | `agent.cap_exhausted` | rounds | кап ходов — финальный вызов без тулов |
 | `agent.degrade` | reason | деградация-исход (S00 правило 8) |
-| `agent.answer` | source: text / final_no_tools | финальный ответ |
+| `agent.answer` | source: text / final_no_tools / retrieval | финальный ответ |
 
 `llm.complete / retry / timeout / reject / breaker_open / budget_stop` — события
 провайдера (включая `text_from_reasoning` и `finish_reason` — D-021). Эскалации

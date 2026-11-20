@@ -10,7 +10,7 @@
 Вопрос: Сколько всего заказов в базе?
 SQL: SELECT COUNT(*) AS orders_count FROM orders;
 
-## [few-shot: заказы-из-РФ] — таблица orders
+## [few-shot: заказы-из-РФ] — таблицы orders, customers
 
 Вопрос: Сколько заказов у клиентов из РФ?
 SQL: SELECT COUNT(*) AS orders_count
@@ -20,7 +20,7 @@ SQL: SELECT COUNT(*) AS orders_count
 Комментарий: страна — код 'RU', не 'Russia'; без JOIN заказы клиентов не
 фильтруются по стране.
 
-## [few-shot: выручка-по-кампаниям] — таблица orders
+## [few-shot: выручка-по-кампаниям] — таблицы orders, campaigns
 
 Вопрос: Какая выручка по каждой рекламной кампании?
 SQL: SELECT ca.name AS campaign, SUM(o.total) AS revenue
@@ -31,7 +31,7 @@ SQL: SELECT ca.name AS campaign, SUM(o.total) AS revenue
 Комментарий: LEFT JOIN, чтобы заказы конкретной кампании не терялись; выручка
 — SUM(orders.total) (см. глоссарий «выручка»).
 
-## [few-shot: не-премированы] — таблица employees
+## [few-shot: не-премированы] — таблицы employees, bonuses
 
 Вопрос: Кто из сотрудников не был премирован?
 SQL: SELECT e.name AS employee
@@ -40,7 +40,7 @@ SQL: SELECT e.name AS employee
      WHERE b.bonus_id IS NULL;
 Комментарий: анти-джойн (LEFT JOIN ... IS NULL); премия — строка в bonuses.
 
-## [few-shot: топ-клиентов] — таблица customers
+## [few-shot: топ-клиентов] — таблицы customers, orders
 
 Вопрос: Назови топ-5 клиентов по числу заказов.
 SQL: SELECT c.name AS customer, COUNT(o.order_id) AS orders_count

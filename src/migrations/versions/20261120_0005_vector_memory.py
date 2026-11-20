@@ -28,7 +28,7 @@ CREATE TABLE agent_knowledge (
     id            integer GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     doc_kind      text NOT NULL CHECK (doc_kind IN ('ddl', 'relationship', 'glossary', 'few_shot')),
     table_name    text,                     -- null = общий документ (не привязан к таблице)
-    content       text NOT NULL,            -- чанк с префиксом-заголовком («[таблица: orders] …», ACCURACY §6.2)
+    content       text NOT NULL,            -- чанк с префиксом-заголовком («[таблица: orders] …»)
     embedding     vector(1024) NOT NULL,    -- размерность bge-m3; смена эмбеддера = переиндексация
     model_version text NOT NULL,            -- каким эмбеддером построен вектор (model-card)
     source_ref    text NOT NULL,            -- ключ идемпотентного upsert (файл:идентификатор)

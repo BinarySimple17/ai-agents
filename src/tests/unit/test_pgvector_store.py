@@ -1,12 +1,15 @@
 """Юнит-тесты PgVectorStore на моках курсора (S06 Task 5; S00 правило 7 — без БД).
 
-Проверяется форма SQL поиска: фильтр прав — джойн в самом запросе (ADR-005
-deny-by-default, не пост-фильтрация), user_id — bind-параметром (данные, не
-литералы SQL); контракты размерности (EMBEDDING_DIM) и идемпотентного upsert по
-source_ref. Поведение фильтра на живых данных — интеграционные тесты
-test_vector_memory.py (команда верификации фичи).
+Проверяется форма SQL поиска: фильтр прав — джойн с настройками в самом запросе
+(ADR-005 deny-by-default, не пост-фильтрация), инвариант по всем
+referenced_tables (ревью S06 Critical-1), user_id — bind-параметром (данные, не
+литералы SQL); контракты размерности (EMBEDDING_DIM), идемпотентный upsert по
+source_ref, типизированная ошибка хранилища и разделение DSN-каналов
+(search → planner, upsert → write; ruling W1). Поведение фильтра на живых
+данных — интеграционные тесты test_vector_memory.py.
 """
 
+import psycopg
 import pytest
 
 import text_to_sql_agent.infrastructure.memory.pgvector_store as pgvector_module
@@ -14,6 +17,7 @@ from text_to_sql_agent.application.ports.vector_store import (
     EMBEDDING_DIM,
     DocKind,
     KnowledgeDocument,
+    VectorStoreError,
 )
 from text_to_sql_agent.domain.entities import RunContext
 from text_to_sql_agent.infrastructure.memory.pgvector_store import (
@@ -53,6 +57,7 @@ class _FakeConn:
     def __init__(self, rows: list[dict] | None = None) -> None:
         self.rows = rows or []
         self.executed: list[tuple[str, object]] = []
+        self.dsn: str | None = None
 
     def __enter__(self) -> "_FakeConn":
         return self
@@ -73,11 +78,22 @@ def _row(i: int = 0, table: str | None = "orders", kind: str = "ddl") -> dict:
         "id": i,
         "doc_kind": kind,
         "table_name": table,
+        "referenced_tables": [table] if table else [],
         "content": f"[таблица: {table}] контент {i}",
         "model_version": "text-embedding-bge-m3",
         "source_ref": f"ddl:{table}:{i}",
         "score": 0.87 - i * 0.1,
     }
+
+
+def _connect_to(fake: _FakeConn):
+    """connect-двойник, запоминающий DSN каждого вызова (каналы ruling W1)."""
+
+    def connect(dsn: str, **kwargs: object) -> _FakeConn:
+        fake.dsn = dsn
+        return fake
+
+    return connect
 
 
 @pytest.fixture()
@@ -90,7 +106,7 @@ def fake_conn(monkeypatch: pytest.MonkeyPatch) -> _FakeConn:
             _row(2, table=None, kind="few_shot"),
         ]
     )
-    monkeypatch.setattr(pgvector_module.psycopg, "connect", lambda dsn, **kw: conn)
+    monkeypatch.setattr(pgvector_module.psycopg, "connect", _connect_to(conn))
     return conn
 
 
@@ -106,11 +122,34 @@ def test_search_filters_by_rights_join_in_sql(fake_conn: _FakeConn) -> None:
     # Фильтр прав — джойн с настройками в самом SQL (deny-by-default), а не
     # пост-фильтрация выдачи (ADR-005/ADR-003 §4)
     assert "agent_user_roles" in sql and "agent_permissions" in sql
-    assert "EXISTS" in sql
-    assert "table_name IS NULL" in sql  # общие документы проходят всегда
+    # Инвариант по всем таблицам документа (ревью C1): unnest(referenced_tables)
+    assert "unnest(referenced_tables)" in sql
+    assert "referenced_tables = '{}'" in sql  # общие документы проходят всегда
     # user_id — bind-параметр, не литерал SQL (данные не вклеиваются в текст)
     assert _CTX.user_id not in sql
     assert params[1] == _CTX.user_id
+
+
+def test_search_uses_search_dsn_channel(fake_conn: _FakeConn) -> None:
+    # ruling W1: поиск — под ролью agent_planner (search_dsn), не под сервисной
+    store = PgVectorStore(_DSN, write_dsn=_WRITE_DSN)
+    store.search(_VEC, ctx=_CTX, top_k=5)
+    assert fake_conn.dsn == _DSN
+
+
+def test_upsert_uses_write_dsn_channel(fake_conn: _FakeConn) -> None:
+    # ruling W1: запись — только офлайн-индексация под сервисным DSN
+    store = PgVectorStore(_DSN, write_dsn=_WRITE_DSN)
+    doc = KnowledgeDocument(
+        doc_kind=DocKind.DDL,
+        table_name="orders",
+        referenced_tables=["orders"],
+        content="[таблица: orders] DDL",
+        model_version="text-embedding-bge-m3",
+        source_ref="ddl:orders",
+    )
+    store.upsert([doc], [_VEC])
+    assert fake_conn.dsn == _WRITE_DSN
 
 
 def test_search_returns_documents_with_scores(fake_conn: _FakeConn) -> None:
@@ -119,8 +158,10 @@ def test_search_returns_documents_with_scores(fake_conn: _FakeConn) -> None:
     assert len(docs) == 3
     assert docs[0].doc_kind == DocKind.DDL
     assert docs[0].table_name == "orders"
+    assert docs[0].referenced_tables == ["orders"]
     assert docs[1].doc_kind == DocKind.GLOSSARY
-    assert docs[2].table_name is None  # общий документ
+    assert docs[2].table_name is None
+    assert docs[2].referenced_tables == []  # общий документ
     assert docs[0].score == pytest.approx(0.87)
     assert docs[2].source_ref == "ddl:None:2"
 
@@ -143,6 +184,27 @@ def test_search_top_k_must_be_positive() -> None:
         store.search(_VEC, ctx=_CTX, top_k=0)
 
 
+def test_storage_failure_wraps_into_vector_store_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Порт типизирован (прецедент SQLExecutionError): сырой psycopg.Error не
+    # протекает в вызывающий слой (ревью S06 Important-3)
+    class FailingConn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args: object) -> bool:
+            return False
+
+        def execute(self, *args: object, **kwargs: object) -> None:
+            raise psycopg.OperationalError("connection refused")
+
+    monkeypatch.setattr(pgvector_module.psycopg, "connect", lambda dsn, **kw: FailingConn())
+    store = PgVectorStore(_DSN)
+    with pytest.raises(VectorStoreError, match="векторная память недоступна"):
+        store.search(_VEC, ctx=_CTX, top_k=5)
+
+
 def test_upsert_requires_write_dsn() -> None:
     store = PgVectorStore(_DSN)
     doc = KnowledgeDocument(doc_kind=DocKind.DDL, content="x", model_version="m", source_ref="s")
@@ -150,23 +212,23 @@ def test_upsert_requires_write_dsn() -> None:
         store.upsert([doc], [_VEC])
 
 
-def test_upsert_sql_is_idempotent_by_source_ref(monkeypatch: pytest.MonkeyPatch) -> None:
-    fake = _FakeConn()
-    monkeypatch.setattr(pgvector_module.psycopg, "connect", lambda dsn, **kw: fake)
+def test_upsert_sql_is_idempotent_by_source_ref(fake_conn: _FakeConn) -> None:
     store = PgVectorStore(_DSN, write_dsn=_WRITE_DSN)
     doc = KnowledgeDocument(
         doc_kind=DocKind.FEW_SHOT,
         table_name="orders",
+        referenced_tables=["orders", "customers"],  # кросс-табличный пример
         content="[few-shot: orders] вопрос → SQL",
         model_version="text-embedding-bge-m3",
         source_ref="few_shot:orders:1",
     )
     assert store.upsert([doc], [_VEC]) == 1
-    sql, params = fake.executed[0]
+    sql, params = fake_conn.executed[0]
     assert "ON CONFLICT (source_ref) DO UPDATE" in sql  # повторная индексация — update
     assert params[0] == (
         "few_shot",
         "orders",
+        ["orders", "customers"],
         doc.content,
         _to_pgvector(_VEC),
         "text-embedding-bge-m3",

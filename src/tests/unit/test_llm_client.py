@@ -504,7 +504,8 @@ def _embed_client(
 def test_embed_batch_returns_vectors_in_input_order() -> None:
     vectors = [[0.1, 0.2], [0.3, 0.4]]
     provider = OpenAIProvider(
-        _settings(), embedding_client=_embed_client(vectors)  # type: ignore[arg-type]
+        _settings(),
+        embedding_client=_embed_client(vectors),  # type: ignore[arg-type]
     )
     assert provider.embed(["вопрос 1", "вопрос 2"]) == vectors
 
@@ -512,7 +513,8 @@ def test_embed_batch_returns_vectors_in_input_order() -> None:
 def test_embed_empty_input_skips_gateway() -> None:
     calls: list[dict[str, Any]] = []
     provider = OpenAIProvider(
-        _settings(), embedding_client=_embed_client(calls=calls)  # type: ignore[arg-type]
+        _settings(),
+        embedding_client=_embed_client(calls=calls),  # type: ignore[arg-type]
     )
     assert provider.embed([]) == []
     assert calls == []  # пустой батч не ходит в шлюз
@@ -521,7 +523,8 @@ def test_embed_empty_input_skips_gateway() -> None:
 def test_embed_uses_embedding_model_and_batched_input() -> None:
     calls: list[dict[str, Any]] = []
     provider = OpenAIProvider(
-        _settings(), embedding_client=_embed_client([[0.5]], calls=calls)  # type: ignore[arg-type]
+        _settings(),
+        embedding_client=_embed_client([[0.5], [0.6]], calls=calls),  # type: ignore[arg-type]
     )
     provider.embed(["q1", "q2"])
     assert calls == [{"model": "embed-1", "input": ["q1", "q2"]}]
@@ -538,6 +541,15 @@ def test_embed_gateway_error_raises_llm_request_error() -> None:
     )
     with pytest.raises(LLMRequestError, match="эмбеддера"):
         provider.embed(["q"])
+
+
+def test_embed_incomplete_gateway_response_rejected() -> None:
+    # Парность «текст ↔ вектор»: шлюз вернул меньше векторов, чем текстов —
+    # ошибка стыка, а не молчаливая потеря (ревью S06 M6; иначе retrieval падал
+    # IndexError'ом в деградационном пути)
+    provider = OpenAIProvider(_settings(), embedding_client=_embed_client([]))  # type: ignore[arg-type]
+    with pytest.raises(LLMRequestError, match="векторов"):
+        provider.embed(["q1", "q2"])
 
 
 def test_embed_client_lazy_built_on_embedding_base_url(monkeypatch: pytest.MonkeyPatch) -> None:

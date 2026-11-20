@@ -1,4 +1,4 @@
-"""Integration-тесты схемы v1.5 (feat-002) — solution/sessions/S02_session.md.
+"""Integration-тесты схемы v1.5 (+ миграция 006 S06: agent_knowledge) — S02_session.md.
 
 Пункты behavior feat-002: идемпотентность alembic; состав таблиц v1.5; расширение
 vector; границы ролей (agent_ro read-only whitelist, agent_trace INSERT-only,
@@ -31,6 +31,7 @@ AGENT_TABLES = (
     "agent_relationships",
     "agent_edge_proposals",
     "agent_data_sources",
+    "agent_knowledge",  # векторная память знаний (S06, feat-006)
     "settings_version",
     "query_trace",
     "agent_audit",
@@ -118,7 +119,7 @@ def test_alembic_upgrade_idempotent(postgres_available):
 
 
 def test_schema_tables_exist(admin_conn):
-    """Все таблицы схемы v1.5 существуют (7 бизнес + 8 служебных)."""
+    """Все таблицы схемы v1.5+006 существуют (7 бизнес + 9 служебных, agent_knowledge — S06)."""
     with admin_conn.cursor() as cur:
         cur.execute(
             "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'"

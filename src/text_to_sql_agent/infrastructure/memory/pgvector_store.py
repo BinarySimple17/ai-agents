@@ -4,20 +4,22 @@
 «пул agent_planner: retrieval, настройки, EXPLAIN»; гранты — миграции 0002/0005);
 запись (upsert) — только офлайн-индексация `make index-knowledge` под сервисным
 DSN (`write_dsn`; тот же уровень доверия, что миграции/сиды) — runtime-роли
-пишут в память знаний не могут.
+пишут в память знаний не могут (ревью S06 Important-2: дефолтный контейнер
+собирается без write_dsn, writer — явный флаг).
 
 Поиск — dense-only, cosine `<=>` по HNSW-индексу (решение владельца 2026-11-20,
 D-026 доп. 2; расширение до гибрида — V3, BL-007: порт абстрагирует способ
 поиска). Фильтр прав — deny-by-default (ADR-005 «граница знаний = граница прав»,
-NFR-4 ACL-leak = 0): **джойн в самом SQL поиска** (ADR-003 §4 «метадата-фильтр
-по scope можно делать джойном с правами»), не пост-фильтрация — документ с
-`table_name` участвует в выдаче только если таблица разрешена ctx.user_id
-(agent_user_roles → agent_permissions); `table_name IS NULL` — общий документ.
-Недоступная таблица не фильтруется кодом после выдачи — она не участвует в
-поиске вообще (документ без прав «не существует в мире агента»).
+NFR-4 ACL-leak = 0): **джойн в самом SQL поиска** (ADR-003 §4), не
+пост-фильтрация; инвариант — по всем `referenced_tables` документа (ревью S06
+Critical-1): документ с таблицами [orders, campaigns] виден только пользователю
+с правами на ОБЕ; пустой список — общий документ. Недоступный документ не
+участвует в поиске вообще («не существует в мире агента»).
 
 Соединение — на вызов (MVP без пула, как у postgres_executor); таймаут запроса —
-`SET LOCAL statement_timeout` канонного значения канала исполнения.
+`SET LOCAL statement_timeout` канонного значения канала исполнения. Сбой
+хранилища — типизированный `VectorStoreError` (прецедент SQLExecutionError),
+не сырой psycopg.Error.
 """
 
 import psycopg
@@ -30,34 +32,44 @@ from text_to_sql_agent.application.ports.sql_executor import (
 from text_to_sql_agent.application.ports.vector_store import (
     EMBEDDING_DIM,
     KnowledgeDocument,
+    VectorStoreError,
 )
 from text_to_sql_agent.domain.entities import RunContext
 
-# Джойн прав — EXISTS по настройкам (agent_user_roles → agent_permissions):
-# семантика рёбер/DDL-документов не нужна — фильтр чисто табличный (ADR-003 §4).
+_ERROR_MESSAGE_MAX_CHARS = 300  # сообщения стыка — не простыня psycopg-хинтов
+
+# Права — по всем таблицам документа: NOT EXISTS(... NOT EXISTS ...)) = «нет ни
+# одной таблицы без прав». Внутренний EXISTS — джойн с настройками прав
+# (agent_user_roles → agent_permissions), deny-by-default для неизвестных user_id.
 _SEARCH_SQL = """
-SELECT id, doc_kind, table_name, content, model_version, source_ref,
+SELECT id, doc_kind, table_name, referenced_tables, content, model_version, source_ref,
        1 - (embedding <=> %s::vector) AS score
 FROM agent_knowledge
-WHERE table_name IS NULL
-   OR EXISTS (
+WHERE referenced_tables = '{}'
+   OR NOT EXISTS (
        SELECT 1
-       FROM agent_user_roles ur
-       JOIN agent_permissions p ON p.role = ur.role
-       WHERE ur.user_id = %s AND p.table_name = agent_knowledge.table_name
+       FROM unnest(referenced_tables) AS t
+       WHERE NOT EXISTS (
+           SELECT 1
+           FROM agent_user_roles ur
+           JOIN agent_permissions p ON p.role = ur.role
+           WHERE ur.user_id = %s AND p.table_name = t
+       )
    )
 ORDER BY embedding <=> %s::vector
 LIMIT %s
 """
 
 # Идемпотентность — по source_ref (unique index миграции 0005): повторная
-# индексация обновляет содержимое и вектор, не дублирует документ.
+# индексация обновляет содержимое, вектор и список таблиц, не дублирует документ.
 _UPSERT_SQL = """
-INSERT INTO agent_knowledge (doc_kind, table_name, content, embedding, model_version, source_ref)
-VALUES (%s, %s, %s, %s::vector, %s, %s)
+INSERT INTO agent_knowledge
+    (doc_kind, table_name, referenced_tables, content, embedding, model_version, source_ref)
+VALUES (%s, %s, %s, %s, %s::vector, %s, %s)
 ON CONFLICT (source_ref) DO UPDATE
 SET doc_kind = EXCLUDED.doc_kind,
     table_name = EXCLUDED.table_name,
+    referenced_tables = EXCLUDED.referenced_tables,
     content = EXCLUDED.content,
     embedding = EXCLUDED.embedding,
     model_version = EXCLUDED.model_version,
@@ -78,6 +90,13 @@ def _check_dim(vector: list[float], *, what: str) -> None:
         )
 
 
+def _shorten(message: str) -> str:
+    message = " ".join(message.split())
+    if len(message) <= _ERROR_MESSAGE_MAX_CHARS:
+        return message
+    return message[: _ERROR_MESSAGE_MAX_CHARS - 1] + "…"
+
+
 class PgVectorStore:
     """Реализация `VectorStore`: dense-поиск с фильтром прав + идемпотентный upsert."""
 
@@ -92,22 +111,26 @@ class PgVectorStore:
         if top_k <= 0:
             raise ValueError(f"top_k должен быть положительным, получен {top_k}")
         vector_literal = _to_pgvector(query_embedding)
-        with psycopg.connect(
-            self._search_dsn,
-            row_factory=dict_row,
-            connect_timeout=CONNECT_TIMEOUT_S,
-        ) as conn:
-            conn.execute(f"SET LOCAL statement_timeout = '{STATEMENT_TIMEOUT_S}s'")
-            cursor = conn.execute(
-                _SEARCH_SQL,
-                (vector_literal, ctx.user_id, vector_literal, top_k),
-                prepare=True,
-            )
-            rows = cursor.fetchall()
+        try:
+            with psycopg.connect(
+                self._search_dsn,
+                row_factory=dict_row,
+                connect_timeout=CONNECT_TIMEOUT_S,
+            ) as conn:
+                conn.execute(f"SET LOCAL statement_timeout = '{STATEMENT_TIMEOUT_S}s'")
+                cursor = conn.execute(
+                    _SEARCH_SQL,
+                    (vector_literal, ctx.user_id, vector_literal, top_k),
+                    prepare=True,
+                )
+                rows = cursor.fetchall()
+        except psycopg.Error as exc:
+            raise VectorStoreError(f"векторная память недоступна: {_shorten(str(exc))}") from exc
         return [
             KnowledgeDocument(
                 doc_kind=row["doc_kind"],
                 table_name=row["table_name"],
+                referenced_tables=list(row["referenced_tables"]),
                 content=row["content"],
                 model_version=row["model_version"],
                 source_ref=row["source_ref"],
@@ -135,6 +158,7 @@ class PgVectorStore:
             (
                 doc.doc_kind.value,
                 doc.table_name,
+                list(doc.referenced_tables),
                 doc.content,
                 _to_pgvector(vector),
                 doc.model_version,
@@ -142,11 +166,16 @@ class PgVectorStore:
             )
             for doc, vector in zip(documents, embeddings, strict=True)
         ]
-        with psycopg.connect(
-            self._write_dsn,
-            row_factory=dict_row,
-            connect_timeout=CONNECT_TIMEOUT_S,
-        ) as conn:
-            with conn.cursor() as cursor:
-                cursor.executemany(_UPSERT_SQL, params)
+        try:
+            with psycopg.connect(
+                self._write_dsn,
+                row_factory=dict_row,
+                connect_timeout=CONNECT_TIMEOUT_S,
+            ) as conn:
+                with conn.cursor() as cursor:
+                    cursor.executemany(_UPSERT_SQL, params)
+        except psycopg.Error as exc:
+            raise VectorStoreError(
+                f"запись в векторную память не удалась: {_shorten(str(exc))}"
+            ) from exc
         return len(documents)
