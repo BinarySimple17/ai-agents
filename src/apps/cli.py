@@ -1,8 +1,14 @@
-"""CLI ДЗ-02: function-calling цикл «вопрос → LLM → run_sql → Observation → ответ».
+"""CLI ДЗ-02/03: тул-цикл «вопрос → LLM → run_sql → Observation → ответ» и контур
+ДЗ-03 «вопрос → retrieval → LLM → ответ» (--retrieve).
 
 Артефакт hw-plan §2 (layer-3 feat-013): LLM сам решает, звать ли тул; тул-контур —
 не замена FSM (маршрут между узлами — код, V4), инвариант ADR-002 не затронут:
 модель выбирает тул, а не следующий узел.
+
+Контур ДЗ-03 (S06, hw-plan §3): перед вызовом модели — эмбеддинг вопроса + поиск
+по векторной памяти с фильтром прав (deny-by-default в SQL — ADR-005) + retrieval-
+блок в системный промпт (≈2К токенов); identity — `--user` (ruling W2 ARCH-GATE
+S06: дефолт cli-dev, для retrieval — сидированные u_logist/u_hr/u_analyst).
 
 Политика цикла (ruling ARCH-GATE S13 Q5):
 - кап MAX_TOOL_CALLS = 3 модельных хода с тулом на вопрос (зеркало per-node ≤3,
@@ -29,6 +35,8 @@ import sys
 import uuid
 from typing import Any
 
+import psycopg
+
 from text_to_sql_agent.application.ports.llm_provider import (
     LLMProvider,
     LLMProviderError,
@@ -41,12 +49,14 @@ from text_to_sql_agent.application.ports.tracer import (
     EVENT_AGENT_DEGRADE,
     EVENT_AGENT_EMPTY_RETRY,
     EVENT_AGENT_OBSERVATION,
+    EVENT_AGENT_RETRIEVE,
     EVENT_AGENT_ROUND,
     EVENT_AGENT_START,
     EVENT_AGENT_TOOL_CALL,
     OBSERVATION_PREVIEW_ROWS,
     Tracer,
 )
+from text_to_sql_agent.application.ports.vector_store import KnowledgeDocument
 from text_to_sql_agent.application.services.run_sql_tool import SQL_ARGUMENT, TOOL_NAME, RunSqlTool
 from text_to_sql_agent.composition.container import build_container
 from text_to_sql_agent.domain.entities import RunContext, Trace
@@ -61,6 +71,26 @@ DEFAULT_ROLE = "mid"  # роль генерирующего узла по мат
 # reasoning). Парсинг тегов сознательно не делается — это роль шлюза; текст с тегом
 # = битый формат → протокол ретрая (не отдаётся пользователю как ответ).
 MALFORMED_TOOL_CALL_TAG = "<tool_call>"
+
+# --- Контур ДЗ-03: retrieval (S06, hw-plan §3) ---
+RETRIEVAL_TOP_K = 5  # топ-5 документов в контекст (канон ADR-003: ранжирование топ-5)
+# Бюджет retrieval-блока ≈2К токенов (hw-plan §3): кириллица bge-m3 ≈3.5 символа
+# на токен — грубая оценка потолка, не точный счётчик; блок режется по границе
+# документа (чанк посередине теряет якорь-заголовок и смысл)
+RETRIEVAL_CONTEXT_TOKENS = 2000
+_CHARS_PER_TOKEN = 3.5  # эмпирическая оценка для кириллицы (bge-m3-корпус)
+RETRIEVAL_CONTEXT_MAX_CHARS = int(RETRIEVAL_CONTEXT_TOKENS * _CHARS_PER_TOKEN)
+RETRIEVAL_SEPARATOR = "\n---\n"
+RETRIEVAL_BLOCK_HEADER = (
+    "Контекст знаний (документы, разрешённые твоим правам; DDL, связи таблиц, "
+    "глоссарий, примеры «вопрос → SQL»):"
+)
+RETRIEVAL_SYSTEM_PROMPT = (
+    "Ты — аналитик данных демо-схемы. Отвечай на бизнес-вопрос по-русски, "
+    "опираясь на контекст знаний ниже. Показывай SQL, который отвечает на вопрос, "
+    "и поясняй вывод. Если данных для ответа в контексте нет — скажи об этом честно.\n"
+)
+RETRIEVAL_EMPTY_BLOCK = "\nКонтекст знаний пуст: релевантных разрешённых документов нет."
 
 SYSTEM_PROMPT = (
     "Ты — аналитик данных демо-схемы. Отвечай на бизнес-вопрос по-русски. "
@@ -280,21 +310,123 @@ def _format_result(result: QueryResult) -> str:
     return f"{DATA_MARKING}\n{json.dumps(payload, ensure_ascii=False, default=str)}"
 
 
+def format_retrieval_block(
+    docs: list[KnowledgeDocument], *, max_chars: int = RETRIEVAL_CONTEXT_MAX_CHARS
+) -> str:
+    """Retrieval-блок системного промпта: заголовок + чанки через ---, кап ≈2К токенов.
+
+    Кап — по границе документа: чанк, разрезанный посередине, теряет якорь-
+    заголовок («[таблица: orders] …») и смысл (ACCURACY §6.2). Документы уже
+    отфильтрованы по правам в SQL поиска — блок не пост-фильтруется.
+    """
+    chunks: list[str] = []
+    total = len(RETRIEVAL_BLOCK_HEADER)
+    for doc in docs:
+        if total + len(RETRIEVAL_SEPARATOR) + len(doc.content) > max_chars:
+            break  # бюджет ≈2К токенов исчерпан — остальные документы не влезают целиком
+        chunks.append(doc.content)
+        total += len(doc.content) + len(RETRIEVAL_SEPARATOR)
+    if not chunks:
+        return RETRIEVAL_EMPTY_BLOCK
+    return "\n" + RETRIEVAL_BLOCK_HEADER + "\n" + RETRIEVAL_SEPARATOR.join(chunks)
+
+
+def run_retrieval_flow(
+    question: str,
+    *,
+    llm: LLMProvider,
+    vector_store: Any,  # VectorStore (порт) — Any ради моков без runtime_checkable-штрафа
+    ctx: RunContext,
+    top_k: int = RETRIEVAL_TOP_K,
+    tracer: Tracer | None = None,
+) -> str:
+    """Контур ДЗ-03 (hw-plan §3): вопрос → retrieval → LLM → ответ.
+
+    Эмбеддинг вопроса + поиск с фильтром прав (deny-by-default в SQL — ADR-005;
+    недоступная таблица не участвует в поиске вообще) → retrieval-блок в системный
+    промпт (≈2К токенов) → один вызов модели. Деградация по правилу 8: недоступность
+    шлюза/хранилища и пустой ответ — валидный текстовый исход, не traceback.
+    """
+    _emit(tracer, EVENT_AGENT_START, trace_id=ctx.trace_id, question=question, mode="retrieval")
+    try:
+        query_vector = llm.embed([question])[0]
+        docs = vector_store.search(query_vector, ctx=ctx, top_k=top_k)
+    except (LLMProviderError, RuntimeError, ValueError, psycopg.Error) as exc:
+        _emit(
+            tracer,
+            EVENT_AGENT_DEGRADE,
+            trace_id=ctx.trace_id,
+            reason=f"retrieval недоступен: {exc}",
+        )
+        return LLM_DEGRADED_TEMPLATE.format(error=exc)
+    _emit(
+        tracer,
+        EVENT_AGENT_RETRIEVE,
+        trace_id=ctx.trace_id,
+        docs=len(docs),
+        source_refs=[doc.source_ref for doc in docs],
+    )
+    messages: list[dict[str, Any]] = [
+        {"role": "system", "content": RETRIEVAL_SYSTEM_PROMPT + format_retrieval_block(docs)},
+        {"role": "user", "content": question},
+    ]
+    try:
+        response = llm.complete(DEFAULT_ROLE, messages)
+    except LLMProviderError as exc:
+        _emit(tracer, EVENT_AGENT_DEGRADE, trace_id=ctx.trace_id, reason=f"шлюз недоступен: {exc}")
+        return LLM_DEGRADED_TEMPLATE.format(error=exc)
+    if not response.text or _is_malformed_tool_call(response.text):
+        _emit(
+            tracer,
+            EVENT_AGENT_DEGRADE,
+            trace_id=ctx.trace_id,
+            reason="модель не вернула текста в контуре retrieval",
+        )
+        return DEGRADED_ANSWER
+    _emit(tracer, EVENT_AGENT_ANSWER, trace_id=ctx.trace_id, source="retrieval")
+    return response.text
+
+
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Text-to-SQL CLI (ДЗ-02: тул-контур run_sql)")
+    parser = argparse.ArgumentParser(
+        description="Text-to-SQL CLI: тул-контур run_sql (ДЗ-02) и retrieval-контур (ДЗ-03)"
+    )
     parser.add_argument("question", nargs="+", help="бизнес-вопрос")
     parser.add_argument(
         "--quiet",
         action="store_true",
         help="глушить этапы работы агента в stderr (ответ остаётся на stdout)",
     )
+    parser.add_argument(
+        "--user",
+        default=DEV_USER_ID,
+        help="identity для фильтра прав retrieval (сидированные: u_logist/u_hr/u_analyst)",
+    )
+    parser.add_argument(
+        "--retrieve",
+        action="store_true",
+        help="контур ДЗ-03: вопрос → retrieval → LLM → ответ (векторная память, без тул-цикла)",
+    )
     args = parser.parse_args(argv)
     question = " ".join(args.question)
     container = build_container(console_trace=not args.quiet)
-    ctx = RunContext(trace_id=uuid.uuid4().hex, user_id=DEV_USER_ID)
-    answer = run_tool_loop(
-        question, llm=container.llm, tool=container.run_sql_tool, ctx=ctx, tracer=container.tracer
-    )
+    ctx = RunContext(trace_id=uuid.uuid4().hex, user_id=args.user)
+    if args.retrieve:
+        answer = run_retrieval_flow(
+            question,
+            llm=container.llm,
+            vector_store=container.vector_store,
+            ctx=ctx,
+            tracer=container.tracer,
+        )
+    else:
+        answer = run_tool_loop(
+            question,
+            llm=container.llm,
+            tool=container.run_sql_tool,
+            ctx=ctx,
+            tracer=container.tracer,
+        )
     print(answer)
     return 0
 

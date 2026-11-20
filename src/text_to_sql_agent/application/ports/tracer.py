@@ -19,6 +19,7 @@ EVENT_AGENT_EMPTY_RETRY = "agent.empty_retry"  # пустой/битый отв�
 EVENT_AGENT_CAP_EXHAUSTED = "agent.cap_exhausted"  # кап ходов — финальный вызов без тулов
 EVENT_AGENT_DEGRADE = "agent.degrade"  # деградация-исход (reason)
 EVENT_AGENT_ANSWER = "agent.answer"  # финальный ответ (source)
+EVENT_AGENT_RETRIEVE = "agent.retrieve"  # retrieval контура ДЗ-03 (docs, source_refs)
 
 # BL-004 (требование владельца): результат тулa показывается строками данных,
 # хоть обрезанными; единый контракт эмиссии (apps.cli) и рендера (ConsoleTracer)
