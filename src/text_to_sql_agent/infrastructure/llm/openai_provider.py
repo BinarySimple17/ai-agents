@@ -41,6 +41,7 @@ usage недоступен до ответа, поэтому один вызов
 аналог, ruling W4 ARCH-GATE S19).
 """
 
+import json
 import random
 import time
 from collections.abc import Callable, Iterator, Sequence
@@ -345,11 +346,26 @@ class OpenAIProvider:
             raise LLMRequestError(
                 f"таймаут шлюза посреди стрима ({self._settings.llm_request_timeout_s}s)"
             ) from exc
-        except (httpx.HTTPError, openai.APIError) as exc:
+        except (
+            httpx.HTTPError,
+            openai.APIError,
+            json.JSONDecodeError,
+            UnicodeDecodeError,
+        ) as exc:
             # Обрыв соединения/чтения посреди стрима — СБОЙ шлюза: breaker считает
-            # (W3); наружу типизированная ошибка — деградацию решает вызывающий
+            # (W3); наружу типизированная ошибка — деградацию решает вызывающий.
+            # Ревью-2 m1: SDK не оборачивает malformed SSE-кадр (json.JSONDecodeError
+            # из sse.json()) — прокси, вставивший HTML в SSE-поток, идёт тем же путём;
+            # UnicodeDecodeError — битые байты кадра. pydantic ValidationError (тоже
+            # ValueError) сознательно НЕ ловим — это наш контракт-баг, не шлюз.
             self._register_failure()
-            self._emit("llm.reject", role=role, status_code="stream", stream=True)
+            self._emit(
+                "llm.reject",
+                role=role,
+                status_code=None,  # не HTTP-ответ — статус-кода нет (ревью-2 m5)
+                reason="stream_abort",
+                stream=True,
+            )
             raise LLMRequestError(f"стрим оборван шлюзом: {exc}") from exc
         finally:
             close = getattr(stream, "close", None)

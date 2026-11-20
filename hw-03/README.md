@@ -77,5 +77,5 @@ TTFT (первый чанк 5.7с) — время промпт-обработк�
   (`<think>`) в stdout не попадают — фолбэком по guard'у finish_reason.
 - **Маршрут не от LLM** — контур целиком код (`cli.py`), LLM наполняет содержимое
   (инвариант ADR-002); полный interpret-узел FSM — веха V4.
-- Верификация фичи: `make verify-feature F=feat-019` (23 unit-теста
-  `test_streaming.py`); полный набор — 231 passed.
+- Верификация фичи: `make verify-feature F=feat-019` (34 unit-теста
+  `test_streaming.py`); полный набор — 234 passed.

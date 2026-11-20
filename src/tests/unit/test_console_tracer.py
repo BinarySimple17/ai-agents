@@ -230,3 +230,15 @@ def test_tee_fanout_and_resilience() -> None:
     # событие дошло в ОБА живых приёмника, несмотря на сбой между ними
     assert "✓ ответ (text)" in stream_a.getvalue()
     assert "✓ ответ (text)" in stream_b.getvalue()
+
+
+def test_llm_reject_stream_abort_renders_reason() -> None:
+    # S19 (ревью-2 m5): обрыв стрима — llm.reject без HTTP-статуса, с reason
+    tracer, stream = _tracer()
+    tracer.record(
+        Trace(
+            event="llm.reject",
+            payload={"role": "mid", "status_code": None, "reason": "stream_abort"},
+        )
+    )
+    assert "  ! шлюз: отказ stream_abort (mid)" in stream.getvalue()

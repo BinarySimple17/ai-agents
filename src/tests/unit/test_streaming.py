@@ -619,3 +619,52 @@ def test_main_retrieve_stages_go_to_stderr_not_stdout(
     assert captured.out == "Ответ 42\n"
     assert "▶ Вопрос" in captured.err  # этапы — в stderr
     assert "Ответ 42" not in captured.err  # текст ответа не в трейсе (Ловушка-4)
+
+
+# --- ревью-2 m1: malformed SSE-кадр (прокси вставил HTML в SSE-поток) ---
+class _GarbageFrameTransport(httpx.BaseTransport):
+    """Транспорт: валидный чанк, затем SSE-кадр с не-JSON payload — путь
+    json.JSONDecodeError из sse.json(), который SDK НЕ оборачивает."""
+
+    def handle_request(self, request: httpx.Request) -> httpx.Response:
+        def body() -> Iterator[bytes]:
+            yield f"data: {_SSE_CHUNK}\n\n".encode()
+            yield b"data: {oops\n\n"
+
+        return httpx.Response(200, headers={"content-type": "text/event-stream"}, content=body())
+
+
+def test_stream_malformed_sse_frame_maps_to_request_error(tmp_path: Path) -> None:
+    # До фикса: json.JSONDecodeError не ловился (не httpx.HTTPError и не APIError)
+    # — traceback в CLI, breaker молчал (ревью-2 m1, остаточный класс C1)
+    tracer = JsonlTracer(tmp_path / "trace.jsonl")
+    client = openai.OpenAI(
+        base_url="https://gateway.test/api/v1",
+        api_key="sk-test",
+        max_retries=0,
+        http_client=httpx.Client(transport=_GarbageFrameTransport()),
+    )
+    provider = OpenAIProvider(_settings(), client=client, tracer=tracer)
+    with pytest.raises(LLMRequestError, match="стрим оборван"):
+        list(provider.complete_stream("cheap", _MESSAGES))
+    assert provider.consecutive_failures == 1  # обрыв = сбой шлюза
+    record = json.loads((tmp_path / "trace.jsonl").read_text(encoding="utf-8").splitlines()[0])
+    assert record["event"] == "llm.reject"
+    assert record["payload"]["reason"] == "stream_abort"
+    assert record["payload"]["status_code"] is None  # не строковый sentinel (ревью-2 m5)
+
+
+# --- ревью-2 m2: «сырой httpx»-сценарий без зависимости от версии SDK ---
+def test_stream_raw_httpx_error_maps_to_request_error() -> None:
+    # Real-SDK тест (обрыв соединения) в залоченном env приходит ОБЁРНУТЫМ
+    # (APIConnectionError — его ловил и до-фиксовый except openai.APIError),
+    # поэтому guard «сырых» транспортных ошибок — на скриптованном стриме:
+    # httpx.ReadError попадает в консуматор без обёртки на любой версии SDK,
+    # до фикса (except только openai.APIError) тест падал
+    stream = _ScriptedStream([_chunk("часть "), httpx.ReadError("connection reset")])
+    provider, completions, sleeps, _ = _provider([stream])
+    with pytest.raises(LLMRequestError, match="стрим оборван"):
+        list(provider.complete_stream("cheap", _MESSAGES))
+    assert completions.calls == 1  # без ретрая (частичный текст уже напечатан)
+    assert sleeps == []
+    assert provider.consecutive_failures == 1

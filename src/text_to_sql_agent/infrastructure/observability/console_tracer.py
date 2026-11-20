@@ -163,9 +163,10 @@ def _render_trouble(event: str, payload: dict[str, Any]) -> str:
     if event == "llm.timeout":
         return f"  ! шлюз: таймаут ({payload.get('role', '?')}, {payload.get('elapsed_ms', '?')}мс)"
     if event == "llm.reject":
-        return (
-            f"  ! шлюз: отказ HTTP {payload.get('status_code', '?')} ({payload.get('role', '?')})"
-        )
+        status = payload.get("status_code")
+        reason = payload.get("reason")  # стрим-путь (S19): HTTP-статуса нет — причина
+        detail = f"HTTP {status}" if status is not None else (reason or "?")
+        return f"  ! шлюз: отказ {detail} ({payload.get('role', '?')})"
     if event == "llm.breaker_open":
         detail = payload.get("reason") or f"сбоев подряд: {payload.get('failures', '?')}"
         return f"  ! breaker открыт ({detail})"
