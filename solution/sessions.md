@@ -12,7 +12,7 @@
 > В разделе — ТОЛЬКО статус последней закрытой сессии; подробности исполнения —
 > в файле самой сессии (закрытые переносятся `make archive` в sessions/archive/).
 
-- Последняя ✅: S06 — 2026-11-20: feat-006 passing — векторная память pgvector (agent_knowledge, миграции 0005–0007) + retrieval-контур ДЗ-03 (dense-only, --retrieve/--user); фильтр прав по ВСЕМ таблицам документа (referenced_tables, ревью C1); make index-knowledge — 22 кураторских док-а; REVIEW-GATE «Принято» после 2 fix-волн (1C/7I/9M → 0C/4I/7m → 0C/0I/9M); 197 passed
+- Последняя ✅: S19 — 2026-11-20: feat-019 passing — стриминг объяснения ДЗ-03 (complete_stream: StreamChunk/StreamFinal, guard'ы бюджета/breaker общие с complete(), ретраи только до первого чанка; CLI --retrieve печатает дельты — D-022; TTFT ttft_ms в llm.complete; stream_options include_usage); REVIEW-GATE «Ready to merge: Yes» (1C/3I/9M → 0C/0I/6m — реальный C1: httpx-исключения итерации стрима мимо APIError, регресс на real-SDK); 234 passed; hw-03/ артефакты layer-3
 ## Владельцы треков
 
 | Трек | Владелец | Зона |
@@ -53,7 +53,7 @@
 | S16 | sessions/S16_session.md | Кэш вопросов Valkey (точное совпадение): допущения-сверка, ключ с правами | агент | S05, S10 | feat-016 — закрывает | 1 | P1 | ⬜ |
 | S17 | sessions/S17_session.md | plan_query: декомпозиция T1 (основной путь; на стенде — заглушка), T2 → async/matview/approximate; key-set без LIMIT, кап кардинальности 50 000, флаг approximate (выпускная) | агент | S11, S12 | feat-017 — закрывает | 2 | P2 | ⬜ |
 | S18 | sessions/S18_session.md | Observability Plane live: Jaeger + Prometheus + Grafana, дашборды (ADR-010) | агент | S15 | feat-018 — закрывает | 1.5 | P1 | ⬜ |
-| S19 | sessions/S19_session.md | Стриминг объяснения в CLI/Streamlit | агент | S03, S06 | feat-019 — закрывает | 0.5 | P0 | ⬜ |
+| S19 | sessions/S19_session.md | Стриминг объяснения в CLI/Streamlit | агент | S03, S06 | feat-019 — закрывает | 0.5 | P0 | ✅ |
 | S20 | sessions/S20_session.md | Синхронизация архпакета docs/ с ревью-03 + addition (Python-стек): ADR-004/005/006/007 v+1, prd, диаграммы, model-card, RISKS, S00, провода feature_list (BL-002, FIX-006, D-015…017) | агент | S00, S01 | — (док-сессия, states фич не меняются) | 1.5 | P1 | ✅ 2026-11-18 (BL-002 закрыт, пакет v1.8) |
 | S21 | [sessions/S21_session.md](sessions/S21_session.md) | Консольная наблюдаемость CLI: этапы агента (модель/тул/результат ≤5 строк/ретраи/деградация) через порт Tracer — ConsoleTracer + TeeTracer + agent.* (BL-004) | агент | S03, S13 | — (сессия без фичи, states не меняются) | 0.5 | P1 | ✅ 2026-11-19 (BL-004 закрыт, D-022; REVIEW-GATE «Принято» 200ed11..7385012; 145 passed) |
 | S22 | [sessions/S22_session.md](sessions/S22_session.md) | Харнесс: неизбежные гейты сессии — start-фаза guard-subagents.sh в init.sh/make session-start (консистентность файла сессии + автодобавление чекбоксов + красный make check без ARCH-GATE), self-test гварда (D-023) | агент | S00 | — (harness-сессия, states не меняются) | 0.5 | P1 | ✅ 2026-11-19 (D-023; self-test 53 assert-а; REVIEW-GATE «Принято» после fix-волны 2I+minors; BL-006) |
