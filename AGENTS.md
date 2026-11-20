@@ -31,7 +31,12 @@ Before writing code (session start / clock-in):
 5. Read `feature_list.json` to see current feature state
 6. Review recent commits with `git log --oneline -5`
 7. Read `progress.md` and `session-handoff.md` if present
-8. Architectural gate: if this session touches architecture (feature crossing module boundaries, new dependency, schema/ER change, unresolved design question) — dispatch the `architect` subagent in `canon-check` mode on the session plan before any code; compact dispatch only (plan path + question + canon pointers, no file dumps — it reads on demand); findings fixed or explicitly ruled before implementation starts; record the verdict in the session file's ARCH-GATE line (guard-enforced: `scripts/guard-subagents.sh` — start phase red-lines `make check` for the session being started, i.e. header status `◐ в работе`; flip the status and resolve ARCH-GATE before code, D-027)
+8. Architectural gate (ARCH-GATE) — ритуал старта сессии, до любого кода:
+   - **Отметь старт в файле сессии**: статус шапки → «◐ в работе» и чекбокс старта в «Предусловиях» — именно это включает гейт (запланированные «[ ] не начата» он скипает);
+   - **canon-check**: сессия трогает архитектуру (границы модулей, новая зависимость, схема/ER, нерешённый дизайн-вопрос) → диспетчеризуй `architect` в режиме `canon-check` по плану сессии; компактная диспетчеризация (путь плана + вопрос + канон-указатели, без простыней — он читает по требованию);
+   - **запиши вердикт** в строку ARCH-GATE файла сессии: `✅ + verdict/evidence` либо внятный `N/A — причина` (например: границы модулей/зависимости/схема/ER не затрагиваются); «N/A — сессия не начата» у стартованной сессии не проходит;
+   - **findings fixed or explicitly ruled before implementation starts** — находки canon-check закрыты или явно решены (rulings) до первого код-коммита;
+   guard-enforced: `scripts/guard-subagents.sh --phase start` (внутри `./init.sh` / `make check`) держит `make check` красным, пока ARCH-GATE стартованной (◐) сессии не заполнен (D-023/D-027).
 
 If baseline verification is failing, repair that first — do not add new scope on a broken baseline.
 
@@ -63,6 +68,7 @@ If baseline verification is failing, repair that first — do not add new scope 
 - MUST NOT пропускать валидацию SQL: каждый запрос от LLM проходит AST-валидатор (sqlglot, deny-by-default) до выполнения; `EXPLAIN ANALYZE` запрещён — только `EXPLAIN`. why: текст от LLM не доверенный; EXPLAIN ANALYZE выполняет запрос.
 - MUST NOT расширять права агента за пределы `agent_permissions`: недоступная таблица не существует в мире агента (подграф, retrieval, DDL). why: RBAC, deny-by-default (hw-01 §3.2).
 - MUST NOT позволять LLM управлять переходами между узлами: маршрут задаёт state machine на коде, модель наполняет содержимое узлов. why: инвариант архитектуры (hw-01 §2.1).
+- MUST NOT писать код стартованной сессии (статус шапки «◐ в работе») с незаполненным ARCH-GATE: canon-check архитектора (✅ verdict) или обоснованный N/A — до первого код-коммита; находки — закрыты или решены (rulings). Гвард red-lines `make check` до заполнения (D-027). why: архитектурные ошибки на порядок дешевле на этапе плана; «задним числом» canon-check вырождается в формальность.
 - MUST NOT редактировать содержимое `.docs/` — исторические документы READ ONLY (D-011): изменения требований — в трекаемом пакете `docs/` (prd.md + затронутые ADR). why: две живые копии разъезжаются; история не переписывается.
 - Update docs in the same commit as the code change — no stale documentation. why: docs rot fast.
 - Commits are atomic: one logical operation per commit; the repo is in a consistent state after every commit. why: clean rollback.
