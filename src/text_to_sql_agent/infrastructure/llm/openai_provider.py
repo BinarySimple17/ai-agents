@@ -87,6 +87,7 @@ class OpenAIProvider:
         *,
         tracer: Tracer | None = None,
         client: openai.OpenAI | None = None,
+        embedding_client: openai.OpenAI | None = None,
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
         rng: random.Random | None = None,
@@ -98,6 +99,9 @@ class OpenAIProvider:
             max_retries=0,  # ретраи — наша политика, SDK-ретраи дают двойной backoff
             timeout=settings.llm_request_timeout_s,
         )
+        # Второй клиент шлюза (эмбеддер, S06/D-025) — лениво при первом embed:
+        # контуры без retrieval не строят соединение вовсе
+        self._embed_client: openai.OpenAI | None = embedding_client
         self._tracer = tracer
         self._clock = clock
         self._sleep = sleep
@@ -231,10 +235,38 @@ class OpenAIProvider:
         ) from last_error
 
     def embed(self, texts: Sequence[str]) -> list[Embedding]:
-        # Сигнатура порта зафиксирована в S03; реализация эмбеддера — S06 (model-card).
-        raise NotImplementedError("embed: реализация эмбеддера — S06")
+        """Эмбеддинг батча текстов одним запросом (S06, model-card; D-025).
+
+        Клиент эмбеддера — второй шлюз по `settings.embedding_base_url`, авторизация
+        — общий `LLM_API_KEY` (D-025: отдельный секрет не вводится). Порядок векторов
+        = порядок входа (данные сортируются по index).
+        """
+        if not texts:
+            return []
+        client = self._embedding_client()
+        try:
+            response = client.embeddings.create(
+                model=self._settings.embedding_model,
+                input=list(texts),
+            )
+        except openai.APIError as exc:
+            raise LLMRequestError(f"шлюз эмбеддера отклонил запрос: {exc}") from exc
+        data = sorted(response.data, key=lambda item: item.index)
+        return [list(item.embedding) for item in data]
 
     # --- внутреннее ---
+
+    def _embedding_client(self) -> openai.OpenAI:
+        # Ленивая сборка второго клиента (см. __init__): те же правила, что у
+        # основного — SDK-ретраи выключены, таймаут обязателен (S00 правило 9)
+        if self._embed_client is None:
+            self._embed_client = openai.OpenAI(
+                base_url=self._settings.embedding_base_url,
+                api_key=self._settings.llm_api_key.get_secret_value(),  # D-025
+                max_retries=0,
+                timeout=self._settings.llm_request_timeout_s,
+            )
+        return self._embed_client
 
     @staticmethod
     def _is_retryable(exc: openai.APIStatusError) -> bool:

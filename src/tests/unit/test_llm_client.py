@@ -483,10 +483,85 @@ def test_real_client_disables_sdk_retries() -> None:
     assert provider._client.timeout == 15.0
 
 
-def test_embed_declared_but_not_implemented_yet() -> None:
-    provider, _, _, _ = _provider([])
-    with pytest.raises(NotImplementedError, match="S06"):
-        provider.embed(["SELECT 1"])
+# --- embed (S06 Task 4): второй клиент шлюза, батч одним запросом (D-025) ---
+def _embed_client(
+    vectors: list[list[float]] | None = None,
+    error: Exception | None = None,
+    calls: list[dict[str, Any]] | None = None,
+) -> SimpleNamespace:
+    def create(**kwargs: Any) -> Any:
+        if calls is not None:
+            calls.append(kwargs)
+        if error is not None:
+            raise error
+        return SimpleNamespace(
+            data=[SimpleNamespace(index=i, embedding=v) for i, v in enumerate(vectors or [])]
+        )
+
+    return SimpleNamespace(embeddings=SimpleNamespace(create=create))
+
+
+def test_embed_batch_returns_vectors_in_input_order() -> None:
+    vectors = [[0.1, 0.2], [0.3, 0.4]]
+    provider = OpenAIProvider(
+        _settings(), embedding_client=_embed_client(vectors)  # type: ignore[arg-type]
+    )
+    assert provider.embed(["вопрос 1", "вопрос 2"]) == vectors
+
+
+def test_embed_empty_input_skips_gateway() -> None:
+    calls: list[dict[str, Any]] = []
+    provider = OpenAIProvider(
+        _settings(), embedding_client=_embed_client(calls=calls)  # type: ignore[arg-type]
+    )
+    assert provider.embed([]) == []
+    assert calls == []  # пустой батч не ходит в шлюз
+
+
+def test_embed_uses_embedding_model_and_batched_input() -> None:
+    calls: list[dict[str, Any]] = []
+    provider = OpenAIProvider(
+        _settings(), embedding_client=_embed_client([[0.5]], calls=calls)  # type: ignore[arg-type]
+    )
+    provider.embed(["q1", "q2"])
+    assert calls == [{"model": "embed-1", "input": ["q1", "q2"]}]
+
+
+def test_embed_gateway_error_raises_llm_request_error() -> None:
+    provider = OpenAIProvider(
+        _settings(),
+        embedding_client=_embed_client(
+            error=openai.APIConnectionError(
+                message="conn refused", request=httpx.Request("POST", _GATEWAY_URL)
+            )
+        ),  # type: ignore[arg-type]
+    )
+    with pytest.raises(LLMRequestError, match="эмбеддера"):
+        provider.embed(["q"])
+
+
+def test_embed_client_lazy_built_on_embedding_base_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    # D-025/D-020: второй клиент строится лениво на settings.embedding_base_url,
+    # авторизация — общий LLM_API_KEY; SDK-ретраи выключены, таймаут обязателен
+    settings = _settings(embedding_base_url="https://embed.test/api/v1")
+    provider, _, _, _ = _provider([], settings)
+    recorded: list[dict[str, Any]] = []
+
+    class FakeOpenAI:
+        def __init__(self, **kwargs: Any) -> None:
+            recorded.append(kwargs)
+            self.embeddings = SimpleNamespace(
+                create=lambda **kw: SimpleNamespace(
+                    data=[SimpleNamespace(index=0, embedding=[0.5])]
+                )
+            )
+
+    monkeypatch.setattr(openai, "OpenAI", FakeOpenAI)
+    assert provider.embed(["q"]) == [[0.5]]
+    assert recorded[0]["base_url"] == "https://embed.test/api/v1"
+    assert recorded[0]["api_key"] == "sk-test"  # D-025: общий ключ шлюза
+    assert recorded[0]["max_retries"] == 0
+    assert recorded[0]["timeout"] == 15.0
 
 
 # --- Tracer (Task 4): JSONL вне git; best-effort; события вызовов ---

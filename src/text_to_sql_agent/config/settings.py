@@ -11,7 +11,7 @@
 """
 
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit, urlunsplit
 
 from pydantic import Field, SecretStr, ValidationError, ValidationInfo, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -135,6 +135,20 @@ class Settings(BaseSettings):
 
     # --- Трейс (FR-11): JSONL вне git; дефолт — канонный путь наблюдаемости ---
     trace_jsonl_path: Path = Path(".harness/traces/trace.jsonl")
+
+    @property
+    def agent_planner_dsn(self) -> str:
+        """DSN канала retrieval (ruling W1 ARCH-GATE S06): учётка POSTGRES_DSN →
+        agent_planner/AGENT_PLANNER_PASSWORD.
+
+        c4-l2 v1.8: «пул agent_planner: retrieval, настройки, EXPLAIN» — не
+        сервисный DSN и не agent_ro (роль чтения прав). Пароль хранится отдельно
+        (SecretStr), в DSN — только подстановка; спецсимволы URL-экранируются.
+        """
+        parts = urlsplit(self.postgres_dsn.get_secret_value())
+        password = quote(self.agent_planner_password.get_secret_value(), safe="")
+        netloc = f"agent_planner:{password}@{parts.netloc.rpartition('@')[2]}"
+        return urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
 
 
 def load_settings() -> Settings:

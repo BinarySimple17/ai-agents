@@ -131,6 +131,19 @@ def test_non_positive_budget_rejected(clean_env):
         load_settings()
 
 
+def test_agent_planner_dsn_swaps_credentials(clean_env):
+    # ruling W1 (S06): retrieval — под ролью agent_planner (c4-l2 v1.8);
+    # пароль — из Settings с URL-экранированием, сервисный пароль не утекает
+    _set_required(
+        clean_env,
+        POSTGRES_DSN="postgresql://postgres:service-pw@dbhost:5433/agentdb",
+        AGENT_PLANNER_PASSWORD="pl@nner:pw",
+    )
+    dsn = load_settings().agent_planner_dsn
+    assert dsn == "postgresql://agent_planner:pl%40nner%3Apw@dbhost:5433/agentdb"
+    assert "service-pw" not in dsn
+
+
 def test_non_positive_timeout_rejected(clean_env):
     _set_required(clean_env, LLM_REQUEST_TIMEOUT_S="0")
     with pytest.raises(ValidationError):
