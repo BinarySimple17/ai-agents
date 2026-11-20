@@ -12,7 +12,7 @@
 > В разделе — ТОЛЬКО статус последней закрытой сессии; подробности исполнения —
 > в файле самой сессии (закрытые переносятся `make archive` в sessions/archive/).
 
-- Последняя ✅: S22 — 2026-11-19: неизбежные гейты сессии (D-023) — guard-subagents.sh двухфазный: start-фаза в make check/init.sh (ARCH-GATE до старта работ, самовосстановление чекбоксов [FIX], REVIEW-GATE мягкий WARN, без активной сессии — WARN exit 0) + end-фаза как раньше; self-test 53 assert-а в init.sh; REVIEW-GATE «Принято» (75f297f..34bd05c: 0C/2I/9M → fix-волна → re-review); BL-006 (связка коммит↔сессия); ДЗ-02 по-прежнему собрана — сдача PR dev→main + тег по команде
+- Последняя ✅: S06 — 2026-11-20: feat-006 passing — векторная память pgvector (agent_knowledge, миграции 0005–0007) + retrieval-контур ДЗ-03 (dense-only, --retrieve/--user); фильтр прав по ВСЕМ таблицам документа (referenced_tables, ревью C1); make index-knowledge — 22 кураторских док-а; REVIEW-GATE «Принято» после 2 fix-волн (1C/7I/9M → 0C/4I/7m → 0C/0I/9M); 197 passed
 ## Владельцы треков
 
 | Трек | Владелец | Зона |
@@ -40,7 +40,7 @@
 | S03 | sessions/S03_session.md | Конфиг + LLM-клиент шлюза (роли, backoff, breaker, бюджет) | агент | S01 | feat-003 — закрывает | 1 | P0 | ✅ 2026-11-18 (feat-003 passing; 32 unit на моках; ARCH-GATE violations→rulings: jitter/timeout≠breaker; REVIEW-GATE 1C+5I+6M → fix-волна → re-review «С оговорками») |
 | S04 | sessions/S04_session.md | State machine LangGraph: каркас графа, CLI e2e на заглушках | агент | S01, S03 | feat-004 — закрывает | 1.5 | P0 | ⬜ |
 | S05 | sessions/S05_session.md | resolve_access: права из таблиц настроек | агент | S02, S04 | feat-005 — закрывает | 1 | P0 | ⬜ |
-| S06 | sessions/S06_session.md | Векторная память pgvector + фильтр прав | агент | S02 | feat-006 — закрывает | 1.5 | P0 | ⬜ |
+| S06 | [sessions/S06_session.md](sessions/archive/S06_session.md) | Векторная память pgvector + фильтр прав (dense-only, фильтр прав по всем таблицам документа; retrieval-контур ДЗ-03) | агент | S02 | feat-006 — закрывает | 1.5 | P0 | ✅ 2026-11-20 (feat-006 passing; ARCH-GATE rulings W1 planner-DSN/W2 --user; REVIEW-GATE «Принято» после 2 fix-волн — C1 referenced_tables/0007; 197 passed) |
 | S07 | sessions/S07_session.md | Граф связей Neo4j: снапшот реестра (active-рёбра, graph_version), k взвешенных путей + ранжирование топ-5, синк + reconciliation (ADR-006 §4.3) | агент | S02 | feat-007 — закрывает | 1.5 | P0 | ⬜ |
 | S08 | sessions/S08_session.md | clarify: допущения / один уточняющий вопрос | агент | S04, S03 | feat-008 — закрывает | 1 | P0 | ⬜ |
 | S09 | sessions/S09_session.md | plan_joins: JoinPlan ≤ 4 таблиц по edge_id активных рёбер; валидация плана + ретраи M1 (D-016: попытка 2 — та же модель + текст ошибки, попытка 3 — уровень вверх) | агент | S06, S07 | feat-009 — закрывает | 1.5 | P0 | ⬜ |
