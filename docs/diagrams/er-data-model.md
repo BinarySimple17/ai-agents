@@ -241,7 +241,7 @@ erDiagram
   4 кураторских типа документов (DDL, связи с семантикой, глоссарий, few-shot);
   автонаполнение запрещено. Поиск dense-only, HNSW по cosine (D-026 доп. 2;
   гибрид — V3, BL-007). **Фильтр прав — джойн в SQL поиска по ВСЕМ таблицам
-  документа** (`referenced_tables`, миграция 006 — инвариант ревью S06 Critical-1:
+  документа** (`referenced_tables`, миграции 006+007 — инвариант ревью S06 Critical-1:
   кросс-табличный few-shot «orders+campaigns» скрыт от пользователя без прав на
   campaigns; ADR-005 «граница знаний = граница прав», NFR-4 ACL-leak = 0);
   `'{}'` — общий документ. Каналы (ruling W1 ARCH-GATE S06): чтение — роль
@@ -257,4 +257,4 @@ erDiagram
 
 ## Трассировка
 
-Ревизии: v1.7 (S06 fix-волна: referenced_tables — инвариант прав по всем таблицам, миграция 006) · v1.6 (S06: agent_knowledge — векторная память, dense-only, ruling W1) · v1.5 (контракт ребра R1, agent_edge_proposals, graph_version, аудит S8, pydantic N3) · Связанные ADR: ADR-003, ADR-004, ADR-005, ADR-006, ADR-007, ADR-009, ADR-011 · Канон: hw-01/README.md §3.3, §3.5
+Ревизии: v1.7 (S06 fix-волна: referenced_tables — инвариант прав по всем таблицам, миграции 006+007 — content-based backfill 0007 закрывает окно апгрейда) · v1.6 (S06: agent_knowledge — векторная память, dense-only, ruling W1) · v1.5 (контракт ребра R1, agent_edge_proposals, graph_version, аудит S8, pydantic N3) · Связанные ADR: ADR-003, ADR-004, ADR-005, ADR-006, ADR-007, ADR-009, ADR-011 · Канон: hw-01/README.md §3.3, §3.5

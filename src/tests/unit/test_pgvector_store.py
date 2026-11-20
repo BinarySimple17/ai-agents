@@ -172,6 +172,22 @@ def test_search_sets_canonical_statement_timeout(fake_conn: _FakeConn) -> None:
     assert any("statement_timeout" in sql for sql, _ in fake_conn.executed)
 
 
+def test_document_anchor_must_be_declared() -> None:
+    # Defense-in-depth (ревью-2): якорь без объявления -> '{}' сделал бы документ публичным
+    with pytest.raises(ValueError, match="не объявлена в referenced_tables"):
+        KnowledgeDocument(
+            doc_kind=DocKind.DDL,
+            table_name="orders",
+            content="x",
+            model_version="m",
+            source_ref="s",
+        )
+    common = KnowledgeDocument(
+        doc_kind=DocKind.GLOSSARY, content="x", model_version="m", source_ref="s"
+    )
+    assert common.table_name is None and common.referenced_tables == []  # общий документ валиден
+
+
 def test_search_wrong_dim_rejected() -> None:
     store = PgVectorStore(_DSN)
     with pytest.raises(ValueError, match="переиндексация"):

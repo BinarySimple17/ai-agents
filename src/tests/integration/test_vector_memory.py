@@ -23,6 +23,7 @@ import pytest
 from text_to_sql_agent.application.ports.vector_store import DocKind, KnowledgeDocument
 from text_to_sql_agent.config.settings import load_settings
 from text_to_sql_agent.domain.entities import RunContext
+from text_to_sql_agent.infrastructure.memory.knowledge_sources import BUSINESS_TABLES
 from text_to_sql_agent.infrastructure.memory.pgvector_store import PgVectorStore
 
 _REF_PREFIX = "it-vector:"
@@ -240,6 +241,16 @@ def test_migration_backfill_restores_list_from_content(store) -> None:
         conn.execute(
             f"DELETE FROM agent_knowledge WHERE source_ref = '{_REF_PREFIX}backfill-test';"
         )
+        # Побочный эффект теста — UPDATE по всей таблице: фиксируем pre-состояние
+        # реального корпуса; после — assert «значения не изменились» (направление
+        # «только сужение» на живых данных: content-backfill даёт те же списки)
+        pre = dict(
+            conn.execute(
+                "SELECT source_ref, referenced_tables FROM agent_knowledge"
+                " WHERE source_ref NOT LIKE %s",
+                (f"{_REF_PREFIX}%",),
+            ).fetchall()
+        )
         conn.execute(
             "INSERT INTO agent_knowledge (doc_kind, table_name, referenced_tables, content,"
             " embedding, model_version, source_ref)"
@@ -256,8 +267,19 @@ def test_migration_backfill_restores_list_from_content(store) -> None:
                 (f"{_REF_PREFIX}backfill-test",),
             ).fetchone()
         assert set(row[0]) == {"employees", "bonuses"}  # восстановлен из контента
-        # Вектор ортогонален V_ORDERS/V_BONUSES-кластерам — релевантность не важна:
-        # документ скрыт от u_analyst (ни employees, ни bonuses ему недоступны)
+        with psycopg.connect(service_dsn) as conn:
+            post = dict(
+                conn.execute(
+                    "SELECT source_ref, referenced_tables FROM agent_knowledge"
+                    " WHERE source_ref NOT LIKE %s",
+                    (f"{_REF_PREFIX}%",),
+                ).fetchall()
+            )
+        assert {k: sorted(v) for k, v in post.items()} == {
+            k: sorted(v) for k, v in pre.items()
+        }  # корпус не изменился — backfill эквивалентен объявленному
+        # Нулевой вектор: cosine не определён (NaN), релевантность не важна —
+        # документ отсекается правами (ни employees, ни bonuses u_analyst недоступны)
         docs = store.search(V_ORDERS, ctx=CTX_ANALYST, top_k=50)
         assert f"{_REF_PREFIX}backfill-test" not in _refs(docs)
     finally:
@@ -282,9 +304,8 @@ def test_real_corpus_leaks_no_tables_outside_rights(store) -> None:
     real = [d for d in docs if not d.source_ref.startswith(_REF_PREFIX)]
     assert real, "живой корпус должен быть виден разрешённому пользователю"
     allowed = {"orders", "order_items", "products"}
-    mentioned_re = re.compile(
-        r"(customers|campaigns|products|orders|order_items|employees|bonuses)"
-    )
+    # Границы слова — как в guard и backfill миграции 0007
+    mentioned_re = re.compile(r"\b(" + "|".join(BUSINESS_TABLES) + r")\b")
     for d in real:
         assert set(d.referenced_tables) <= allowed, (
             f"{d.source_ref}: referenced_tables {d.referenced_tables} выходят за права u_analyst"

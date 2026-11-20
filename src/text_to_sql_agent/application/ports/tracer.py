@@ -11,7 +11,7 @@ from typing import Protocol, runtime_checkable
 
 from text_to_sql_agent.domain.entities import Trace
 
-EVENT_AGENT_START = "agent.start"  # вопрос принят (question, trace_id)
+EVENT_AGENT_START = "agent.start"  # вопрос принят (question, trace_id, mode)
 EVENT_AGENT_ROUND = "agent.round"  # вызов модели (call — порядковый номер)
 EVENT_AGENT_TOOL_CALL = "agent.tool_call"  # модель позвала тул (name, sql)
 EVENT_AGENT_OBSERVATION = "agent.observation"  # результат тулa / отказ (см. observability §2.4)
