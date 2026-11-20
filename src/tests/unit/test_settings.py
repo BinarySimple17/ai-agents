@@ -161,6 +161,29 @@ def test_base_url_trailing_slash_stripped(clean_env):
     assert load_settings().llm_base_url == "https://routerai.ru/api/v1"
 
 
+def test_embedding_base_url_empty_falls_back_to_local(clean_env):
+    # D-025: пустой EMBEDDING_BASE_URL → локальный LM Studio (bge-m3, S06)
+    _set_required(clean_env, EMBEDDING_BASE_URL="")
+    assert load_settings().embedding_base_url == LOCAL_LLM_BASE_URL
+
+
+def test_embedding_base_url_trailing_slash_stripped(clean_env):
+    _set_required(clean_env, EMBEDDING_BASE_URL="https://routerai.ru/api/v1/")
+    assert load_settings().embedding_base_url == "https://routerai.ru/api/v1"
+
+
+def test_embedding_base_url_must_be_http(clean_env):
+    _set_required(clean_env, EMBEDDING_BASE_URL="routerai.ru/api/v1")
+    with pytest.raises(ValidationError):
+        load_settings()
+
+
+def test_embedding_base_url_without_host_rejected(clean_env):
+    _set_required(clean_env, EMBEDDING_BASE_URL="https:///api/v1")
+    with pytest.raises(ValidationError):
+        load_settings()
+
+
 def test_non_ascii_api_key_rejected(clean_env):
     # Заголовок Authorization — ASCII: кириллический плейсхолдер должен падать
     # на старте, а не UnicodeEncodeError'ом при сборке HTTP-запроса (smoke D-020)

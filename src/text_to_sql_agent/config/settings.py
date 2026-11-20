@@ -13,7 +13,7 @@
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from pydantic import Field, SecretStr, ValidationError, field_validator
+from pydantic import Field, SecretStr, ValidationError, ValidationInfo, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Дефолт пустого LLM_BASE_URL (решение владельца D-020): локальный OpenAI-совместимый
@@ -49,21 +49,23 @@ class Settings(BaseSettings):
     # Таймаут — отказ узла, НЕ сбой breaker (ARCH-GATE S03 W2, ADR-007 §4.3).
     llm_request_timeout_s: float = Field(default=15.0, gt=0)
 
-    @field_validator("llm_base_url")
+    @field_validator("llm_base_url", "embedding_base_url")
     @classmethod
-    def _base_url_default_or_http(cls, value: str) -> str:
+    def _base_url_default_or_http(cls, value: str, info: ValidationInfo) -> str:
+        # Один паттерн для обоих OpenAI-совместимых шлюзов (D-020/D-025): пусто →
+        # локальный LM Studio; эмбеддер ходит в тот же endpoint по умолчанию.
         url = value.strip()
         if not url:
             return LOCAL_LLM_BASE_URL
         if not url.lower().startswith(("http://", "https://")):
             raise ValueError(
-                "llm_base_url должен начинаться с http:// или https:// "
+                f"{info.field_name} должен начинаться с http:// или https:// "
                 "(или быть пустым — тогда используется локальный LM Studio)"
             )
         url = url.rstrip("/")  # хвостовой «/» дал бы «//chat/completions» у SDK
         if not urlsplit(url).netloc:
             raise ValueError(
-                f"llm_base_url без хоста: {url!r} (пример: https://routerai.ru/api/v1)"
+                f"{info.field_name} без хоста: {url!r} (пример: https://routerai.ru/api/v1)"
             )
         return url
 
@@ -109,6 +111,9 @@ class Settings(BaseSettings):
     model_strong_price_out: float = Field(ge=0)
 
     # --- Эмбеддер (model-card; реализация — S06) ---
+    # Endpoint эмбеддера — по паттерну D-020/D-025: пусто → локальный LM Studio
+    # (bge-m3); авторизация — общий LLM_API_KEY, отдельный секрет не вводится.
+    embedding_base_url: str = ""
     embedding_model: str
 
     # --- PostgreSQL (DSN'ы двух каналов — security.md §2.2; пароль внутри — SecretStr) ---
