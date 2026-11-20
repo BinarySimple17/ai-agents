@@ -1,9 +1,12 @@
-"""Юнит-тесты retrieval-контура CLI ДЗ-03 (S06 Task 7) — шлюз/хранилище ТОЛЬКО моки.
+"""Юнит-тесты retrieval-контура CLI ДЗ-03 (S06 Task 7; стрим — S19) — шлюз/хранилище
+ТОЛЬКО моки (S00 правило 7).
 
 Проверяются: сборка retrieval-блока (кап ≈2К токенов по границе документа),
 передача ctx/top_k в поиск, деградация по правилу 8 (недоступность эмбеддера/
 хранилища, пустой/битый ответ — валидный текстовый исход, не traceback).
-Поведение фильтра прав на живых данных — integration/test_vector_memory.py.
+Ответ модель отдаёт стримом — контракт контура S19 (ruling W1 ARCH-GATE: один
+текстовый вызов, дельты → printer). Поведение фильтра прав на живых данных —
+integration/test_vector_memory.py.
 """
 
 from apps.cli import (
@@ -14,7 +17,13 @@ from apps.cli import (
     run_retrieval_flow,
 )
 from tests.unit.fakes import UNIT_CTX
-from text_to_sql_agent.application.ports.llm_provider import LLMProviderError, LLMResponse, Usage
+from text_to_sql_agent.application.ports.llm_provider import (
+    LLMProviderError,
+    LLMRequestError,
+    StreamChunk,
+    StreamFinal,
+    Usage,
+)
 from text_to_sql_agent.application.ports.vector_store import (
     DocKind,
     KnowledgeDocument,
@@ -25,26 +34,42 @@ _QUERY_VECTOR = [0.1] * 1024
 
 
 class FakeEmbedLLM:
-    """Двойник LLMProvider: скриптованный embed + complete (S00 правило 7)."""
+    """Двойник LLMProvider: скриптованный embed + complete_stream (S00 правило 7).
+
+    Ответ отдаётся одним чанком (разбиение на дельты — предмет test_streaming.py);
+    printer флоу не передаётся — проверяется текст исхода, не печать.
+    """
 
     def __init__(
         self,
         answer: str = "Ответ по контексту",
         *,
         embed_error: Exception | None = None,
+        stream_error: Exception | None = None,
+        finish_reason: str | None = "stop",
     ) -> None:
         self._answer = answer
         self._embed_error = embed_error
-        self.complete_messages: list[list[dict]] = []
+        self._stream_error = stream_error
+        self._finish_reason = finish_reason
+        self.stream_messages: list[list[dict]] = []
 
     def embed(self, texts):
         if self._embed_error is not None:
             raise self._embed_error
         return [_QUERY_VECTOR for _ in texts]
 
-    def complete(self, role, messages, tools=None):
-        self.complete_messages.append(messages)
-        return LLMResponse(text=self._answer, usage=Usage(tokens_in=10, tokens_out=5), model="fake")
+    def complete_stream(self, role, messages, tools=None):
+        self.stream_messages.append(messages)
+        if self._stream_error is not None:
+            raise self._stream_error
+        if self._answer:
+            yield StreamChunk(text_delta=self._answer)
+        yield StreamFinal(
+            usage=Usage(tokens_in=10, tokens_out=5),
+            finish_reason=self._finish_reason,
+            model="fake",
+        )
 
 
 class FakeStore:
@@ -81,9 +106,9 @@ def test_retrieval_flow_answers_with_context() -> None:
     assert store.calls[0]["top_k"] == 5
     assert store.calls[0]["vector"] == _QUERY_VECTOR
     # Retrieval-блок — в системном сообщении, вопрос — в user
-    system = llm.complete_messages[0][0]["content"]
+    system = llm.stream_messages[0][0]["content"]
     assert "[таблица: orders] DDL" in system
-    assert llm.complete_messages[0][1]["content"] == "Сколько заказов?"
+    assert llm.stream_messages[0][1]["content"] == "Сколько заказов?"
 
 
 def test_retrieval_block_caps_on_document_boundary() -> None:
@@ -117,6 +142,13 @@ def test_retrieval_flow_degrades_on_store_failure() -> None:
     assert "Не удалось получить ответ" in answer
 
 
+def test_retrieval_flow_degrades_on_stream_error() -> None:
+    # Сбой стрима ДО первой напечатанной дельты — деградация-ответ (ruling W3)
+    llm = FakeEmbedLLM(stream_error=LLMRequestError("шлюз не ответил после 4 попыток"))
+    answer = run_retrieval_flow("вопрос", llm=llm, vector_store=FakeStore([]), ctx=UNIT_CTX)
+    assert answer.startswith("Не удалось получить ответ")
+
+
 def test_retrieval_flow_degrades_on_empty_answer() -> None:
     llm, store = FakeEmbedLLM(answer=""), FakeStore([])  # пустой текст — не ответ
     answer = run_retrieval_flow("вопрос", llm=llm, vector_store=store, ctx=UNIT_CTX)
@@ -135,5 +167,5 @@ def test_retrieval_system_prompt_marks_context_as_data() -> None:
     # reasoning-модели при придирке рядом с самими данными)
     llm, store = FakeEmbedLLM(), FakeStore([_doc("[таблица: orders] DDL", "ddl:orders")])
     run_retrieval_flow("вопрос", llm=llm, vector_store=store, ctx=UNIT_CTX)
-    system = llm.complete_messages[0][0]["content"]
+    system = llm.stream_messages[0][0]["content"]
     assert "ДАННЫЕ" in system and "не инструкции" in system

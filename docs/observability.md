@@ -141,15 +141,19 @@ best-effort — сбой приёмника не рвёт запрос). Сбо�
 | `agent.empty_retry` | left | пустой/битый ответ — повтор |
 | `agent.cap_exhausted` | rounds | кап ходов — финальный вызов без тулов |
 | `agent.degrade` | reason | деградация-исход (S00 правило 8) |
-| `agent.answer` | source: text / final_no_tools / retrieval | финальный ответ |
+| `agent.answer` | source: text / final_no_tools / retrieval / retrieval_stream | финальный ответ |
 
 `llm.complete / retry / timeout / reject / breaker_open / budget_stop` — события
-провайдера (включая `text_from_reasoning` и `finish_reason` — D-021). Эскалации
-M1 (S09/S10/S14) лягут в тот же поток без изменения рендера — события generic,
-неизвестное имя — generic-строка. `rows_preview` — данные БД на экране оператора
-и в dev-sink `.harness/traces/` (исключение к §2.2 оформлено там: локально, вне
-git, синтетика; триггер пересмотра — реальные данные). Имена событий и лимит
-превью — константы порта `tracer` (единый источник эмиттера и рендерера).
+провайдера (включая `text_from_reasoning` и `finish_reason` — D-021; стрим S19
+несёт в `llm.complete` поля `stream=true` и `ttft_ms` — NFR-1, время до первого
+чанка; usage-паритет: шлюзы без usage в стриме → `usage_missing=true`,
+стоимость 0 не маскируется). Эскалации M1 (S09/S10/S14) лягут в тот же поток без
+изменения рендера — события generic, неизвестное имя — generic-строка.
+`rows_preview` — данные БД на экране оператора и в dev-sink `.harness/traces/`
+(исключение к §2.2 оформлено там: локально, вне git, синтетика; триггер
+пересмотра — реальные данные). Имена событий и лимит превью — константы порта
+`tracer` (единый источник эмиттера и рендерера); текст стрим-ответа в трейс не
+попадает — рендер `agent.answer` несёт факт (source), не содержимое (D-022).
 
 ## 3. Корреляция: один запрос — один trace_id
 

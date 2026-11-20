@@ -10,6 +10,14 @@
 блок в системный промпт (≈2К токенов); identity — `--user` (ruling W2 ARCH-GATE
 S06: дефолт cli-dev, для retrieval — сидированные u_logist/u_hr/u_analyst).
 
+Стриминг объяснения (S19, feat-019): финальный ответ retrieval-контура печатается
+чанками по мере генерации через `LLMProvider.complete_stream` (ruling W1 ARCH-GATE
+S19 — стрим только в контуре ДЗ-03; тул-контур остаётся буферизованным, complete()
+не меняется). stdout — только ответ (D-022): дельты — в stdout, служебные этапы —
+в stderr через ConsoleTracer; `--quiet` глушит stderr, не ответ. Ретраи пустых
+ответов — только ДО первой напечатанной дельты (Ловушки-1: ретрай после частичной
+печати дублирует текст — дальше только деградация).
+
 Политика цикла (ruling ARCH-GATE S13 Q5):
 - кап MAX_TOOL_CALLS = 3 модельных хода с тулом на вопрос (зеркало per-node ≤3,
   S00 стык 1); исчерпание → финальный вызов БЕЗ tools — модель объясняет,
@@ -33,11 +41,15 @@ import argparse
 import json
 import sys
 import uuid
+from collections.abc import Callable
 from typing import Any
 
 from text_to_sql_agent.application.ports.llm_provider import (
+    NO_TEXT_FALLBACK_REASONS,
     LLMProvider,
     LLMProviderError,
+    StreamChunk,
+    StreamFinal,
     ToolCall,
 )
 from text_to_sql_agent.application.ports.sql_executor import QueryResult, SQLExecutionError
@@ -315,6 +327,46 @@ def _format_result(result: QueryResult) -> str:
     return f"{DATA_MARKING}\n{json.dumps(payload, ensure_ascii=False, default=str)}"
 
 
+def _print_stdout(text: str) -> None:
+    """Дельта ответа в stdout: без буферизации — виден прогресс генерации (feat-019).
+
+    Ответ — единственное, что печатается в stdout (D-022); этапы идут в stderr
+    через ConsoleTracer, `--quiet` их глушит, но не ответ.
+    """
+    print(text, end="", flush=True)
+
+
+def _stream_outcome(
+    printer: Callable[[str], None] | None,
+    *,
+    shown: str,
+    printed: bool,
+    message: str | None,
+) -> str:
+    """Хвост исхода стрима (S19). Дельты уже отданы printer'у по мере генерации
+    (в цикле потребления стрима) — здесь только завершение исхода: сообщение
+    деградации (с новой строки, если дельты уже напечатаны — частичный ответ
+    остаётся видимым) и финальный перевод строки (гигиена stdout CLI — прежде
+    его давал print(answer)).
+
+    Возвращает текст, показанный пользователю: JSONL-трейс/проверки видят то же,
+    что и stdout. Невалидный текст (пустой/Hermes-тег), дошедший до printer=None
+    (тестовый контур без печати), в исход не попадает — buffered-семантика:
+    мусор не «ответ» (ruling W3 ARCH-GATE S19, Ловушки-1).
+    """
+    if message is None:  # успешный ответ
+        if printer is not None:
+            printer("\n")
+        return shown
+    text = shown if printed else ""
+    if printer is not None:
+        if text:
+            printer("\n")
+        printer(message)
+        printer("\n")
+    return text + (("\n" + message) if text else message)
+
+
 def format_retrieval_block(
     docs: list[KnowledgeDocument], *, max_chars: int = RETRIEVAL_CONTEXT_MAX_CHARS
 ) -> str:
@@ -344,13 +396,17 @@ def run_retrieval_flow(
     ctx: RunContext,
     top_k: int = RETRIEVAL_TOP_K,
     tracer: Tracer | None = None,
+    printer: Callable[[str], None] | None = None,
 ) -> str:
-    """Контур ДЗ-03 (hw-plan §3): вопрос → retrieval → LLM → ответ.
+    """Контур ДЗ-03 (hw-plan §3): вопрос → retrieval → LLM → потоковый вывод (S19).
 
     Эмбеддинг вопроса + поиск с фильтром прав (deny-by-default в SQL — ADR-005;
     недоступная таблица не участвует в поиске вообще) → retrieval-блок в системный
-    промпт (≈2К токенов) → один вызов модели. Деградация по правилу 8: недоступность
-    шлюза/хранилища и пустой ответ — валидный текстовый исход, не traceback.
+    промпт (≈2К токенов) → стрим-вызов модели: дельты отдаются printer'у по мере
+    генерации (printer=None — без печати, для тестов). Деградация по правилу 8:
+    недоступность шлюза/хранилища, пустой ответ и сбой mid-stream — валидный
+    текстовый исход, не traceback. Ретраи пустых ответов — только ДО первой
+    напечатанной дельты (Ловушки-1). Возвращает текст, показанный пользователю.
     """
     _emit(tracer, EVENT_AGENT_START, trace_id=ctx.trace_id, question=question, mode="retrieval")
     try:
@@ -363,7 +419,9 @@ def run_retrieval_flow(
             trace_id=ctx.trace_id,
             reason=f"retrieval недоступен: {exc}",
         )
-        return LLM_DEGRADED_TEMPLATE.format(error=exc)
+        return _stream_outcome(
+            printer, shown="", printed=False, message=LLM_DEGRADED_TEMPLATE.format(error=exc)
+        )
     _emit(
         tracer,
         EVENT_AGENT_RETRIEVE,
@@ -375,21 +433,70 @@ def run_retrieval_flow(
         {"role": "system", "content": RETRIEVAL_SYSTEM_PROMPT + format_retrieval_block(docs)},
         {"role": "user", "content": question},
     ]
-    try:
-        response = llm.complete(DEFAULT_ROLE, messages)
-    except LLMProviderError as exc:
-        _emit(tracer, EVENT_AGENT_DEGRADE, trace_id=ctx.trace_id, reason=f"шлюз недоступен: {exc}")
-        return LLM_DEGRADED_TEMPLATE.format(error=exc)
-    if not response.text or _is_malformed_tool_call(response.text):
+    empty_retries_left = EMPTY_RESPONSE_RETRIES
+    while True:
+        chunks: list[str] = []
+        printed = False
+        final: StreamFinal | None = None
+        try:
+            for item in llm.complete_stream(DEFAULT_ROLE, messages):
+                if isinstance(item, StreamChunk):
+                    chunks.append(item.text_delta)
+                    if printer is not None:
+                        printer(item.text_delta)
+                        printed = True
+                else:  # StreamFinal — терминальные метаданные вызова
+                    final = item
+        except LLMProviderError as exc:
+            # Mid-stream сбой: ретрай задублирует напечатанное — деградация поверх
+            # частичного ответа (Ловушки-1, ruling W3 ARCH-GATE S19); сбой ДО
+            # первого чанка — тот же валидный исход без напечатанных дельт
+            _emit(
+                tracer,
+                EVENT_AGENT_DEGRADE,
+                trace_id=ctx.trace_id,
+                reason=f"шлюз оборвал стрим: {exc}" if printed else f"шлюз недоступен: {exc}",
+            )
+            return _stream_outcome(
+                printer,
+                shown="".join(chunks),
+                printed=printed,
+                message=LLM_DEGRADED_TEMPLATE.format(error=exc),
+            )
+        answer = "".join(chunks)
+        if answer.strip() and not _is_malformed_tool_call(answer):
+            _emit(tracer, EVENT_AGENT_ANSWER, trace_id=ctx.trace_id, source="retrieval_stream")
+            return _stream_outcome(printer, shown=answer, printed=printed, message=None)
+        # Невалидный ответ: пустой/whitespace или Hermes-тег тулa в тексте (S13).
+        # finish_reason из NO_TEXT_FALLBACK_REASONS (D-021) — ретраить бессмысленно:
+        # обрыв по лимиту/фильтру/несогласованному tool-ходу повторится
+        if final is not None and final.finish_reason in NO_TEXT_FALLBACK_REASONS:
+            _emit(
+                tracer,
+                EVENT_AGENT_DEGRADE,
+                trace_id=ctx.trace_id,
+                reason=f"модель не вернула текста (finish_reason={final.finish_reason})",
+            )
+            return _stream_outcome(printer, shown=answer, printed=printed, message=DEGRADED_ANSWER)
+        if _is_malformed_tool_call(answer):
+            _emit(
+                tracer,
+                EVENT_AGENT_DEGRADE,
+                trace_id=ctx.trace_id,
+                reason="битый формат ответа (Hermes-тег тулa в тексте)",
+            )
+            return _stream_outcome(printer, shown=answer, printed=printed, message=DEGRADED_ANSWER)
+        if empty_retries_left > 0 and not printed:
+            empty_retries_left -= 1
+            _emit(tracer, EVENT_AGENT_EMPTY_RETRY, trace_id=ctx.trace_id, left=empty_retries_left)
+            continue
         _emit(
             tracer,
             EVENT_AGENT_DEGRADE,
             trace_id=ctx.trace_id,
             reason="модель не вернула текста в контуре retrieval",
         )
-        return DEGRADED_ANSWER
-    _emit(tracer, EVENT_AGENT_ANSWER, trace_id=ctx.trace_id, source="retrieval")
-    return response.text
+        return _stream_outcome(printer, shown=answer, printed=printed, message=DEGRADED_ANSWER)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -417,21 +524,24 @@ def main(argv: list[str] | None = None) -> int:
     container = build_container(console_trace=not args.quiet)
     ctx = RunContext(trace_id=uuid.uuid4().hex, user_id=args.user)
     if args.retrieve:
-        answer = run_retrieval_flow(
+        # Стриминг (S19): флоу печатает дельты сам (включая финальный \n и
+        # деградационные исходы) — повторный print в main задублировал бы ответ
+        run_retrieval_flow(
             question,
             llm=container.llm,
             vector_store=container.vector_store,
             ctx=ctx,
             tracer=container.tracer,
+            printer=_print_stdout,
         )
-    else:
-        answer = run_tool_loop(
-            question,
-            llm=container.llm,
-            tool=container.run_sql_tool,
-            ctx=ctx,
-            tracer=container.tracer,
-        )
+        return 0
+    answer = run_tool_loop(
+        question,
+        llm=container.llm,
+        tool=container.run_sql_tool,
+        ctx=ctx,
+        tracer=container.tracer,
+    )
     print(answer)
     return 0
 

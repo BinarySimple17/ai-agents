@@ -88,6 +88,9 @@ def _render_llm_complete(payload: dict[str, Any]) -> str:
     latency = f"{payload.get('latency_ms', 0) / _MS_PER_S:.1f}с"
     cost = f"{payload.get('cost_rub', 0.0):.2f}₽"
     line = f"  · {payload.get('model', '?')} · {tokens} · {latency} · {cost}"
+    ttft_ms = payload.get("ttft_ms")  # стрим-путь (S19, NFR-1): время до первого чанка
+    if ttft_ms is not None:
+        line += f" · первый чанк {ttft_ms / _MS_PER_S:.1f}с"
     if payload.get("usage_missing"):
         line += " (шлюз без usage)"
     if payload.get("text_from_reasoning"):
