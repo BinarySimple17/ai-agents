@@ -50,7 +50,7 @@
 | Тесты | pytest (+ fixtures скипами) | LLM — моки; БД-тесты скипаются без инфры |
 | Статика | ruff (lint + format) | гейт layer-1 в `./init.sh` |
 | Инфра | docker compose | образы запинены, см. ниже |
-| Точки входа | MVP: CLI (`apps/cli.py`) + Streamlit-демо (`apps/streamlit_app.py` — живое демо RBAC); целевой контур N1 (c4-l2 v1.8): `agent-api` — FastAPI + uvicorn (async, `POST /ask → 202 + job_id`, `GET /ask/{id}/stream` SSE) + `agent-worker` — arq (очередь — Valkey Streams) | D-005 в MVP не снимается: HTTP-контур — после базового (N1 ревью-03); Streamlit — после базового контура |
+| Точки входа | MVP: CLI (`apps/cli.py`) + индексация знаний (`apps/index_knowledge.py`, S06) + Streamlit-демо (`apps/streamlit_app.py` — живое демо RBAC); целевой контур N1 (c4-l2 v1.8): `agent-api` — FastAPI + uvicorn (async, `POST /ask → 202 + job_id`, `GET /ask/{id}/stream` SSE) + `agent-worker` — arq (очередь — Valkey Streams) | D-005 в MVP не снимается: HTTP-контур — после базового (N1 ревью-03); Streamlit — после базового контура |
 | Наблюдаемость (live) | OTel SDK → Jaeger + Prometheus → Grafana (ADR-010) | ДЗ-06 (S17+), не в базовом скоупе |
 | Внешний источник | SAP через AuthProvider + QuerySpec (ADR-011) | после ДЗ-06, точка роста |
 
@@ -72,7 +72,7 @@ src/
 │   ├── orchestration/         # LangGraph: graph.py (StateGraph) + routing.py (условные переходы) — только рёбра
 │   ├── config/                # settings.py (pydantic-settings) — единственная точка чтения env
 │   └── composition/           # container.py — единственное место сборки зависимостей
-├── apps/                      # презентационный слой: cli.py, streamlit_app.py (демо RBAC)
+├── apps/                      # презентационный слой: cli.py, index_knowledge.py, streamlit_app.py
 ├── migrations/                # Alembic: env.py, versions/ — единственный способ создать схему (правило 5)
 └── tests/                     # unit / integration / e2e + conftest.py (скипы БД-тестов без инфры)
 alembic.ini                    # конфиг Alembic (script_location = src/migrations)
@@ -81,7 +81,7 @@ alembic.ini                    # конфиг Alembic (script_location = src/mig
 | Порт (application/ports) | Реализации (infrastructure) | Вводит сессия |
 |---|---|---|
 | `LLMProvider.complete(role, messages, *, tools=None) -> LLMResponse(text, tool_calls, usage, model)` · `embed(texts) -> list[vector]` (эмбеддер — model-card) | `openai_provider.py` (routerai.ru / локальный LM Studio — D-020), фейк в тестах | S03 (embed — S06) |
-| `VectorStore.search(query, allowed) -> docs` | `pgvector_store.py`, фейк в тестах | S06 |
+| `VectorStore.upsert(documents, embeddings) -> int` (идемпотентно по source_ref) · `search(query_embedding, *, ctx, top_k) -> docs` (фильтр прав — джойн в SQL поиска, ADR-005) | `pgvector_store.py` (dense-only — D-026 доп. 2), фейк в тестах | S06 |
 | `SchemaGraphStore.path(a, b, allowed) -> plan\|None` | `neo4j_graph_store.py` | S07 |
 | `SQLExecutor.execute(QueryRequest, *, ctx: RunContext) -> QueryResult(columns, rows, row_count, truncated)` — read-only; дискриминатор `sql\|spec` (ADR-011 v1.2: ctx — trace_id/user_id/token_ref) | `postgres_executor.py` (роль `agent_ro`) | S13 |
 | `SemanticCache.get(key) / put(key, value)` | `valkey_cache.py` / `noop_cache.py` (тесты) | S16 |

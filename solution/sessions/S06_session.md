@@ -1,6 +1,6 @@
 # S06 — Векторная память pgvector + фильтр прав (веха V2, ДЗ-03)
 
-Этап: Веха V2 (ДЗ-03: RAG) | Владелец: агент | Зависимости: S02 | Оценка: 1.5 | Статус: [ ] не начата
+Этап: Веха V2 (ДЗ-03: RAG) | Владелец: агент | Зависимости: S02 | Оценка: 1.5 | Статус: ✅ 2026-11-20
 Фичи: feat-006 — Векторная память (pgvector); её зависимость feat-002 уже в passing
 Роль по фиче: закрывает feat-006 — финальная сессия, через make verify-feature
 
@@ -40,12 +40,12 @@
 
 ## Предусловия
 
-- [ ] Сессия СТАРТУЕТ: статус в шапке переведён в «◐ в работе» и ARCH-GATE резолвлен ДО кода (canon-check architect ✅ либо обоснованный N/A) — старт-гейт (`guard-subagents.sh --phase start`, D-027) проверяет только стартованные (◐) сессии; «[ ] не начата» — план, гейт её скипает
-- [ ] S02 закрыта: `make infra-up && make infra-migrate` → схема v1.5 поднята; `uv run pytest src/tests/integration/test_infra_schema.py -q` → passed (включая test_vector_extension_installed)
-- [ ] `make check` зелёный (baseline репозитория)
-- [ ] feat-002 в state=passing (`feature_list.json`)
-- [ ] LM Studio отвечает, эмбеддер доступен: `curl -s http://127.0.0.1:1234/v1/models` → в списке есть bge-m3 (хост 127.0.0.1, не localhost — IPv6-ловушка, D-020)
-- [ ] feat-006 активирована в state=active до старта работ (verify-feature требует active — Ловушки-2)
+- [x] Сессия СТАРТУЕТ: статус в шапке переведён в «◐ в работе» и ARCH-GATE резолвлен ДО кода (canon-check architect ✅ либо обоснованный N/A) — старт-гейт (`guard-subagents.sh --phase start`, D-027) проверяет только стартованные (◐) сессии; «[ ] не начата» — план, гейт её скипает
+- [x] S02 закрыта: `make infra-up && make infra-migrate` → схема v1.5 поднята; `uv run pytest src/tests/integration/test_infra_schema.py -q` → passed (включая test_vector_extension_installed)
+- [x] `make check` зелёный (baseline репозитория)
+- [x] feat-002 в state=passing (`feature_list.json`)
+- [x] LM Studio отвечает, эмбеддер доступен: `curl -s http://127.0.0.1:1234/v1/models` → в списке есть bge-m3 (хост 127.0.0.1, не localhost — IPv6-ловушка, D-020)
+- [x] feat-006 активирована в state=active до старта работ (verify-feature требует active — Ловушки-2)
 
 ## Задачи
 
@@ -75,7 +75,8 @@ checkable, по образцу соседних портов) — поиск `se
 эмбеддера = переиндексация», model-card §1). Типы документов — ровно 4 из feat-006: DDL с
 комментариями колонок, связи с семантикой (meaning/usage_notes), бизнес-глоссарий, few-shot
 «вопрос → SQL`. Scope берётся из `RunContext` (user_id → роль → права) — как в остальных
-портах.
+портах. Ruling N1 (ARCH-GATE): сигнатура `search(query_embedding, *, ctx, top_k)` —
+синк строки порта в S00 тем же коммитом (анти-дрейф, S00 — источник истины №1).
 
 **✅ Самопроверка:**
 
@@ -132,10 +133,11 @@ uv run pytest src/tests/unit/test_llm_client.py -q   # green без старог
 уже абстрагирует способ поиска), фильтр прав — ДЖОЙН с
 `agent_user_roles`/`agent_permissions` в том же SQL (ADR-003 §4: «метадата-фильтр по scope
 можно делать джойном с правами»), deny-by-default: нет прав на таблицу документа → документ не
-участвует в выдаче. Подключение — сервисный `POSTGRES_DSN` (retrieval — операция
-планировщика, c4-l2 «пул agent_planner»; роль `agent_ro` тут не нужна — права применяет
-SQL-фильтр). Unit-тесты на моках курсора: SQL содержит джойн прав; документы без прав не
-возвращаются.
+участвует в выдаче. Подключение — **DSN роли `agent_planner`** (ruling W1, ARCH-GATE: c4-l2
+v1.8 «пул agent_planner: retrieval, настройки, EXPLAIN»; Settings += property
+`agent_planner_dsn` из POSTGRES_DSN + AGENT_PLANNER_PASSWORD; миграция 0005 += GRANT SELECT
+на agent_knowledge этой роли — гранты на права-таблицы уже есть из 0002). Unit-тесты на моках
+курсора: SQL содержит джойн прав; документы без прав не возвращаются.
 
 **✅ Самопроверка:**
 
@@ -157,10 +159,11 @@ uv run ruff check src
 сигнал для эмбеддера и якорь имени таблицы/термина (ACCURACY §6.2); единственный «рычаг
 качества», оставленный в V2 — он копеечный и dense-родной. Шумовой корпус, нормализация
 U+0301 и hit@5-обвязка — перенесены в V3 (BL-007).
-Модуль индексации — в infrastructure/memory (метод upsert адаптера) + точка запуска:
-make-цель (напр. `make index-knowledge`) или `uv run`-скрипт; идемпотентно по `source_ref`;
-`model_version` — из Settings. Внимание: правки в `docs/` — той же сессией, в том же коммите
-(владение «docs/** — через согласование с куратором» — содержимое согласовано hw-plan §3).
+Модуль индексации — в infrastructure/memory (метод upsert адаптера) + точка запуска
+(ruling N2, ARCH-GATE): `src/apps/index_knowledge.py` + make-цель `make index-knowledge`;
+идемпотентно по `source_ref`; `model_version` — из Settings. Внимание: правки в `docs/` —
+той же сессией, в том же коммите (владение «docs/** — через согласование с куратором» —
+содержимое согласовано hw-plan §3).
 
 **✅ Самопроверка:**
 
@@ -175,7 +178,10 @@ make infra-up && make index-knowledge   # отчёт: сколько докум�
 CLI-контур ДЗ-03 «вопрос → retrieval → LLM → ответ» (hw-plan §3): перед вызовом модели —
 эмбеддинг вопроса + `search()` + сборка retrieval-блока в системный промпт (~2К токенов —
 именованная константа с комментарием «почему такое значение»; AGENTS.md § Working Rules);
-wiring — поле в `Container` (`composition/container.py`). Интеграционные тесты
+wiring — поле в `Container` (`composition/container.py`). Identity — ruling W2 (ARCH-GATE):
+CLI-параметр `--user` (дефолт cli-dev — контур ДЗ-02 не меняется; retrieval-прогон ДЗ-03 —
+`--user u_analyst` и др. сидированные); интеграционные тесты — сидированные
+u_logist/u_hr/u_analyst. Интеграционные тесты
 `src/tests/integration/test_vector_memory.py` (команда верификации фичи):
 (a) поиск возвращает только документы разрешённых таблиц; (b) в выдаче есть глоссарий и
 few-shot релевантных таблиц; (c) недоступная таблица не попадает в выдачу даже при близком
@@ -189,12 +195,12 @@ make infra-up && uv run pytest src/tests/integration/test_vector_memory.py -q   
 
 ## Критерии приёмки
 
-- [ ] Поиск по эмбеддингу возвращает только документы разрешённых таблиц (behavior feat-006)
-- [ ] В выдачу входят глоссарий-определения и few-shot для релевантных таблиц (behavior feat-006)
-- [ ] Недоступные таблицы не попадают в контекст даже при близком совпадении (behavior feat-006; NFR-4: ACL-leak = 0)
-- [ ] `EMBEDDING_BASE_URL` пустой → локальный LM Studio (D-025); тесты Settings green
-- [ ] Миграция + `docs/diagrams/er-data-model.md` синхронизированы в одном коммите
-- [ ] Фича закрыта: `make verify-feature F=feat-006` → state=passing с evidence
+- [x] Поиск по эмбеддингу возвращает только документы разрешённых таблиц (behavior feat-006; интеграционные тесты + live u_analyst/u_hr)
+- [x] В выдачу входят глоссарий-определения и few-shot для релевантных таблиц (behavior feat-006; test_glossary_and_few_shot_surface_for_relevant_tables + live прогон)
+- [x] Недоступные таблицы не попадают в контекст даже при близком совпадении (behavior feat-006; NFR-4 ACL-leak = 0; test_denied_table_never_surfaces_even_with_exact_match + кросс-табличный регресс C1 + живой корпус)
+- [x] `EMBEDDING_BASE_URL` пустой → локальный LM Studio (D-025); тесты Settings green (22 passed)
+- [x] Миграции 0005/0006/0007 + er-data-model v1.6→v1.7 синхронизированы в тех же коммитах
+- [x] Фича закрыта: `make verify-feature F=feat-006` → PASS, state=passing (8 integration tests, evidence в feature_list.json)
 
 ## Ловушки
 
@@ -221,14 +227,20 @@ make infra-up && uv run pytest src/tests/integration/test_vector_memory.py -q   
 
 ## Гейты субагентов (заполняется по факту, до закрытия сессии)
 
-- ARCH-GATE: N/A — сессия не начата
-- REVIEW-GATE: N/A — сессия не начата
+- RULING (ревью-2 I4, 2026-11-20): comment-only правка ПРИМЕНЁННОЙ миграции 0005 (длина строки комментария, E501) — допустимое исключение: SQL-комментарии PG не сохраняет, схема на чистой БД идемпотентна (намерение правила S00-5 — пересборка из цепочки — не нарушено); впредь длину строки чинить ДО make infra-migrate. Дальнейшие изменения миграций 0005/0006 — только новыми файлами (0007). Функциональные правки применённых миграций по-прежнему запрещены.
+- ARCH-GATE: ✅ canon-check architect 2026-11-20 (needs-decision → rulings до кода, agent_7fe43161): **W1 канал retrieval** — по канону c4-l2 v1.8 («пул agent_planner: retrieval»), не сервисный DSN: Settings += property `agent_planner_dsn` (host/port/db из POSTGRES_DSN + AGENT_PLANNER_PASSWORD), миграция 0005 += `GRANT SELECT ON agent_knowledge TO agent_planner` (план грант не заявлял вовсе — обязателен при любом не-суперюзерском раскладе), PgVectorStore подключается planner-DSN; **W2 identity CLI** — параметр `--user` (дефолт cli-dev — поведение контура ДЗ-02 не меняется), интеграционные тесты — сидированные u_logist/u_hr/u_analyst; статический DDL всех 7 таблиц в SYSTEM_PROMPT остаётся в dev-контуре осознанно (граница прав в CLI — SQL-фильтр retrieval + валидатор S13; промпт-осознанность — V4 resolve_access); **N1** сигнатура порта `search(query_embedding, *, ctx, top_k)` (по образцу ADR-011-ctx, точнее канона) — синк строки порта в S00 тем же коммитом, что Task 2; **N2** точка входа индексации — `src/apps/index_knowledge.py` + make-цель (прецедент cli.py, раскладка S00). Не блокеры: имя agent_knowledge под agent_* — deny-list ADR-005 про исполняемый LLM-SQL, retrieval-SQL пишет код; размерность облачного qwen3-embedding ≠ 1024 — покрыто D-025 (смена эмбеддера = переиндексация)
+- REVIEW-GATE: ✅ «Принято» — итеративно: ревью-1 «Требует правок» (1C/7I/9M, d96163d..e86bb4f) → fix-волна (d5db296: C1 referenced_tables/0006, I1-I6, minors, BL-009); re-review-1 «Требует правок» (0C/4I/7m) → fix-волна-2 (c3d2ef2: миграция 0007 content-backfill, test_knowledge_sources, преамбулы md, ruling D-028, minors); re-review-2 **«Ready to merge: Yes» (0C/0I/9M)**, все 9 minors закрыты в той же сессии (c3d2ef2..HEAD: негативный тест валидатора, guard-call тест, content-scan BUSINESS_TABLES, pre/post backfill, D-028-зеркало, er/tracer синки). Полный диапазон сессии: d96163d..HEAD; make check 197 passed (161 unit + 36 integration)
 
 ## Отчёт по сессии (заполняется по факту)
 
 - Сделано:
-  - [Task: что реально сделано, коммиты, число тестов/ассертов, live-прогон]
+  - [x] feat-006 закрыта (state=passing): Task 1 — Settings.embedding_base_url (D-020/D-025, общий валидатор DRY; 6f44ba3); Task 2 — порт VectorStore + EMBEDDING_DIM=1024 + синк S00/N1 (81b2793); Task 3 — миграция 0005 agent_knowledge (vector(1024), HNSW cosine, unique source_ref, GRANT SELECT agent_planner — ruling W1) + er-data-model v1.6 (440c69b); Task 4 — OpenAIProvider.embed (ленивый второй клиент, батч) + Settings.agent_planner_dsn (fa4e02f); Task 5 — PgVectorStore: dense cosine с джойном прав В SQL (deny-by-default), 10 unit на моках курсора (9be9024); Task 6 — сиды 4 типов (glossary.md/few_shot.md кураторские), knowledge_sources.py, apps/index_knowledge.py + make index-knowledge, vector_store в Container; 22 док-а, идемпотентно (f3bee82); Task 7 — retrieval в CLI (--retrieve/--user — ruling W2), блок ≈2К токенов по границе документа, agent.retrieve, интеграционные behavior-тесты (e86bb4f). Живые прогоны: index-knowledge 22 док-а; CLI u_logist — сценарий ДЗ-03 («клиенты из Германии из кампаний»: модель использует глоссарий 'DE'≠'Germany' и семантику LEFT JOIN); u_hr — честный отказ без чужой схемы; u_analyst после C1 — ответ без таблицы campaigns (фикс подтверждён end-to-end)
+  - [x] Fix-волны ревью: ревью-1 (1C/7I/9M) → C1 — права по ВСЕМ таблицам документа: миграции 0006 (referenced_tables) + 0007 (content-backfill), guard индексатора, санитизация FK в DDL-контенте, md-заголовки «таблицы A, B»; I2 — write_dsn только офлайн-индексатору (knowledge_writer); I3 — VectorStoreError; I4 — data-marking; I5-I7 — observability-каталог, канонные таймауты, test_knowledge_sources; minors M2-M8; BL-009 (M1/M3); D-028 (ruling comment-only правки применённой миграции); регресс-тесты C1 + живой корпус; итог 197 passed (161 unit + 36 integration)
 - Отклонения от плана:
-  - [что сделали не так, как в задаче, и почему; каждое отклонение — осознанное]
+  - Канал retrieval — ruling W1 (ARCH-GATE): не сервисный POSTGRES_DSN, а роль agent_planner (c4-l2 v1.8 «пул agent_planner: retrieval»); запись — сервисный DSN офлайн-индексатором (флаг knowledge_writer контейнера — ревью I2)
+  - Кросс-табличные документы (ревью C1): план предполагал фильтр по table_name-якорю; фактически инвариант ACL-leak=0 потребовал referenced_tables (все таблицы документа) — миграция 0006+0007, guard, санитизация DDL; relationship-доки несут обе стороны ребра
+  - Идентификация индексатора: relationship-доки привязаны к left_table как якорю (фильтр — по обеим); точка входа — src/apps/index_knowledge.py (ruling N2); DDL-контент читается из файла миграции 0001 (PG-каталог inline-комментарии не хранит), REFERENCES-фрагменты вырезаются
+  - Фактический id эмбеддера живого шлюза — text-embedding-bge-m3 (ловушка-1 предполагала gpustack/bge-m3-GGUF — сверка с GET /v1/models обязательна)
 - Перенесено в другие сессии:
-  - [ID сессии — что перенесено и почему; если в беклог — BL-NN-файл в solution/backlog/]
+  - BL-009 (solution/backlog/) — гигиена индексации: SoT списка бизнес-таблиц (M1), транзакционное удаление устаревших source_ref / смена эмбеддера (M3) — веха V3, BL-007
+  - Гибрид dense+FTS/RRF/шумовой корпус/hit@5/реранкер — BL-007 (веха V3, D-026 доп.2)

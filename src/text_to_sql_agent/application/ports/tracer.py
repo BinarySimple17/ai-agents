@@ -11,7 +11,7 @@ from typing import Protocol, runtime_checkable
 
 from text_to_sql_agent.domain.entities import Trace
 
-EVENT_AGENT_START = "agent.start"  # вопрос принят (question, trace_id)
+EVENT_AGENT_START = "agent.start"  # вопрос принят (question, trace_id, mode)
 EVENT_AGENT_ROUND = "agent.round"  # вызов модели (call — порядковый номер)
 EVENT_AGENT_TOOL_CALL = "agent.tool_call"  # модель позвала тул (name, sql)
 EVENT_AGENT_OBSERVATION = "agent.observation"  # результат тулa / отказ (см. observability §2.4)
@@ -19,6 +19,7 @@ EVENT_AGENT_EMPTY_RETRY = "agent.empty_retry"  # пустой/битый отв�
 EVENT_AGENT_CAP_EXHAUSTED = "agent.cap_exhausted"  # кап ходов — финальный вызов без тулов
 EVENT_AGENT_DEGRADE = "agent.degrade"  # деградация-исход (reason)
 EVENT_AGENT_ANSWER = "agent.answer"  # финальный ответ (source)
+EVENT_AGENT_RETRIEVE = "agent.retrieve"  # retrieval контура ДЗ-03 (docs, source_refs)
 
 # BL-004 (требование владельца): результат тулa показывается строками данных,
 # хоть обрезанными; единый контракт эмиссии (apps.cli) и рендера (ConsoleTracer)

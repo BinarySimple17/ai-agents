@@ -143,7 +143,7 @@ The repo is in a consistent state when `make check` exits 0.
 - `src/text_to_sql_agent/orchestration/` — LangGraph: граф и условные переходы — только рёбра;
 - `src/text_to_sql_agent/config/` — pydantic-settings, единственная точка чтения env;
 - `src/text_to_sql_agent/composition/` — единственное место сборки зависимостей;
-- `src/apps/` — презентационный слой: cli.py, streamlit_app.py;
+- `src/apps/` — презентационный слой: cli.py, index_knowledge.py, streamlit_app.py;
 - `src/migrations/` — Alembic: единственный способ создать/изменить схему БД (`make infra-migrate`); правка применённой миграции запрещена;
 - `src/tests/` — unit / integration / e2e (БД-тесты скипаются без инфры).
 

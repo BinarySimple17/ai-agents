@@ -131,6 +131,19 @@ def test_non_positive_budget_rejected(clean_env):
         load_settings()
 
 
+def test_agent_planner_dsn_swaps_credentials(clean_env):
+    # ruling W1 (S06): retrieval — под ролью agent_planner (c4-l2 v1.8);
+    # пароль — из Settings с URL-экранированием, сервисный пароль не утекает
+    _set_required(
+        clean_env,
+        POSTGRES_DSN="postgresql://postgres:service-pw@dbhost:5433/agentdb",
+        AGENT_PLANNER_PASSWORD="pl@nner:pw",
+    )
+    dsn = load_settings().agent_planner_dsn
+    assert dsn == "postgresql://agent_planner:pl%40nner%3Apw@dbhost:5433/agentdb"
+    assert "service-pw" not in dsn
+
+
 def test_non_positive_timeout_rejected(clean_env):
     _set_required(clean_env, LLM_REQUEST_TIMEOUT_S="0")
     with pytest.raises(ValidationError):
@@ -159,6 +172,29 @@ def test_base_url_missing_falls_back_to_local_lm_studio(clean_env):
 def test_base_url_trailing_slash_stripped(clean_env):
     _set_required(clean_env, LLM_BASE_URL="https://routerai.ru/api/v1/")
     assert load_settings().llm_base_url == "https://routerai.ru/api/v1"
+
+
+def test_embedding_base_url_empty_falls_back_to_local(clean_env):
+    # D-025: пустой EMBEDDING_BASE_URL → локальный LM Studio (bge-m3, S06)
+    _set_required(clean_env, EMBEDDING_BASE_URL="")
+    assert load_settings().embedding_base_url == LOCAL_LLM_BASE_URL
+
+
+def test_embedding_base_url_trailing_slash_stripped(clean_env):
+    _set_required(clean_env, EMBEDDING_BASE_URL="https://routerai.ru/api/v1/")
+    assert load_settings().embedding_base_url == "https://routerai.ru/api/v1"
+
+
+def test_embedding_base_url_must_be_http(clean_env):
+    _set_required(clean_env, EMBEDDING_BASE_URL="routerai.ru/api/v1")
+    with pytest.raises(ValidationError):
+        load_settings()
+
+
+def test_embedding_base_url_without_host_rejected(clean_env):
+    _set_required(clean_env, EMBEDDING_BASE_URL="https:///api/v1")
+    with pytest.raises(ValidationError):
+        load_settings()
 
 
 def test_non_ascii_api_key_rejected(clean_env):

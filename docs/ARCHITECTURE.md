@@ -24,7 +24,7 @@ Intent-Based роутингом «узел → навык → модель» (ch
 
 | Компонент | Ответственность | Технология |
 |---|---|---|
-| `src/apps/` (cli, streamlit_app) | точки входа: CLI-прогон и Streamlit-демо RBAC (живой выбор пользователя) | Python, argparse / streamlit |
+| `src/apps/` (cli, index_knowledge, streamlit_app) | точки входа: CLI-прогон и Streamlit-демо RBAC (живой выбор пользователя) | Python, argparse / streamlit |
 | `src/text_to_sql_agent/orchestration/` | LangGraph state machine: граф и условные переходы — только рёбра | langgraph |
 | `.../application/services/` | по одному классу на узел (clarify, plan_joins, generate_sql, …) | чистая логика + порты |
 | `.../application/ports/` | Protocol-интерфейсы: LLMProvider (complete с tools/usage + embed), VectorStore, SchemaGraphStore, SQLExecutor, SemanticCache, AuthProvider, Tracer, BudgetGuard | typing.Protocol |
