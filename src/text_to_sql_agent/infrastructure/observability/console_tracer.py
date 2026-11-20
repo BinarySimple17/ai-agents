@@ -90,7 +90,9 @@ def _render_llm_complete(payload: dict[str, Any]) -> str:
     line = f"  · {payload.get('model', '?')} · {tokens} · {latency} · {cost}"
     ttft_ms = payload.get("ttft_ms")  # стрим-путь (S19, NFR-1): время до первого чанка
     if ttft_ms is not None:
-        line += f" · первый чанк {ttft_ms / _MS_PER_S:.1f}с"
+        # Миллисекунды (как elapsed у llm.timeout): суб-секундный TTFT в секундах
+        # с одной десятичной — «0.0с», порог NFR-1 (≤ 3s) нечитаем (ревью M4)
+        line += f" · первый чанк {ttft_ms}мс"
     if payload.get("usage_missing"):
         line += " (шлюз без usage)"
     if payload.get("text_from_reasoning"):

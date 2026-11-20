@@ -17,6 +17,7 @@
 """
 
 import json
+from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -25,9 +26,16 @@ import httpx
 import openai
 import pytest
 
+from apps import cli as cli_module
 from apps.cli import DEGRADED_ANSWER, LLM_DEGRADED_TEMPLATE, run_retrieval_flow
 from tests.unit.fakes import UNIT_CTX, RecordingTracer
-from tests.unit.test_llm_client import _MESSAGES, _http_error, _provider, _settings
+from tests.unit.test_llm_client import (
+    _MESSAGES,
+    _embed_client,
+    _http_error,
+    _provider,
+    _settings,
+)
 from text_to_sql_agent.application.ports.llm_provider import (
     BudgetExceededError,
     CircuitOpenError,
@@ -37,6 +45,8 @@ from text_to_sql_agent.application.ports.llm_provider import (
     StreamFinal,
     Usage,
 )
+from text_to_sql_agent.infrastructure.llm.openai_provider import OpenAIProvider
+from text_to_sql_agent.infrastructure.observability.console_tracer import ConsoleTracer
 from text_to_sql_agent.infrastructure.observability.jsonl_tracer import JsonlTracer
 
 _GATEWAY_URL = "https://gateway.test/api/v1/chat/completions"
@@ -448,3 +458,164 @@ def test_flow_reasoning_fallback_chunk_printed_as_answer() -> None:
     )
     assert answer == "Ответ из reasoning"
     assert printed == ["Ответ из reasoning", "\n"]
+
+
+# --- регресс C1 (ревью S19): обрыв ИТЕРАЦИИ стрима — сырые httpx-исключения ---
+_SSE_CHUNK = json.dumps(
+    {
+        "id": "chunk-1",
+        "object": "chat.completion.chunk",
+        "created": 1795112403,
+        "model": "cheap-1",
+        "choices": [{"index": 0, "delta": {"content": "часть "}, "finish_reason": None}],
+    }
+)
+
+
+class _BreakingTransport(httpx.BaseTransport):
+    """Транспорт: 200 + SSE-поток из одного чанка, затем транспортная ошибка —
+    форма реального обрыва соединения посреди стрима. openai оборачивает в
+    APIError только SSE-error payload и ошибки первоначального send; ошибки
+    итерации (ReadError/ReadTimeout) доходят до консуматора сырыми (проверено
+    на openai 2.38.0 — ревью C1), SimpleNamespace-двойники этот путь не видят."""
+
+    def __init__(self, error: Exception) -> None:
+        self._error = error
+
+    def handle_request(self, request: httpx.Request) -> httpx.Response:
+        def body() -> Iterator[bytes]:
+            yield f"data: {_SSE_CHUNK}\n\n".encode()
+            raise self._error
+
+        return httpx.Response(200, headers={"content-type": "text/event-stream"}, content=body())
+
+
+def _real_stream_provider(error: Exception, tracer: JsonlTracer | None = None) -> OpenAIProvider:
+    """Провайдер на НАСТОЯЩЕМ SDK-клиенте с рвущимся транспортом (S00 правило 7
+    не нарушено: сети нет — httpx.MockTransport-подобный транспорт в памяти)."""
+    client = openai.OpenAI(
+        base_url="https://gateway.test/api/v1",
+        api_key="sk-test",
+        max_retries=0,
+        http_client=httpx.Client(transport=_BreakingTransport(error)),
+    )
+    return OpenAIProvider(_settings(), client=client, tracer=tracer)
+
+
+def test_stream_iteration_read_error_maps_to_request_error() -> None:
+    # До фикса: httpx.ReadError не ловился (ловили только openai.APIError) —
+    # traceback шёл в CLI, breaker не считал обрывы (C1)
+    provider = _real_stream_provider(httpx.ReadError("connection reset"))
+    with pytest.raises(LLMRequestError, match="стрим оборван"):
+        list(provider.complete_stream("cheap", _MESSAGES))
+    assert provider.consecutive_failures == 1  # обрыв = сбой шлюза (W3)
+
+
+def test_stream_iteration_read_timeout_not_a_breaker_failure() -> None:
+    # W2-паритет посреди стрима: модель молчит между чанками дольше таймаута —
+    # «медлительность, не ошибка»: llm.timeout, счётчик сбоев не растёт
+    provider = _real_stream_provider(httpx.ReadTimeout("read timed out"))
+    with pytest.raises(LLMRequestError, match="посреди стрима"):
+        list(provider.complete_stream("cheap", _MESSAGES))
+    assert provider.consecutive_failures == 0
+
+
+def test_stream_mid_stream_error_traced_with_stream_flag(tmp_path: Path) -> None:
+    # Ревью M5: обрыв стрима виден в трейсе (существующее имя llm.reject +
+    # поле stream — новых имён словарь §2.4 не получает, W2)
+    tracer = JsonlTracer(tmp_path / "trace.jsonl")
+    provider = _real_stream_provider(httpx.ReadError("connection reset"), tracer=tracer)
+    with pytest.raises(LLMRequestError):
+        list(provider.complete_stream("cheap", _MESSAGES))
+    record = json.loads((tmp_path / "trace.jsonl").read_text(encoding="utf-8").splitlines()[0])
+    assert record["event"] == "llm.reject"
+    assert record["payload"]["stream"] is True
+
+
+def test_flow_http_break_degrades_valid_outcome() -> None:
+    # Тот же обрыв через НАСТОЯЩИЙ SDK-клиент в флоу retrieval: валидный исход —
+    # частичный текст + сообщение деградации, не traceback (S00 правило 8, C1)
+    client = openai.OpenAI(
+        base_url="https://gateway.test/api/v1",
+        api_key="sk-test",
+        max_retries=0,
+        http_client=httpx.Client(transport=_BreakingTransport(httpx.ReadError("reset"))),
+    )
+    provider = OpenAIProvider(
+        _settings(),
+        client=client,
+        embedding_client=_embed_client([[0.1] * 1024]),  # embed фейковый — сеть не нужна
+    )
+    printed: list[str] = []
+    answer = run_retrieval_flow(
+        "вопрос", llm=provider, vector_store=_FakeStore(), ctx=UNIT_CTX, printer=printed.append
+    )
+    assert answer.startswith("часть \n")  # частичный ответ напечатан до обрыва
+    assert "стрим оборван" in answer  # деградация поверх напечатанного (Ловушки-1)
+    assert printed[0] == "часть " and printed[-1] == "\n"
+
+
+# --- ревью I1: usage запрошен у шлюза, иначе кап бюджета в стриме инертен ---
+def test_stream_requests_usage_from_gateway() -> None:
+    provider, completions, _, _ = _provider([_ScriptedStream([_chunk("x")])])
+    list(provider.complete_stream("cheap", _MESSAGES))
+    assert completions.kwargs[0]["stream_options"] == {"include_usage": True}
+
+
+# --- ревью M6/M7: отказ от генератора — соединение закрыто, метаданных нет ---
+def test_stream_generator_abandoned_closes_stream_without_metadata() -> None:
+    stream = _ScriptedStream([_chunk("часть 1"), _chunk("часть 2")])
+    provider, _, _, _ = _provider([stream])
+    gen = provider.complete_stream("cheap", _MESSAGES)
+    next(gen)  # один чанк — и консуматор передумал
+    gen.close()  # GeneratorExit внутрь генератора (finally закрывает HTTP-стрим)
+    assert stream.closed
+    assert provider.budget_used_rub == 0.0  # вызов «не завершён» — учёта нет (M7)
+
+
+# --- ревью I2: ruling (b) — напечатанный мусор не отзывается, исход без тега ---
+def test_flow_malformed_tag_with_printer_degrades_over_printed_garbage() -> None:
+    llm = _ScriptedFlowLLM([StreamChunk(text_delta="<tool_call>{...}")])
+    printed: list[str] = []
+    tracer = RecordingTracer()
+    answer = run_retrieval_flow(
+        "вопрос",
+        llm=llm,
+        vector_store=_FakeStore(),
+        ctx=UNIT_CTX,
+        tracer=tracer,
+        printer=printed.append,
+    )
+    assert answer == "<tool_call>{...}\n" + DEGRADED_ANSWER  # мусор не «ответ» в исходе
+    assert printed == ["<tool_call>{...}", "\n", DEGRADED_ANSWER, "\n"]  # но экран уже видел
+    degrade = next(e for e in tracer.events if e.event == "agent.degrade")
+    assert "Hermes-тег" in degrade.payload["reason"]
+
+
+# --- ревью I3: wiring main → флоу, чистота stdout (D-022) — не только layer-3 ---
+def _stream_container(tracer: Any) -> SimpleNamespace:
+    llm = _ScriptedFlowLLM(
+        [StreamChunk(text_delta="Ответ 42"), StreamFinal(model="fake", finish_reason="stop")]
+    )
+    return SimpleNamespace(llm=llm, vector_store=_FakeStore(), tracer=tracer)
+
+
+def test_main_retrieve_stdout_is_answer_only_quiet(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
+    container = _stream_container(RecordingTracer())
+    monkeypatch.setattr(cli_module, "build_container", lambda **kw: container)
+    assert cli_module.main(["--retrieve", "--quiet", "Сколько заказов?"]) == 0
+    captured = capsys.readouterr()
+    assert captured.out == "Ответ 42\n"  # РОВНО ответ: без дубля print и этапов
+    assert captured.err == ""  # --quiet глушит stderr-этапы, не ответ (D-022)
+
+
+def test_main_retrieve_stages_go_to_stderr_not_stdout(
+    monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    container = _stream_container(ConsoleTracer())  # дефолтный stderr
+    monkeypatch.setattr(cli_module, "build_container", lambda **kw: container)
+    assert cli_module.main(["--retrieve", "Сколько заказов?"]) == 0
+    captured = capsys.readouterr()
+    assert captured.out == "Ответ 42\n"
+    assert "▶ Вопрос" in captured.err  # этапы — в stderr
+    assert "Ответ 42" not in captured.err  # текст ответа не в трейсе (Ловушка-4)

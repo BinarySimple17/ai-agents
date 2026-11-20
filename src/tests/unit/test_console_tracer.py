@@ -62,7 +62,7 @@ def test_llm_complete_line_with_stream_ttft() -> None:
             },
         )
     )
-    assert stream.getvalue() == "  · qwen3.8-9b · 584→212 ток · 4.1с · 0.00₽ · первый чанк 0.4с\n"
+    assert stream.getvalue() == "  · qwen3.8-9b · 584→212 ток · 4.1с · 0.00₽ · первый чанк 430мс\n"
     tracer.record(Trace(event="llm.complete", payload={"model": "m"}))  # буферный путь: поля нет
     assert "первый чанк" not in stream.getvalue().splitlines()[-1]
 

@@ -141,7 +141,7 @@ best-effort — сбой приёмника не рвёт запрос). Сбо�
 | `agent.empty_retry` | left | пустой/битый ответ — повтор |
 | `agent.cap_exhausted` | rounds | кап ходов — финальный вызов без тулов |
 | `agent.degrade` | reason | деградация-исход (S00 правило 8) |
-| `agent.answer` | source: text / final_no_tools / retrieval / retrieval_stream | финальный ответ |
+| `agent.answer` | source: text / final_no_tools / retrieval (буферный период до S19) / retrieval_stream | финальный ответ |
 
 `llm.complete / retry / timeout / reject / breaker_open / budget_stop` — события
 провайдера (включая `text_from_reasoning` и `finish_reason` — D-021; стрим S19
