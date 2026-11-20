@@ -66,7 +66,7 @@ archive:
 
 # Ритуалы начала/конца сессии (см. AGENTS.md: Startup Workflow / End of Session)
 session-start:
-	@echo "Clock-in: 1) pwd  2) прочитать AGENTS.md  3) создать/проверить файл сессии (из TEMPLATE_session.md)  4) прочитать progress.md  5) выбрать ОДНУ фичу из feature_list.json  6) запустить make check"
+	@echo "Clock-in: 1) pwd  2) прочитать AGENTS.md  3) создать/проверить файл сессии (из TEMPLATE_session.md) и перевести шапку стартуемой сессии в «◐ в работе» — старт-гейт кусает только её (D-027)  4) прочитать progress.md  5) выбрать ОДНУ фичу из feature_list.json  6) запустить make check"
 	bash scripts/guard-subagents.sh --phase start
 
 session-end:

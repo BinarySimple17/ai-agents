@@ -32,6 +32,7 @@ bge-m3, фильтр прав). Сессия добавляет потоковы
 
 ## Предусловия
 
+- [ ] Сессия СТАРТУЕТ: статус в шапке переведён в «◐ в работе» и ARCH-GATE резолвлен ДО кода (canon-check architect ✅ либо обоснованный N/A) — старт-гейт (`guard-subagents.sh --phase start`, D-027) проверяет только стартованные (◐) сессии; «[ ] не начата» — план, гейт её скипает
 - [ ] S03 закрыта: `uv run pytest src/tests/unit/test_llm_client.py -q` → green
 - [ ] S06 закрыта: в `feature_list.json` у feat-006 state=passing с evidence (retrieval-контур работает)
 - [ ] `make check` зелёный (baseline репозитория)

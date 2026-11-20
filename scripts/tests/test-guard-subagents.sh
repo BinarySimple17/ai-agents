@@ -33,6 +33,11 @@
 #   22 end без фичи: ◐ с «не начата»          → exit 0 (совместимость; strict — только при feature)
 #   23 end: запланированная + ◐ заполненная   → exit 0, проверена только ◐
 #   24 end: только запланированные            → WARN exit 0 («гейту закрытия нечего проверять»)
+#   25 end: закрытая (✅) с плейсхолдером REVIEW → exit 1 (C1: закрываемая не скипается)
+#   26 end: закрываемая в archive/            → exit 1 (C1, archive-fallback)
+#   27 start: копия TEMPLATE (легенда)        → started fail-closed → exit 1 (I1)
+#   28 start: нестандартный статус            → started fail-closed → exit 1 (I1)
+#   29 end: две ◐                             → последняя проверена, прочие — WARN (I3)
 #
 # Запуск: bash scripts/tests/test-guard-subagents.sh   (без внешних зависимостей)
 # Exit: 0 — все кейсы зелёные, 1 — есть провалы.
@@ -218,7 +223,7 @@ out="$(SESSIONS_DIR="$SESS" bash "$GUARD" "" feat-099 2>&1)"; rc=$?
 assert_rc "9: strict N/A «не начата» → exit 1" 1 "$rc"
 assert_out "9: объяснение строгого режима" "гейты заполняются ПО ФАКТУ" "$out"
 
-# --- кейс 10: start, закрытая сессия в корне → WARN «make archive», exit 0 ---
+# --- кейс 10: start, закрытая сессия в корне → WARN «make archive», exit 0 (гейт её не кусает) ---
 make_session "$F" "$SECTION
 
 $ARCH_OK
@@ -337,6 +342,11 @@ out="$(run_start)"; rc=$?
 assert_rc "20: ◐ с «не начата» в ARCH → exit 1 (дыра владельца закрыта)" 1 "$rc"
 assert_out "20: объяснение противоречия статусу" "уже стартовала" "$out"
 assert_out "20: сессия в списке провальных" "S99_session.md" "$out"
+if printf '%s' "$out" | grep -q 'FAIL (2)'; then
+  TESTS=$((TESTS + 1)); echo "  [FAIL] 20: двойной инкремент FAIL (одно нарушение посчитано дважды)"; FAILED=$((FAILED + 1))
+else
+  TESTS=$((TESTS + 1)); echo "  [PASS] 20: счётчик FAIL без задвоения"
+fi
 
 # --- кейс 21: start, только запланированные (◐ нет) → exit 0 с объяснением ---
 rm -f "$F"
@@ -372,6 +382,63 @@ rm -f "$F2"
 out="$(run_end)"; rc=$?
 assert_rc "24: end только запланированные → WARN exit 0" 0 "$rc"
 assert_out "24: объяснение" "гейту закрытия нечего проверять" "$out"
+
+# --- кейс 25 (C1, ревью S23): end, закрытая (✅) в корне с плейсхолдером REVIEW + запланированная → exit 1 ---
+# Документированный clock-out: статус → ✅ → archive → clean-check; end обязан проверить
+# закрываемую сессию, а не скипать молча
+make_session "$F2" "$SECTION
+
+$ARCH_NA
+$REV_PH"
+sed -i 's/Статус: ◐ в работе/Статус: [x] ✅ 2026-11-19/' "$F2"
+make_session "$F" "$SECTION
+
+- ARCH-GATE: N/A — сессия не начата
+- REVIEW-GATE: N/A — сессия не начата"
+sed -i 's/Статус: ◐ в работе/Статус: [ ] не начата/' "$F"
+out="$(run_end)"; rc=$?
+assert_rc "25: end закрытая с плейсхолдером REVIEW → exit 1 (C1)" 1 "$rc"
+assert_out "25: закрываемая в списке провальных" "S98_session.md" "$out"
+assert_out "25: FAIL на плейсхолдере" "шаблонный плейсхолдер" "$out"
+
+# --- кейс 26 (C1): закрываемая уже в archive/, в корне только запланированная → exit 1 ---
+mv "$F2" "$SESS/archive/S98_session.md"
+out="$(run_end)"; rc=$?
+assert_rc "26: end архивная закрываемая с плейсхолдером → exit 1 (C1)" 1 "$rc"
+assert_out "26: архивная проверена" "archive/S98_session.md" "$out"
+mv "$SESS/archive/S98_session.md" "$F2"
+
+# --- кейс 27 (I1): свежая копия TEMPLATE (легенда со всеми маркерами) → started fail-closed → exit 1 ---
+rm -f "$F" "$F2"
+cp "$ROOT/solution/sessions/TEMPLATE_session.md" "$F"
+out="$(run_start)"; rc=$?
+assert_rc "27: копия TEMPLATE (легенда статуса) → не скипается, exit 1 на плейсхолдере (I1)" 1 "$rc"
+assert_out "27: плейсхолдер пойман" "шаблонный плейсхолдер" "$out"
+
+# --- кейс 28 (I1): нестандартный статус («на паузе») → started fail-closed → exit 1 ---
+ARCH_PH='- ARCH-GATE: [✅ <verdict: compliant | violations | needs-decision> + <план/файл> | N/A — <причина>]'
+make_session "$F" "$SECTION
+
+$ARCH_PH
+$REV_PH"
+sed -i 's/Статус: ◐ в работе/Статус: на паузе/' "$F"
+out="$(run_start)"; rc=$?
+assert_rc "28: нестандартный статус → fail-closed, exit 1 (I1)" 1 "$rc"
+assert_out "28: плейсхолдер пойман" "шаблонный плейсхолдер" "$out"
+
+# --- кейс 29 (I3): две ◐ — end проверяет последнюю, о прочих WARN (не тишина) ---
+make_session "$F2" "$SECTION
+
+$ARCH_NA
+$REV_PH"
+make_session "$F" "$SECTION
+
+$ARCH_NA
+$REV_OK"
+out="$(run_end)"; rc=$?
+assert_rc "29: две ◐ → проверена последняя (заполненная), exit 0" 0 "$rc"
+assert_out "29: прочая ◐ упомянута WARN'ом (S98 с плейсхолдером)" "S98_session.md" "$out"
+assert_out "29: текст про непроверенный REVIEW-GATE" "их REVIEW-GATE проверится" "$out"
 
 echo ""
 if [ "$FAILED" -eq 0 ]; then

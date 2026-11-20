@@ -40,6 +40,7 @@
 
 ## Предусловия
 
+- [ ] Сессия СТАРТУЕТ: статус в шапке переведён в «◐ в работе» и ARCH-GATE резолвлен ДО кода (canon-check architect ✅ либо обоснованный N/A) — старт-гейт (`guard-subagents.sh --phase start`, D-027) проверяет только стартованные (◐) сессии; «[ ] не начата» — план, гейт её скипает
 - [ ] S02 закрыта: `make infra-up && make infra-migrate` → схема v1.5 поднята; `uv run pytest src/tests/integration/test_infra_schema.py -q` → passed (включая test_vector_extension_installed)
 - [ ] `make check` зелёный (baseline репозитория)
 - [ ] feat-002 в state=passing (`feature_list.json`)

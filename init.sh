@@ -14,11 +14,12 @@ if [ -d .githooks ]; then
   chmod +x .githooks/* 2>/dev/null || true
 fi
 
-# Гейт старта сессии (D-023, AGENTS.md Startup Workflow шаг 8): консистентность файла
-# сессии + ARCH-GATE обязателен ДО старта работ. Отсутствие активной сессии (свежий
-# клон / всё заархивировано) — WARN, не блокер; недозаполненные чекбоксы — [FIX].
-# Незаполненный ARCH-GATE = FAIL: make check остаётся красным до canon-check (✅/N/A).
-# Fail-fast: до uv-шагов — сессия не начинается с незакрытым архитектурным контролем.
+# Гейт старта сессии (D-023/D-027, AGENTS.md Startup Workflow шаг 8): кусает только
+# сессию, которую СТАРТУЮТ — маркер: статус шапки «◐ в работе» (запланированные
+# «[ ] не начата» скипаются; ✅ в корне — напоминание про make archive). Для стартованной:
+# ARCH-GATE до кода — незаполненный/«сессия не начата» = FAIL, make check красный до
+# canon-check (✅/N/A). Стартованных нет — WARN, не блокер (рестартуемость).
+# Fail-fast: до uv-шагов.
 if [ -f scripts/guard-subagents.sh ]; then
   bash scripts/guard-subagents.sh --phase start
 fi

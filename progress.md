@@ -6,10 +6,10 @@
 
 ## Current State
 
-**Last Updated:** 2026-11-19
-**Session ID:** … → S02 → S03 → D-020 (локальный LM Studio) → **S13 (feat-013 закрыта)** → **S21 (BL-004, D-022)** → **S22 (D-023: неизбежные гейты сессии — двухфазный guard-subagents.sh, start-фаза в make check; REVIEW-GATE «С оговорки» → fix-волна 2I+minors → re-review)**
-**Active Feature:** — (harness-сессия, states фич не менялись; **ДЗ-02 собрана** — сдача: PR `dev` → `main` + тег)
-**Last commit:** ветка `harness/session-gates` (S22); до этого — PR #8 `feat-cli-observability` → `dev` (S21); `main` — релизы (v0.1.0 = этап 1)
+**Last Updated:** 2026-11-20
+**Session ID:** … → S13 → S21 → S22 (D-023) → **S23 (D-027: старт-гейт кусает только стартуемую сессию — маркер статуса шапки «◐ в работе»; REVIEW-GATE «Требует правок» → fix-волна C1/I1/I2/I3 → re-review)**
+**Active Feature:** — (harness-сессия; веха V2: S06/S19 запланированы, canon-check — при их старте по чекбоксу; **ДЗ-02 собрана на dev** — сдача PR dev→main + тег по команде)
+**Last commit:** ветка `harness/gate-all-sessions` (S23) → merge в `milestone/v2` напрямую (D-024); milestone/v2 — изоляция V2 до приёмки V1
 
 ## Status
 
@@ -48,17 +48,18 @@
 
 - [x] **S22 Evidence (2026-11-19, D-023):** неизбежные гейты сессии — `guard-subagents.sh` двухфазный: **start-фаза** (`--phase start` из `init.sh`/`make session-start`) — самовосстановление файла сессии (`[FIX]`-вставки раздела и строк, идемпотентно, ARCH до REVIEW), ARCH-GATE обязателен до старта работ (незаполненный → exit 1, make check красный до canon-check ✅/N/A), REVIEW-GATE мягкий WARN, нет активной сессии — WARN exit 0 (рестартуемость клона), закрытая-в-корне — WARN «make archive»; **end-фаза** (дефолт) — прежнее поведение без мутаций; self-test `scripts/tests/test-guard-subagents.sh` — 17 кейсов / **53 assert-а** в цепочке `make check`; негативный контроль (незаполненный ARCH → FAIL с ритуалом) и живой сценарий (без раздела → `[FIX]` → красный → заполнение → зелёный) пройдены; `make check` → EXIT=0 (**145 passed** + self-test); **REVIEW-GATE: «С оговорками» (0C/2I/9M) → fix-волна** (I1 start+feature без провала в auto-detect, I2 ветки самовосстановления, minors M3–M11) → **scoped re-review «Принято»**; BL-006 (связка коммит↔сессия); провода: AGENTS.md (Startup 4/8), TEMPLATE, scripts/README, D-023, quality-document
 
+- [x] **S23 Evidence (2026-11-20, D-027):** находка владельца — две сессии V2 (S06+S19, «N/A — сессия не начата») проходили старт-гейт без canon-check (гвард проверял только последнюю по sort -V). Первая трактовка («гейт по всем сессиям») реализована и отклонена владельцем по ходу: «контроль — по одной сессии, той, которую стартуют; чекбокс в пререквизитах». Принято: классификация по статусу шапки — ◐ в работе проверяется жёстко («не начата» у ◐ = FAIL), «[ ] не начата» — [SKIP] (план), ✅ в корне — WARN make archive, нет строки статуса/легенда шаблона/нестандартный статус — fail-closed (якорные regex, fix I1); end-фаза: ◐ → закрытая (✅) в корне → archive (fix C1 — закрываемая не скипается), несколько ◐ — WARN (I3); чекбокс старта в Предусловиях TEMPLATE + S06/S19 (I2); «не начата» сужено до `^сессия не начата`; self-test **29 кейсов / 84 assert-а**; негативный контроль живьём (S06 → ◐ → make check красный с именем, откат — зелёный); make check → EXIT=0 (145 passed + self-test); merge harness/gate-all-sessions → milestone/v2 (D-024); **REVIEW-GATE: «Требует правок» (1C/3I/4m) → fix-волна → re-review**
+
 ### What's In Progress
 
-- — (S22 закрыта 2026-11-19; **ДЗ-02 собрана**: S02 → S03 → D-020 → S13). Сдача ДЗ-02 — PR `dev` → `main` + тег версии (регламент вех)
+- — (S23 закрыта 2026-11-20; веха V2 на `milestone/v2`: S06 → S19 — canon-check при старте по чекбоксу, D-027). V1 ждёт сдачи: **ДЗ-02 собрана на dev** — PR `dev` → `main` + тег по команде (D-024)
 
 ### Next Steps
 
-1. Слить `harness/session-gates` (S22) → `dev` через PR (гигиена веток)
-2. **Сдача ДЗ-02** (дедлайн 01.12.2026): PR `dev` → `main` + тег версии (release-регламент); артефакт сдачи — `hw-02/README.md` (SOP + JSON-схема + прогон)
-3. Веха V2 (ДЗ-03, дедлайн 07.12): **S06** (pgvector: retrieval + embed, локальный эмбеддер `text-embedding-bge-m3` — D-020) → **S19** (стриминг)
-4. Хвосты S13 — в s13-переносах (отчёт сессии): reasoning off — ADR-008 (S10+); compact_result — S15; node_timings — S04; writable CTE/multi-command в deny-list — S11
-5. BL-006 (P3): полная механическая связка «коммит ↔ файл сессии» (дыра «работа без файла сессии» закрыта частично, D-023); BL-001/BL-003/BL-005 — открыты
+1. **Веха V2 (ДЗ-03, дедлайн 07.12)** на `milestone/v2`: **S06** (pgvector: dense-only retrieval + embed bge-m3 — D-025/D-026; при старте шапка → ◐ → canon-check → ARCH-GATE) → **S19** (стриминг)
+2. **Сдача ДЗ-02** (дедлайн 01.12.2026): PR `dev` → `main` + тег версии (release-регламент); артефакт сдачи — `hw-02/README.md`; приёмка V1 → реинтеграция milestone/v2 в dev через PR (D-024)
+3. Хвосты S13 — в s13-переносах (отчёт сессии): reasoning off — ADR-008 (S10+); compact_result — S15; node_timings — S04; writable CTE/multi-command в deny-list — S11
+4. BL-006 (P3): полная механическая связка «коммит ↔ файл сессии»; BL-007 (P?): гибридная память (FTS/RRF/шумовой корпус) — веха V3, D-026 доп.2; BL-001/BL-003/BL-005 — открыты
 
 ## Blockers / Risks
 

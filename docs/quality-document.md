@@ -14,7 +14,7 @@
 | `services/db` (execute/seed) | A | A | A | A | feat-002 ✅ + feat-013 ✅ (миграции 0001–0004; исполнитель agent_ro — extended protocol, LIMIT 1001+пост-срез, SET LOCAL timeout, RLS-tripwire — 14 integration; чистая комната); заявки/ETL-гранты — S07/S10 |
 | `services/cache` | — | — | — | — | feat-016 |
 | `cli/` | A | A | A | A | feat-013 ✅ + S21 ✅ (function-calling цикл: кап 3 хода, ретраи пустых/битых не расходуют кап, деградация шлюза — 26 unit; события `agent.*` через порт Tracer + рендер ConsoleTracer/TeeTracer в stderr — 12 unit, observability §2.4, D-022; layer-3 живые прогоны на LM Studio D-020); FSM-подключение — feat-004 |
-| `harness/` (scripts/, init.sh, Makefile — гейты процесса) | A | A | A | A | S22 ✅ (D-023: двухфазный guard-subagents.sh — start-фаза в make check, самовосстановление чекбоксов, end-фаза без мутаций; self-test 53 assert-а в init.sh; негативный контроль и живой сценарий пройдены; REVIEW-GATE «С оговорками» (0C/2I/9M) → fix-волна 2I+minors → re-review «Принято»); BL-006 — полная связка коммит↔сессия |
+| `harness/` (scripts/, init.sh, Makefile — гейты процесса) | A | A | A | A | S22 ✅ + S23 ✅ (D-023/D-027: двухфазный guard-subagents.sh; старт-гейт кусает только стартуемую сессию — маркер статуса шапки «◐ в работе», запланированные «[ ] не начата» скипаются, «не начата» у ◐ = FAIL; end-фаза ◐ → закрытая (✅) → archive — закрываемая не скипается (fix C1); классификация якорная — легенда шаблона fail-closed (fix I1); self-test 29 кейсов / 85 assert-ов в init.sh; негативный контроль живьём: S06 → ◐ с «не начата» → make check красный с именем; S23 REVIEW-GATE «Требует правок» (1C/3I/4m) → fix-волна → re-review «С оговорками» (0C)); BL-006 — связка коммит↔сессия, BL-008 — выбор закрываемой |
 
 ## How to Update
 

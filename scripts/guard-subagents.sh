@@ -38,15 +38,16 @@
 # Вызывается из: init.sh и make session-start (--phase start); make clean-check,
 # make session-end, scripts/verify-feature.sh (end). Self-test — scripts/tests/test-guard-subagents.sh.
 #
-# Автоопределение end-фазы: последняя СТАРТОВАННАЯ (◐) сессия в корне (закрывают ту,
-# что в работе; запланированные сессии не блокируют clean-check); корень без стартованных →
-# WARN, exit 0; пустой корень → последняя в $SESSIONS_DIR/archive/ (legacy-совместимость).
+# Автоопределение end-фазы (ревью S23 C1): последняя СТАРТОВАННАЯ (◐) сессия в корне;
+# стартованных нет — последняя закрытая (✅) в корне (к моменту clean-check закрываемая
+# уже «✅»/в archive — скипать её = байпас REVIEW-GATE); иначе — последняя в
+# $SESSIONS_DIR/archive/ (legacy-совместимость); проверять нечего вовсе → WARN, exit 0.
 # Явный файл и путь по фиче (arg2) минуют классификацию по статусу — проверяются жёстко
 # (fail-closed). При заданном feature-id ищется сессия с ролью «закрывает feat-XXX»; нет
 # такого файла — end-фаза: FAIL (гейт без сессии невозможен), start-фаза: WARN, exit 0.
-# Причина N/A «сессия не начата»: start-фаза — невалидна всегда (стартованная сессия
-# обязана резолвить ARCH-GATE; D-027), end-фаза при verify-feature (strict) — невалидна
-# (ревью S02 Important-5), end-фаза без фичи — валидна (совместимость).
+# Причина N/A «сессия не начата»: start-фаза — невалидна для стартованной (◐) сессии
+# (D-027), end-фаза при verify-feature (strict) — невалидна (ревью S02 Important-5),
+# end-фаза без фичи — валидна (совместимость).
 #
 # Exit: 0 — гейты учтены (или legacy / нет стартованных сессий в start-фазе),
 #       1 — гейт пропущен/не заполнен, 2 — некорректный вызов.
@@ -107,15 +108,17 @@ ARCH_PLACEHOLDER='- ARCH-GATE: [✅ <verdict: compliant | violations | needs-dec
 REV_PLACEHOLDER='- REVIEW-GATE: [✅ <Ready to merge? вердикт> + <BASE7>..<HEAD7> | N/A — <причина>]'
 
 # classify_session <файл> → closed (✅) | started (◐) | planned ([ ] не начата).
-# Сессия БЕЗ строки «Статус:» в шапке — started (fail-closed: гейт проверяет malformed-файл).
+# Статус якорится по значению после «Статус:» (ревью S23 I1): легенда шаблона и
+# нестандартные статусы («на паузе», опечатки) не молча скипаются, а попадают в started
+# (fail-closed: гейт проверяет). Сессия БЕЗ строки «Статус:» в шапке — тоже started.
 classify_session() {
   local head_content
   head_content="$(head -"$STATUS_SCAN_LINES" "$1" 2>/dev/null)"
-  if printf '%s' "$head_content" | grep -q 'Статус:.*✅'; then
+  if printf '%s' "$head_content" | grep -Eq 'Статус:[[:space:]]*(\[[xX]\])?[[:space:]]*✅'; then
     echo "closed"
-  elif printf '%s' "$head_content" | grep -q 'Статус:.*◐'; then
+  elif printf '%s' "$head_content" | grep -Eq 'Статус:[[:space:]]*◐'; then
     echo "started"
-  elif printf '%s' "$head_content" | grep -q 'Статус:'; then
+  elif printf '%s' "$head_content" | grep -Eq 'Статус:[[:space:]]*\[[[:space:]]*\][[:space:]]*не начата[[:space:]]*$'; then
     echo "planned"
   else
     echo "started"
@@ -258,15 +261,14 @@ check_gate() {
   if [ "$na" -ge 1 ]; then
     local reason="${line#*N/A}"
     reason="$(printf '%s' "$reason" | sed -e 's/^[[:space:]—–-]*//')"
-    if [ "$no_not_started" -eq 1 ] && printf '%s' "$reason" | grep -q 'не начата'; then
+    if [ "$no_not_started" -eq 1 ] && printf '%s' "$reason" | grep -Eq '^[[:space:]]*сессия не начата'; then
       gate_fail "причина «сессия не начата» невалидна — сессия в статусе «◐ в работе» уже стартовала (D-027):"
       echo "         резолвьте ARCH-GATE ДО кода — canon-check архитектора (✅ verdict) либо обоснованный"
       echo "         N/A (например: границы модулей/зависимости/схема/ER не затрагиваются);"
       echo "         make check зеленеет сразу после заполнения строки."
-      FAIL=$((FAIL + 1))
       return
     fi
-    if [ "$GATE_STRICT" -eq 1 ] && printf '%s' "$reason" | grep -q 'не начата'; then
+    if [ "$GATE_STRICT" -eq 1 ] && printf '%s' "$reason" | grep -Eq '^[[:space:]]*сессия не начата'; then
       gate_fail "причина «сессия не начата» невалидна — гейты заполняются ПО ФАКТУ работ; незакрытая сессия не может пройти verify-feature (ревью S02 Important-5). Замените на evidence или фактическую причину пропуска."
       return
     fi
@@ -417,24 +419,40 @@ EOF
   SESSION_LIST="$(printf '%b' "$STARTED_LIST")"
 fi
 
-# --- end-фаза без явного файла/фичи: проверяем последнюю СТАРТОВАННУЮ (◐) сессию ---
-# (закрывают ту, что в работе; запланированные сессии не блокируют clean-check)
+# --- end-фаза без явного файла/фичи: кого проверять ---
+# Порядок (ревью S23 C1): последняя стартованная (◐); если стартованных нет — последняя
+# закрытая (✅) в корне (по AGENTS.md clock-out к clean-check сессия уже «✅»/в archive —
+# молча скипать её = байпас REVIEW-GATE); иначе — последняя в archive/ (legacy). Только
+# когда проверять нечего вовсе — WARN exit 0. Запланированные («не начата») не кусаются.
 if [ "$PHASE" = "end" ] && [ -z "$SESSION" ] && [ -z "$FEATURE" ]; then
-  STARTED_LAST=""
+  STARTED_LIST=""
+  CLOSED_LAST=""
   while IFS= read -r f; do
     [ -n "$f" ] || continue
-    if [ "$(classify_session "$f")" = "started" ]; then
-      STARTED_LAST="$f"
-    fi
+    case "$(classify_session "$f")" in
+      started) STARTED_LIST="${STARTED_LIST}${f}\n" ;;
+      closed)  CLOSED_LAST="$f" ;;
+    esac
   done <<EOF
 $SESSION_LIST
 EOF
-  if [ -z "$STARTED_LAST" ]; then
-    echo "  [WARN] стартованных (◐) сессий нет — гейту закрытия нечего проверять;"
-    echo "         запланированные/закрытые сессии гейт не кусает (closed — выполните make archive)"
-    exit 0
+  if [ -n "$STARTED_LIST" ]; then
+    SESSION_LIST="$(printf '%b' "$STARTED_LIST" | tail -1)"
+    OTHER_STARTED="$(printf '%b' "$STARTED_LIST" | head -n -1 | tr '\n' ' ')"
+    if [ -n "$(printf '%s' "$OTHER_STARTED" | tr -d '[:space:]')" ]; then
+      echo "  [WARN] в работе также:$OTHER_STARTED — end-фаза проверяет последнюю стартованную ($SESSION_LIST);"
+      echo "         их REVIEW-GATE проверится при их закрытии (или явно: bash scripts/guard-subagents.sh <файл>)"
+    fi
+  elif [ -n "$CLOSED_LAST" ]; then
+    SESSION_LIST="$CLOSED_LAST"
+  else
+    SESSION_LIST="$(find "$SESSIONS_DIR/archive" -name '*_session.md' 2>/dev/null | sort -V | tail -1)"
+    if [ -z "$SESSION_LIST" ]; then
+      echo "  [WARN] гейту закрытия нечего проверять: стартованных (◐) и закрытых (✅) сессий нет —"
+      echo "         запланированные («не начата») гейт не кусает"
+      exit 0
+    fi
   fi
-  SESSION_LIST="$STARTED_LAST"
 fi
 
 # --- legacy: сессия в archive/ без раздела гейтов — закрыта до введения гейтов ---
