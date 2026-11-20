@@ -1,6 +1,6 @@
 # S19 — Стриминг объяснения в CLI (веха V2, ДЗ-03)
 
-Этап: Веха V2 (ДЗ-03: стриминг) | Владелец: агент | Зависимости: S03, S06 | Оценка: 0.5 | Статус: [ ] не начата
+Этап: Веха V2 (ДЗ-03: стриминг) | Владелец: агент | Зависимости: S03, S06 | Оценка: 0.5 | Статус: ◐ в работе 2026-11-20
 Фичи: feat-019 — Стриминг объяснения (ДЗ-03); зависимости feat-003 и feat-006 уже в passing
 Роль по фиче: закрывает feat-019 — финальная сессия, через make verify-feature
 
@@ -32,7 +32,7 @@ bge-m3, фильтр прав). Сессия добавляет потоковы
 
 ## Предусловия
 
-- [ ] Сессия СТАРТУЕТ: статус в шапке переведён в «◐ в работе» и ARCH-GATE резолвлен ДО кода (canon-check architect ✅ либо обоснованный N/A) — старт-гейт (`guard-subagents.sh --phase start`, D-027) проверяет только стартованные (◐) сессии; «[ ] не начата» — план, гейт её скипает
+- [x] Сессия СТАРТОВАЛА (2026-11-20): статус в шапке переведён в «◐ в работе» и ARCH-GATE резолвлен ДО кода (canon-check architect ✅ либо обоснованный N/A) — старт-гейт (`guard-subagents.sh --phase start`, D-027) проверяет только стартованные (◐) сессии; «[ ] не начата» — план, гейт её скипает
 - [ ] S03 закрыта: `uv run pytest src/tests/unit/test_llm_client.py -q` → green
 - [ ] S06 закрыта: в `feature_list.json` у feat-006 state=passing с evidence (retrieval-контур работает)
 - [ ] `make check` зелёный (baseline репозитория)
@@ -115,7 +115,9 @@ uv run python -m apps.cli "Сколько новых клиентов из Ге�
 `src/tests/unit/test_streaming.py` (LLM мокается со `stream=True`, S00 правило 7): (a)
 последовательность чанков собирается в полный ответ; (b) TTFT фиксируется в событии; (c)
 ошибка mid-stream → деградация без traceback; (d) BudgetExceededError до вызова — стрим не
-начинается; (e) reasoning-чанки не печатаются как ответ (guard по finish_reason). Закрытие:
+начинается; (e) reasoning-чанки не печатаются как ответ (guard по finish_reason); (f)
+usage отсутствует в StreamFinal → событие llm.complete несёт `usage_missing=true`
+(ARCH-GATE: finding canon-check — паритет «стоимость 0 не маскируется», S03 I4). Закрытие:
 `make verify-feature F=feat-019`.
 
 **✅ Самопроверка:**
@@ -153,7 +155,7 @@ make verify-feature F=feat-019                      # state=passing + evidence
 
 ## Гейты субагентов (заполняется по факту, до закрытия сессии)
 
-- ARCH-GATE: N/A — сессия не начата
+- ARCH-GATE: ✅ canon-check «compliant» 2026-11-20 (architect; план соответствует канону: стык 2/S00, ADR-007 §4, ADR-002, D-021/D-022, observability §2.4) — rulings: W1 стриминг только в retrieval-контуре ДЗ-03 (`--retrieve`, один вызов, ответ — текст; тул-контур ДЗ-02 остаётся буферизованным — шапка плана + hw-plan §3, инвариант ADR-002 не затронут); W2 контракт `complete_stream` = генератор чанков (StreamChunk: text_delta) + терминальный StreamFinal (usage/finish_reason/model), TTFT — полем `ttft_ms` (+ `stream: true`) в СУЩЕСТВУЮЩЕМ событии llm.complete, НЕ новым именем (словарь observability §2.4 зафиксирован; прецедент D-021 — расширение полями; llm-имена не заводятся в tracer.py); W3 ретраи (backoff SDK-create, CLI empty-retry) только ДО первого чанка, mid-stream сбой → `_register_failure` + LLMRequestError → деградация (ADR-007 M1, S00 правило 8, Ловушки-1); W4 reasoning-дельты буферизуются в адаптере, stdout не попадают, фолбэк одним куском при пустом content и живом reasoning по guard'у finish_reason — константа переезжает в порт (NO_TEXT_FALLBACK_REASONS, единый источник, без дубля), provenance text_from_reasoning в payload; W5 синхрон S00 (строка порта + стык 2 + Правки) и observability §2.4 (поля ttft_ms/stream) в том же коммите; находка canon-check: паритет usage_missing в стриме (usage шлют не все шлюзы) → тест (f) в Task 5
 - REVIEW-GATE: N/A — сессия не начата
 
 ## Отчёт по сессии (заполняется по факту)

@@ -488,8 +488,8 @@
         "feat-003",
         "feat-006"
       ],
-      "state": "not_started",
-      "status": "not-started",
+      "state": "active",
+      "status": "active",
       "evidence": "",
       "layers": [
         {
