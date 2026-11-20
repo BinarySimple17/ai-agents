@@ -12,6 +12,7 @@ from text_to_sql_agent.application.ports.tracer import Tracer
 from text_to_sql_agent.application.services.run_sql_tool import RunSqlTool
 from text_to_sql_agent.config.settings import Settings, load_settings
 from text_to_sql_agent.infrastructure.llm.openai_provider import OpenAIProvider
+from text_to_sql_agent.infrastructure.memory.pgvector_store import PgVectorStore
 from text_to_sql_agent.infrastructure.observability.composite_tracer import TeeTracer
 from text_to_sql_agent.infrastructure.observability.console_tracer import ConsoleTracer
 from text_to_sql_agent.infrastructure.observability.jsonl_tracer import JsonlTracer
@@ -27,6 +28,7 @@ class Container:
     tracer: Tracer
     executor: PostgresExecutor
     run_sql_tool: RunSqlTool
+    vector_store: PgVectorStore
 
 
 def build_container(settings: Settings | None = None, *, console_trace: bool = False) -> Container:
@@ -43,6 +45,18 @@ def build_container(settings: Settings | None = None, *, console_trace: bool = F
     # Канал SQL — строго AGENT_RO_DSN (security §2.1); сервисный POSTGRES_DSN — не здесь.
     executor = PostgresExecutor(settings.agent_ro_dsn.get_secret_value())
     run_sql_tool = RunSqlTool(executor)
+    # Векторная память (S06): поиск — agent_planner (c4-l2 v1.8 «пул agent_planner:
+    # retrieval»); write_dsn (сервисный) — только офлайн-индексация
+    # make index-knowledge; runtime-роли в память знаний не пишут (ruling W1).
+    vector_store = PgVectorStore(
+        settings.agent_planner_dsn,
+        write_dsn=settings.postgres_dsn.get_secret_value(),
+    )
     return Container(
-        settings=settings, llm=llm, tracer=tracer, executor=executor, run_sql_tool=run_sql_tool
+        settings=settings,
+        llm=llm,
+        tracer=tracer,
+        executor=executor,
+        run_sql_tool=run_sql_tool,
+        vector_store=vector_store,
     )

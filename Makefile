@@ -34,6 +34,11 @@ dev:
 	@test -n "$(Q)" || { echo 'Usage: make dev Q="бизнес-вопрос"'; exit 2; }
 	uv run python -m apps.cli "$(Q)"
 
+# Индексация кураторских знаний в pgvector (S06, feat-006): DDL/связи/глоссарий/few-shot;
+# идемпотентно по source_ref — повторный запуск обновляет, не дублирует
+index-knowledge:
+	uv run --env-file .env python -m apps.index_knowledge
+
 # --- Инфраструктура (PostgreSQL pgvector+AGE, Valkey) ---
 
 infra-up:
