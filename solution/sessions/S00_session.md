@@ -81,7 +81,7 @@ alembic.ini                    # конфиг Alembic (script_location = src/mig
 | Порт (application/ports) | Реализации (infrastructure) | Вводит сессия |
 |---|---|---|
 | `LLMProvider.complete(role, messages, *, tools=None) -> LLMResponse(text, tool_calls, usage, model)` · `embed(texts) -> list[vector]` (эмбеддер — model-card) | `openai_provider.py` (routerai.ru / локальный LM Studio — D-020), фейк в тестах | S03 (embed — S06) |
-| `VectorStore.search(query, allowed) -> docs` | `pgvector_store.py`, фейк в тестах | S06 |
+| `VectorStore.upsert(documents, embeddings) -> int` (идемпотентно по source_ref) · `search(query_embedding, *, ctx, top_k) -> docs` (фильтр прав — джойн в SQL поиска, ADR-005) | `pgvector_store.py` (dense-only — D-026 доп. 2), фейк в тестах | S06 |
 | `SchemaGraphStore.path(a, b, allowed) -> plan\|None` | `neo4j_graph_store.py` | S07 |
 | `SQLExecutor.execute(QueryRequest, *, ctx: RunContext) -> QueryResult(columns, rows, row_count, truncated)` — read-only; дискриминатор `sql\|spec` (ADR-011 v1.2: ctx — trace_id/user_id/token_ref) | `postgres_executor.py` (роль `agent_ro`) | S13 |
 | `SemanticCache.get(key) / put(key, value)` | `valkey_cache.py` / `noop_cache.py` (тесты) | S16 |
