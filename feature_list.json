@@ -139,9 +139,9 @@
       "dependencies": [
         "feat-002"
       ],
-      "state": "active",
-      "status": "active",
-      "evidence": "",
+      "state": "passing",
+      "status": "done",
+      "evidence": "command «make infra-up && uv run pytest src/tests/integration/test_vector_memory.py -q» exited 0 at 2026-11-20T20:31:29+03:00 (scripts/verify-feature.sh)",
       "layers": [
         {
           "label": "layer-1-static",
