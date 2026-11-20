@@ -139,8 +139,8 @@
       "dependencies": [
         "feat-002"
       ],
-      "state": "not_started",
-      "status": "not-started",
+      "state": "active",
+      "status": "active",
       "evidence": "",
       "layers": [
         {
