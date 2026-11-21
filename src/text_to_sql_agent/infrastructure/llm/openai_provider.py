@@ -234,6 +234,11 @@ class OpenAIProvider:
             "messages": payload,
             "temperature": 0.0,  # ADR-008: структурированные выходы — детерминизм
         }
+        if self._settings.llm_reasoning_effort:
+            # Гашение reasoning-канала (S25 layer-3): без него qwen3 (D-020) кладёт
+            # финальный ответ в reasoning_content — стрим деградирует до одного
+            # фолбэк-чанка; параметр общий для complete() и complete_stream()
+            request_kwargs["reasoning_effort"] = self._settings.llm_reasoning_effort
         if tools:
             request_kwargs["tools"] = [dict(t) for t in tools]
         return request_kwargs

@@ -150,6 +150,25 @@ def _provider(
 
 
 # --- успешный вызов ---
+def test_reasoning_effort_passed_when_configured() -> None:
+    # S25 layer-3: гашение reasoning-канала шлюза — без него qwen3 (D-020) кладёт
+    # финальный ответ в reasoning_content и стрим деградирует до одного
+    # фолбэк-чанка; значение идёт из Settings в ОБОИХ путях (общий _request_kwargs)
+    settings = _settings(llm_reasoning_effort="none")
+    provider, completions, _, _ = _provider([_ok_response(model="mid-1")], settings=settings)
+    provider.complete("mid", _MESSAGES)
+    assert completions.kwargs[0]["reasoning_effort"] == "none"
+
+
+def test_reasoning_effort_omitted_when_not_configured() -> None:
+    # Пусто — параметр не отправляется вовсе (облачные шлюзы, где он нестандартный);
+    # пин явного пустого: pydantic-settings иначе возьмёт значение из локального .env
+    settings = _settings(llm_reasoning_effort="")
+    provider, completions, _, _ = _provider([_ok_response(model="mid-1")], settings=settings)
+    provider.complete("mid", _MESSAGES)
+    assert "reasoning_effort" not in completions.kwargs[0]
+
+
 def test_role_resolves_model_temperature_zero() -> None:
     provider, completions, _, _ = _provider([_ok_response(model="mid-1")])
     response = provider.complete("mid", _MESSAGES)
