@@ -11,6 +11,7 @@ from text_to_sql_agent.application.ports.llm_provider import LLMProvider
 from text_to_sql_agent.application.ports.tracer import Tracer
 from text_to_sql_agent.application.services.plan_joins_service import PlanJoinsService
 from text_to_sql_agent.application.services.run_sql_tool import RunSqlTool
+from text_to_sql_agent.application.use_cases.answer_question import AnswerQuestion
 from text_to_sql_agent.config.settings import Settings, load_settings
 from text_to_sql_agent.infrastructure.graph.neo4j_graph_store import Neo4jGraphStore
 from text_to_sql_agent.infrastructure.llm.openai_provider import OpenAIProvider
@@ -20,6 +21,8 @@ from text_to_sql_agent.infrastructure.observability.console_tracer import Consol
 from text_to_sql_agent.infrastructure.observability.jsonl_tracer import JsonlTracer
 from text_to_sql_agent.infrastructure.persistence.edge_proposal_store import PgEdgeProposalStore
 from text_to_sql_agent.infrastructure.persistence.postgres_executor import PostgresExecutor
+from text_to_sql_agent.orchestration.routing import FSMGuardCaps
+from text_to_sql_agent.orchestration.runner import LangGraphRunner, build_fsm_runner
 
 
 @dataclass(slots=True)
@@ -35,6 +38,8 @@ class Container:
     graph_store: Neo4jGraphStore
     edge_proposal_store: PgEdgeProposalStore
     plan_joins_service: PlanJoinsService
+    fsm_runner: LangGraphRunner
+    answer_question: AnswerQuestion
 
 
 def build_container(
@@ -104,6 +109,21 @@ def build_container(
         edge_proposals=edge_proposal_store,
         budget_remaining_roubles=lambda: settings.budget_per_request_rub - llm.budget_used_rub,
     )
+    # FSM-каркас (S04/feat-004): граф на заглушках-транзитах; содержательные
+    # сервисы подменяются в последующих сессиях вехи V4 (S05/S08/S10/S11/S14/S15)
+    # — сборка остаётся здесь (composition — единственное место сборки). Гвард
+    # глобальных капов — из Settings (≤ 8 вызовов / ≤ 2 ₽), дедлайн и
+    # recursion_limit раннер берёт из Settings (комментарии «почему» — там же).
+    fsm_runner = build_fsm_runner(
+        tracer=tracer,
+        caps=FSMGuardCaps(
+            max_llm_calls=settings.fsm_max_llm_calls,
+            budget_rub=settings.budget_per_request_rub,
+        ),
+        deadline_s=settings.fsm_deadline_s,
+        recursion_limit=settings.fsm_recursion_limit,
+    )
+    answer_question = AnswerQuestion(runner=fsm_runner, llm=llm)
     return Container(
         settings=settings,
         llm=llm,
@@ -114,4 +134,6 @@ def build_container(
         graph_store=graph_store,
         edge_proposal_store=edge_proposal_store,
         plan_joins_service=plan_joins_service,
+        fsm_runner=fsm_runner,
+        answer_question=answer_question,
     )

@@ -128,6 +128,25 @@ class Settings(BaseSettings):
     # --- Бюджет (ADR-007 §4.3): жёсткий кап на один запрос пользователя, ₽ ---
     budget_per_request_rub: float = Field(gt=0)
 
+    # --- Глобальные капы FSM-прогона (S04/feat-004; state-agent v1.4, hw-01 §6) ---
+    # Все три капы задаёт код, модель их не переопределяет (ADR-002 §4).
+    # ≤ 8 LLM-вызовов на прогон: каждый ретрай генерации = 1 вызов (политика M1,
+    # D-016 — до 3 попыток на узел) + содержательные узлы (clarify/plan_joins/
+    # generate/diagnose/interpret); 8 — канонная верхняя граница нормального
+    # прогона, теснее recursion_limit и срабатывает раньше по построению.
+    fsm_max_llm_calls: int = Field(default=8, gt=0)
+    # Дедлайн прогона 90 s (hw-01 §6): общий дедлайн «вопрос → ответ» (внутри —
+    # 30 s на SQL-канал и таймаут шлюза из Settings.llm_request_timeout_s);
+    # проверяет гвард на рёбрах перед узлами с LLM (routing.llm_guard)
+    fsm_deadline_s: float = Field(default=90.0, gt=0)
+    # recursion_limit LangGraph — второй уровень предохранителей (ADR-002 §4):
+    # страховка от комбинаций ветвлений, которые наузловые лимиты не покрывают.
+    # Почему 50: happy path ≈ 12 супер-шагов (11 узлов + терминал), худший случай
+    # с ретраями ≈ 44 (plan_joins ×3 (+гейты) + цикл validate→diagnose→generate ×3
+    # + execute→diagnose ×3 + probe) — 50 с запасом; независимый, более тесный
+    # предел — fsm_max_llm_calls (без LLM-вызова узел не ретраится содержательно).
+    fsm_recursion_limit: int = Field(default=50, gt=0)
+
     # --- Цены ролей (₽/1М токенов, вход/выход; model-card; дрейф цен — R-C1) ---
     model_cheap_price_in: float = Field(ge=0)
     model_cheap_price_out: float = Field(ge=0)

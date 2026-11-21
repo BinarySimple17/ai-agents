@@ -82,7 +82,7 @@ from text_to_sql_agent.application.ports.vector_store import (
     VectorStoreError,
 )
 from text_to_sql_agent.application.services.run_sql_tool import SQL_ARGUMENT, TOOL_NAME, RunSqlTool
-from text_to_sql_agent.composition.container import build_container
+from text_to_sql_agent.composition.container import Container, build_container
 from text_to_sql_agent.domain.entities import RunContext, Trace
 
 MAX_TOOL_CALLS = 3  # зеркалирует per-node предохранитель ≤3 (S00 стык 1, политика M1)
@@ -681,11 +681,19 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="голый тул-контур ДЗ-02 (S13): буферный complete() без retrieval и стриминга",
     )
+    parser.add_argument(
+        "--fsm",
+        action="store_true",
+        help="FSM-прогон ДЗ-05 (S04, feat-004): state machine на LangGraph, "
+        "узлы — заглушки-транзиты; печатает порядок обхода и терминальный исход",
+    )
     args = parser.parse_args(argv)
     question = " ".join(args.question)
     container = build_container(console_trace=not args.quiet)
     try:
         ctx = RunContext(trace_id=uuid.uuid4().hex, user_id=args.user)
+        if args.fsm:
+            return _run_fsm(container, question)
         if args.plain:
             answer = run_tool_loop(
                 question,
@@ -712,6 +720,23 @@ def main(argv: list[str] | None = None) -> int:
         # Графовый драйвер создаётся при сборке контейнера (bolt, пул сокетов) —
         # CLI пока не использует пути (plan_joins — S09/V4), закрываем аккуратно
         container.graph_store.close()
+
+
+def _run_fsm(container: Container, question: str) -> int:
+    """FSM-прогон (S04, feat-004): порядок обхода узлов + терминальный исход.
+
+    Каркас ДЗ-05: узлы — заглушки-транзиты (S00-8: сбой шлюза/БД — валидный
+    исход, не traceback); содержательное наполнение — последующие сессии вехи
+    V4. Порядок обхода — из state.visited_nodes (обвязка graph.py, ruling R3),
+    исход — различимый payload FSMResult.outcome (state-agent v1.4).
+    """
+    result = container.answer_question.run(question)
+    print("Маршрут: " + " → ".join(result.visited_nodes))
+    print("Исход: " + result.outcome)
+    error = result.state.get("error")
+    if error:
+        print("Ошибка: " + str(error.get("message")))
+    return 0
 
 
 if __name__ == "__main__":

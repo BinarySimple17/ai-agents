@@ -79,3 +79,30 @@ def test_build_container_respects_rrf_alpha_dense(tmp_path) -> None:
     # ТОЛЬКО через build_container — сборка адаптера вне composition запрещена
     container = build_container(_settings(tmp_path), rrf_alpha_dense=1.0)
     assert container.vector_store._rrf_alpha_dense == 1.0  # noqa: SLF001 — инвариант сборки
+
+
+def test_fsm_runner_wired_from_settings(tmp_path) -> None:
+    # S04/feat-004: FSM-каркас собирается в composition, раннер соответствует
+    # engine-neutral порту GraphRunner (ruling R2 ARCH-GATE S04)
+    from text_to_sql_agent.application.ports.graph_runner import GraphRunner
+
+    settings = _settings(tmp_path)
+    container = build_container(settings)
+    assert isinstance(container.fsm_runner, GraphRunner)
+    assert container.fsm_runner._deadline_s == settings.fsm_deadline_s  # noqa: SLF001
+    assert container.fsm_runner._recursion_limit == settings.fsm_recursion_limit  # noqa: SLF001
+    caps = container.fsm_runner._app  # noqa: SLF001 — гвард ставится только с caps
+    assert caps is not None
+
+
+def test_fsm_runner_honors_caps_and_completes(tmp_path) -> None:
+    # Гвард глобальных капов — из Settings (≤ 8 вызовов / ≤ 2 ₽), не моделью:
+    # исчерпанный счётчик вызовов → budget_stop ДО первого LLM-узла
+    from text_to_sql_agent.application.services.stub_nodes import initial_state
+
+    container = build_container(_settings(tmp_path))
+    state = initial_state("Сколько заказов?")
+    state["budget_used"] = {"llm_calls": container.settings.fsm_max_llm_calls, "rub": 0.0}
+    assert container.fsm_runner.run(state)["outcome"] == "budget_stop"
+    # Нейтральный прогон — happy path до терминала done
+    assert container.fsm_runner.run(initial_state("Сколько заказов?"))["outcome"] == "done"

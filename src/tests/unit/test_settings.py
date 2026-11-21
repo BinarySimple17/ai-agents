@@ -273,3 +273,22 @@ def test_reasoning_effort_env_binding() -> None:
     env = {**REQUIRED_ENV, "LLM_REASONING_EFFORT": "low"}
     settings = Settings(_env_file=None, **env)
     assert settings.llm_reasoning_effort == "low"
+
+
+def test_fsm_caps_defaults_are_canon() -> None:
+    # Глобальные капы FSM-прогона (S04, state-agent v1.4): ≤ 8 вызовов / ≤ 90 s;
+    # recursion_limit — запас над худшими ретраями (обоснование — settings.py)
+    settings = Settings(**REQUIRED_ENV, _env_file=None)
+    assert settings.fsm_max_llm_calls == 8
+    assert settings.fsm_deadline_s == 90.0
+    assert settings.fsm_recursion_limit == 50
+
+
+def test_fsm_caps_reject_nonpositive() -> None:
+    # Капы — предохранители: ноль/отрицательное сделали бы гвард неработающим
+    with pytest.raises(ValidationError):
+        Settings(**REQUIRED_ENV, _env_file=None, fsm_max_llm_calls=0)
+    with pytest.raises(ValidationError):
+        Settings(**REQUIRED_ENV, _env_file=None, fsm_deadline_s=-1)
+    with pytest.raises(ValidationError):
+        Settings(**REQUIRED_ENV, _env_file=None, fsm_recursion_limit=0)

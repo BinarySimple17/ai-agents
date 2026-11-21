@@ -1,6 +1,6 @@
 # S04 — Каркас FSM на LangGraph: 15 узлов-заглушек, рёбра, предохранители (веха V4, ДЗ-05)
 
-Этап: Веха V4 (ДЗ-05: state machine —hw-plan §5) | Владелец: агент | Зависимости: S01, S03 | Оценка: 1.5 | Статус: [ ] не начата
+Этап: Веха V4 (ДЗ-05: state machine —hw-plan §5) | Владелец: агент | Зависимости: S01, S03 | Оценка: 1.5 | Статус: ◐ в работе (старт 2026-11-21)
 Фичи: feat-004 — State machine на LangGraph; зависимости feat-001 (passing), feat-003 (passing)
 Роль по фиче: закрывает feat-004 — финальная сессия, через make verify-feature
 
@@ -37,7 +37,7 @@ v1.4. Узлы — заглушки-транзиты (печатают факт 
 
 ## Предусловия
 
-- [ ] Сессия СТАРТУЕТ: статус в шапке переведён в «◐ в работе» и ARCH-GATE резолвлен ДО кода (canon-check architect ✅ либо обоснованный N/A) — старт-гейт (`guard-subagents.sh --phase start`, D-027) проверяет только стартованные (◐) сессии; «[ ] не начата» — план, гейт её скипает
+- [x] Сессия СТАРТУЕТ: статус в шапке переведён в «◐ в работе» и ARCH-GATE резолвлен ДО кода (canon-check architect ✅ либо обоснованный N/A) — старт-гейт (`guard-subagents.sh --phase start`, D-027) проверяет только стартованные (◐) сессии; «[ ] не начата» — план, гейт её скипает
 - [ ] S01, S03 закрыты: `uv run pytest src/tests/unit/test_smoke.py src/tests/unit/test_llm_client.py -q` → passed
 - [ ] `make check` зелёный (baseline репозитория)
 - [ ] feat-001, feat-003 в state=passing; feat-004 активирована в state=active до старта работ
@@ -138,7 +138,7 @@ uv run python -m apps.cli "Сколько заказов у клиентов и�
 
 ## Гейты субагентов (заполняется по факту, до закрытия сессии)
 
-- ARCH-GATE: [✅ <verdict: compliant | violations | needs-decision> + <план/файл> | N/A — <причина>]
+- ARCH-GATE: ✅ canon-check архитектора 2026-11-21 — verdict needs-decision → rulings R1–R6 ДО кода: (R1, W1) логика узлов-заглушек — функции/классы в application/services (прецедент execute_sql_node.py), graph.py — только биндеры и рёбра (AGENTS.md Boundaries, S00:69 «по одному классу на узел»); (R2, W2) GraphRecursionError перехватывает orchestration (engine-адаптер runner → fail-терминал в state), answer_question (application/use_cases) получает runner через Protocol GraphRunner (application/ports) с DI из composition — application не импортирует langgraph (ADR-002 §5, направление зависимостей); (R3, W3) минимальный трейс-спан узла в обвязке orchestration (graph.node через порт Tracer, ADR-002 §2), порядок узлов для CLI — новое обвязочное поле state.visited_nodes (пишет обвязка, не содержательные узлы; синк S00 контракт 1 тем же коммитом), печать — apps/cli.py, не сервисы (S00-6); (R4, W4) источники overflow/short_circuit по hw-01 §3.5.4 — оба из шагового цикла execute_sql (пустой key-set → short_circuit; key-set > капа → overflow): рёбра закладываются в каркас (Ловушка-1), в S04 из заглушек динамически недостижимы; тест достижимости — инъекция route_flags в стартовом state (симуляция кодового решения, инвариант «маршрут пишет только код» не ослабляется); разрыв диаграммы state-agent v1.4 (входящие рёбра не нарисованы) — запись в solution/FIXES.md, синх диаграммы при закрытии сессии; (R5, N1) глобальные капы — именованные Settings (fsm_max_llm_calls=8, fsm_deadline_s=90, fsm_recursion_limit — запас над суммой худших ретраев, комментарий «почему»; AGENTS.md Принципы кода); (R6, N5) CLI-флаг FSM-прогона — `--fsm`, дефолтный тул-луп/--plain не трогаются; behavior/verification/layer-3 feat-004 синхронизируются тем же коммитом (S00-3). Принято по note: graph_version=0-заглушка в resolve_access (подменяют S05/S07), словарь route_flags — в docstring-карте Task 1, рёбра шагового цикла (execute_sql→merge_results→generate_step_sql, diagnose_error→generate_step_sql D-019) и T2-ветки check_cost (degraded_out/budget_stop) — в каркасе сразу, счётчик ребра diagnose_error→generate_sql инкрементирует generate_sql (ретраится генератор, не диагност). Compliant: TypedDict в domain без импорта langgraph (S00 контракт 1), reset_request_budget — шов S03 (порт llm_provider.py:156, второй аккумулятор не заводится), терминалы — END с payload-типом (ADR-002:87), инкремент retry_count кодом ребра (state-agent:100).
 - REVIEW-GATE: [✅ <Ready to merge? вердикт> + <BASE7>..<HEAD7> | N/A — <причина>]
 
 ## Отчёт по сессии (заполняется по факту)

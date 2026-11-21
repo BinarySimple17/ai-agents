@@ -77,14 +77,14 @@
       "id": "feat-004",
       "name": "State machine на LangGraph",
       "description": "Каркас графа агента: состав 15 узлов hw-01 §2.1 (resolve_access, clarify, plan_joins, build_skeleton, plan_query, generate_sql, generate_step_sql, validate_sql, check_cost, execute_sql, merge_results, compact_result, diagnose_error, interpret_result, degrade) как заглушки, маршрутизация на коде (T1/T2-ветвления, probe COUNT, ветка декомпозиции), два уровня предохранителей: per-node счётчики ≤ 3 (политика M1) + recursion_limit на весь граф (ADR-002 v1.2), CLI-точка входа",
-      "behavior": "`uv run python -m apps.cli \"вопрос\"` прогоняет вопрос через все узлы-заглушки в правильном порядке и печатает результат; LLM не может изменить маршрут; попытки ограничены двумя уровнями кода (per-node ≤ 3 + recursion_limit) и глобальными капами (≤ 8 вызовов / ≤ 90 s / ≤ 2 ₽).",
+      "behavior": "`uv run python -m apps.cli \"вопрос\" --fsm` прогоняет вопрос через FSM (LangGraph: 15 узлов-заглушек hw-01 §2.1, happy-path порядок по state-agent v1.4, T1 выключен до feat-017) и печатает порядок обхода + терминальный исход; LLM не может изменить маршрут (route_flags/retry_count пишет только код — тест-инвариант); попытки ограничены двумя уровнями кода (per-node ≤ 3 по M1 + recursion_limit) и глобальными капами (≤ 8 вызовов / ≤ 90 s / ≤ 2 ₽ → budget_stop); все 9 терминальных исходов FSM достижимы и различимы в payload; дефолтный тул-луп (--plain) не изменился",
       "verification": "uv run pytest src/tests/unit/test_graph.py -q",
       "dependencies": [
         "feat-001",
         "feat-003"
       ],
-      "state": "not_started",
-      "status": "not-started",
+      "state": "active",
+      "status": "in-progress",
       "evidence": "",
       "layers": [
         {
@@ -99,7 +99,7 @@
         },
         {
           "label": "layer-3-e2e",
-          "cmd": "uv run python -m apps.cli \"Сколько заказов у клиентов из РФ?\" (заглушки: порядок узлов в выводе)",
+          "cmd": "uv run python -m apps.cli \"Сколько заказов у клиентов из РФ?\" --fsm (заглушки: порядок узлов в выводе)",
           "repair": "Fix composition root / CLI wiring, re-run manually."
         }
       ]

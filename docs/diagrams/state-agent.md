@@ -1,6 +1,6 @@
 # State Diagram — агент Text-to-SQL (FSM)
 
-- **Статус:** каноническая схема v1.4 (2026-11-18 — пост-приёмочный патч по отзыву (D-019): ретрай шага декомпозиции — явное ребро `diagnose_error → generate_step_sql` (ретраится упавший шаг, не весь план); T2: approximate/matview — через `compact_result → interpret_result` с флагом `approximate`, async/отказ — терминал. v1.3 — состав 15 узлов = hw-01 §2.1, M1, recursion_limit, T2 → degraded_out; v1.2 — валидация JoinPlan; v1.1 — ревизия 02)
+- **Статус:** каноническая схема v1.5 (2026-11-21 — FIX-008 (canon-check S04): входящие рёбра терминалов `overflow`/`short_circuit` — шаговый цикл execute_sql по hw-01 §3.5.4 (в v1.4 терминалы были без входящих рёбер); шаговый цикл: явное ребро `merge_results → generate_step_sql` по флагу steps_pending. v1.4 — 2026-11-18: ретрай шага декомпозиции — явное ребро `diagnose_error → generate_step_sql` (ретраится упавший шаг, не весь план); T2: approximate/matview — через `compact_result → interpret_result` с флагом `approximate`, async/отказ — терминал. v1.3 — состав 15 узлов = hw-01 §2.1, M1, recursion_limit, T2 → degraded_out; v1.2 — валидация JoinPlan; v1.1 — ревизия 02)
 - **Требования prd.md:** FR-1…FR-14; переходы контролирует код — модель не может перепрыгнуть валидацию или уйти из цикла (ADR-002)
 - **Связанные:** ADR-002 (recursion_limit — второй предохранитель), ADR-004 (ветка декомпозиции, T2-исходы), ADR-005 (degrade vs diagnose), ADR-006 (JoinPlan по `edge_id`), ADR-007 (политика ретраев M1), ADR-009 (кэш); c4-l3-agent.md (компоненты узлов), sequence-query.md (интерактивный путь целиком)
 
@@ -39,6 +39,8 @@ stateDiagram-v2
 
     execute_sql --> diagnose_error: SQL-ошибка
     execute_sql --> probe: 0 строк
+    execute_sql --> short_circuit: шаг вернул пустой key-set — «данных нет» (hw-01 §3.5.4)
+    execute_sql --> overflow: key-set шага > капа 50 000 — остановка + уточняющий вопрос
     execute_sql --> merge_results: шаг декомпозиции готов, есть ещё шаги → следующий generate_step_sql
     execute_sql --> merge_results: все шаги готовы
     execute_sql --> compact_result: одиночный запрос, успех
@@ -46,7 +48,8 @@ stateDiagram-v2
     probe --> compact_result: реально пусто — валидный пустой ответ
     probe --> diagnose_error: подозрение на потерянный джойн
 
-    merge_results --> compact_result: слияние шагов кодом
+    merge_results --> generate_step_sql: есть ещё шаги → следующий шаг цикла (hw-01 §3.5.4, FIX-008)
+    merge_results --> compact_result: слияние шагов кодом — все шаги готовы
     compact_result --> interpret_result: row_count + ≤ 20 строк + агрегаты
     diagnose_error --> generate_sql: попытка 2 — та же модель + текст ошибки
     diagnose_error --> generate_sql: попытка 3 — эскалация (после проверки бюджета)
@@ -67,6 +70,13 @@ stateDiagram-v2
 
 ## Чтение схемы
 
+- **Входящие рёбра терминалов `overflow`/`short_circuit` и шаговый цикл — FIX-008 (v1.5):**
+  оба терминала живут в шаговом цикле декомпозиции (`execute_sql` шагового контура,
+  hw-01 §3.5.4): пустой key-set → `short_circuit` («данных нет», зависимые шаги не
+  выполняются); key-set > капа 50 000 → `overflow` (молча обрезать нельзя). Цикл шагов:
+  `execute_sql → merge_results` — шаг готов; `merge_results → generate_step_sql` — есть
+  ещё шаги (флаг steps_pending), `merge_results → compact_result` — все шаги готовы.
+  В каркасе S04 (feat-004) рёбра заложены, флаги шагового контура активирует S14/S17.
 - **Состав узлов — 15, идентичен hw-01 §2.1:** `resolve_access`, `clarify`,
   `plan_joins`, `build_skeleton`, `plan_query`, `generate_sql`,
   `generate_step_sql` (переименован из `generate_step`), `validate_sql`,
@@ -133,4 +143,4 @@ stateDiagram-v2
 
 ## Трассировка
 
-Ревизии: v1.4 (ретрай шага, T2: approximate/matview через interpret_result) · Связанные ADR: ADR-002, ADR-004, ADR-005, ADR-006, ADR-007, ADR-009 · Канон: hw-01/README.md §2, §3.1, §6
+Ревизии: v1.5 (FIX-008: входящие рёбра overflow/short_circuit, цикл merge_results → generate_step_sql) · v1.4 (ретрай шага, T2: approximate/matview через interpret_result) · Связанные ADR: ADR-002, ADR-004, ADR-005, ADR-006, ADR-007, ADR-009 · Канон: hw-01/README.md §2, §3.1, §6
