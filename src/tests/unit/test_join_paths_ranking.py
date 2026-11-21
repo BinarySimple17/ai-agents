@@ -1,15 +1,26 @@
 """Юнит-тесты чистой логики путей графа (S07, feat-007) — без Neo4j.
 
 Ловушка-4 сессии: LLM не строит пути — `find_join_paths` детерминированный
-код. Ранжирование (`_rank_paths`) и развёртка направлений (`_build_path`) —
+код. Ранжирование (`_rank_paths`), развёртка направлений (`_build_path`) и
+валидация weight реестра (`_validate_weights`, ревью S07 Important-4) —
 чистые функции адаптера, тестируются на подставных объектах (SDK-типы Neo4j
 не нужны: `_build_path` читает только mapping-интерфейсы start_node/end_node).
 """
 
 from typing import Any
 
-from text_to_sql_agent.application.ports.schema_graph_store import JoinEdge, JoinPath
-from text_to_sql_agent.infrastructure.graph.neo4j_graph_store import _build_path, _rank_paths
+import pytest
+
+from text_to_sql_agent.application.ports.schema_graph_store import (
+    JoinEdge,
+    JoinPath,
+    SchemaGraphError,
+)
+from text_to_sql_agent.infrastructure.graph.neo4j_graph_store import (
+    _build_path,
+    _rank_paths,
+    _validate_weights,
+)
 
 
 class _FakeNode:
@@ -91,3 +102,16 @@ def test_build_path_fail_closed_on_disconnected_segment():
     nodes = [_FakeNode("orders"), _FakeNode("bonuses")]
     rels = [_FakeRel("e_employees_bonuses", "employees", "bonuses", 1.0)]
     assert _build_path(nodes, rels) is None
+
+
+def test_validate_weights_accepts_positive():
+    _validate_weights([{"edge_id": "e1", "weight": 1.0}, {"edge_id": "e2", "weight": 0.001}])
+
+
+def test_validate_weights_rejects_zero_and_negative_with_rel_ids():
+    """Битые рёбра (weight ≤ 0) отвергаются на синке с адресацией rel_id —
+    не сырым pydantic-ValidationError на построении JoinEdge (I4)."""
+    with pytest.raises(SchemaGraphError, match="e_zero"):
+        _validate_weights([{"edge_id": "e_ok", "weight": 1.0}, {"edge_id": "e_zero", "weight": 0}])
+    with pytest.raises(SchemaGraphError, match="e_neg"):
+        _validate_weights([{"edge_id": "e_neg", "weight": -1.5}])

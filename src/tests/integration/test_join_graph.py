@@ -36,7 +36,10 @@ _DEMO_WEIGHT = 1.2  # сид 0003 — исходное значение для �
 
 
 @pytest.fixture(scope="module")
-def settings():
+def settings(postgres_available, neo4j_available):
+    """Доступность инфры — ДО load_settings(): без Docker модуль скипается
+    с понятной причиной (conftest), а не падает на sync() (ревью S07 Critical-1;
+    AGENTS: ./init.sh остаётся зелёным без Docker)."""
     return load_settings()
 
 
@@ -198,7 +201,7 @@ def test_registry_edit_bumps_graph_version(store, settings):
         paths = store.find_join_paths(
             "customers", "campaigns", ctx=CTX, allowed_tables=ALLOWED_LOGIST, k=5
         )
-        assert paths[0].total_weight == pytest.approx(2.25)  # 1.05 + 1.25: граф поменялся
+        assert paths[0].total_weight == pytest.approx(2.25)  # 1.0 + 1.25: граф поменялся
     finally:
         # Восстановление демо-значения: реестр остаётся в каноническом сиде
         with psycopg.connect(_pg_service_dsn(settings), row_factory=dict_row) as conn:
@@ -241,15 +244,22 @@ def test_rights_filter_hides_unavailable_tables(store):
 
 def test_rights_filter_deny_by_default(store):
     ctx_hr = RunContext(trace_id="it-join-graph", user_id="u_hr")
-    # свой домен — путь есть
+    # связная пара в своих правах — путь есть
     own_domain = store.find_join_paths(
         "employees", "bonuses", ctx=ctx_hr, allowed_tables=ALLOWED_HR, k=5
     )
     assert len(own_domain) == 1
-    # чужой домен — пути нет, даже если обе таблицы физически связаны через
-    # топологию (hr не видит sales-кластер)
+    # та же СВЯЗНАЯ пара, но прав хватает только на employees: путь через
+    # недоступный bonuses не возвращается (deny-by-default режет по узлам,
+    # а не «нет связи в топологии» — ревью S07 Minor)
     assert (
-        store.find_join_paths("employees", "orders", ctx=ctx_hr, allowed_tables=ALLOWED_HR, k=5)
+        store.find_join_paths(
+            "employees",
+            "bonuses",
+            ctx=ctx_hr,
+            allowed_tables=frozenset({"employees"}),
+            k=5,
+        )
         == []
     )
 

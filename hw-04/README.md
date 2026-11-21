@@ -3,7 +3,8 @@
 Веха V3. Сборка README — за финальной закрывающей сессией вехи (S09/S26 —
 смотреть статусы [индекса сессий](../solution/sessions.md)); этот раздел
 написан сессией S07 (feat-007 — графовая половина памяти, связь между
-объектами). Полная историческая спецификация ДЗ — `.docs/hw-04/`, вне гита.
+объектами). Полные исторические спецификации прошлых ДЗ — `.docs/` (вне гита,
+READ ONLY); полная спецификация ДЗ-04 появится там же к сдаче.
 
 ## Связи между объектами
 
@@ -60,8 +61,10 @@ make infra-up && make infra-migrate && make sync-graph   # снапшот рее
 «FK есть, смысл другой»: технически верный INNER JOIN по `campaign_id`
 молча считает any-touch и завышает цифру (ADR-006 §1, разрыв №1).
 
-Инварианты, проверенные тестами ([test_join_graph.py](../src/tests/integration/test_join_graph.py),
-18 тестов с unit на ранжирование):
+Инварианты, проверенные тестами ([test_join_graph.py](../src/tests/integration/test_join_graph.py) —
+12 integration + юнит-тесты ранжирования/валидации
+[test_join_paths_ranking.py](../src/tests/unit/test_join_paths_ranking.py) и
+skip-гвард [test_join_graph_skip_guard.py](../src/tests/unit/test_join_graph_skip_guard.py)):
 
 - путь по реальным рёбрам или `[]` — джойн не выдумывается (пары без связи,
   таблицы вне прав пользователя — пути нет);

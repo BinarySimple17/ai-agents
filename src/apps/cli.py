@@ -676,29 +676,34 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     question = " ".join(args.question)
     container = build_container(console_trace=not args.quiet)
-    ctx = RunContext(trace_id=uuid.uuid4().hex, user_id=args.user)
-    if args.plain:
-        answer = run_tool_loop(
+    try:
+        ctx = RunContext(trace_id=uuid.uuid4().hex, user_id=args.user)
+        if args.plain:
+            answer = run_tool_loop(
+                question,
+                llm=container.llm,
+                tool=container.run_sql_tool,
+                ctx=ctx,
+                tracer=container.tracer,
+            )
+            print(answer)
+            return 0
+        # Стриминг: флоу печатает дельты сам (включая финальный \n и деградационные
+        # исходы) — повторный print в main задублировал бы ответ
+        run_agent_flow(
             question,
             llm=container.llm,
             tool=container.run_sql_tool,
+            vector_store=container.vector_store,
             ctx=ctx,
             tracer=container.tracer,
+            printer=_print_stdout,
         )
-        print(answer)
         return 0
-    # Стриминг: флоу печатает дельты сам (включая финальный \n и деградационные
-    # исходы) — повторный print в main задублировал бы ответ
-    run_agent_flow(
-        question,
-        llm=container.llm,
-        tool=container.run_sql_tool,
-        vector_store=container.vector_store,
-        ctx=ctx,
-        tracer=container.tracer,
-        printer=_print_stdout,
-    )
-    return 0
+    finally:
+        # Графовый драйвер создаётся при сборке контейнера (bolt, пул сокетов) —
+        # CLI пока не использует пути (plan_joins — S09/V4), закрываем аккуратно
+        container.graph_store.close()
 
 
 if __name__ == "__main__":
