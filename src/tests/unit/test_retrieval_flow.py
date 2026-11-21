@@ -74,11 +74,13 @@ def test_retrieval_block_never_contains_noise() -> None:
     assert "дистрактор" not in block
 
 
-def test_system_prompt_names_all_catalog_business_tables() -> None:
+def test_system_prompt_names_all_demo_schema_tables() -> None:
     # BL-009 M1 (сверка генерацией): SYSTEM_PROMPT перечисляет ровно бизнес-
-    # таблицы демо-схемы — SoT списка таблиц — каталог agent_data_sources
-    # (сид миграции 0003; сам промпт — рукописная проза с колонками, сверка
-    # генерацией ловит дрейф при добавлении таблицы в каталог)
+    # таблицы демо-схемы. SoT списка таблиц — каталог agent_data_sources (ADR-011);
+    # здесь сверка с CREATE TABLE миграции 0001 — транзитивно эквивалентна каталогу
+    # (расхождение каталог↔миграция ловит integration-тест
+    # test_catalog_matches_schema_migration), а сам промпт — рукописная проза
+    # с колонками: сверка генерацией ловит дрейф при добавлении таблицы
     import re as _re
     from pathlib import Path
 

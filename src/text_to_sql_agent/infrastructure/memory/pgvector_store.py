@@ -277,14 +277,18 @@ class PgVectorStore:
                 connect_timeout=CONNECT_TIMEOUT_S,
             ) as conn:
                 conn.execute(f"SET LOCAL statement_timeout = '{STATEMENT_TIMEOUT_S}s'")
-                # Обе ноги — на одном соединении: один снапшот на слияние
+                # Обе ноги — одна транзакция одного соединения: окно рассогласования
+                # между ногами минимально (READ COMMITTED: снапшот на statement)
                 dense_params = [vector_literal, ctx.user_id, *model_param, vector_literal]
+                # Без prepare=True: соединение одноразовое, Parse не переиспользуется;
+                # SQL — статические шаблоны, multi-command стеки невозможны (в отличие
+                # от postgres_executor, где prepare — защита C1)
                 dense_rows = conn.execute(
-                    _dense_leg_sql(model_filter=model_filter), dense_params, prepare=True
+                    _dense_leg_sql(model_filter=model_filter), dense_params
                 ).fetchall()
                 fts_params = [normalized_query, ctx.user_id, *model_param]
                 fts_rows = conn.execute(
-                    _fts_leg_sql(model_filter=model_filter), fts_params, prepare=True
+                    _fts_leg_sql(model_filter=model_filter), fts_params
                 ).fetchall()
         except psycopg.Error as exc:
             raise VectorStoreError(f"векторная память недоступна: {_shorten(str(exc))}") from exc
@@ -327,6 +331,11 @@ class PgVectorStore:
         ]
         source_refs = [doc.source_ref for doc in documents]
         namespaces = sorted({ref.split(":", 1)[0] for ref in source_refs})
+        if "" in namespaces:
+            raise ValueError(
+                "source_ref без неймспейса (нет ':' или пустой префикс) — DELETE-скоуп "
+                "replace-семантики стал бы непредсказуемым; именуйте ref как 'ns:…'"
+            )
         try:
             with psycopg.connect(
                 self._write_dsn,

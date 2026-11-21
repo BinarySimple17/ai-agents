@@ -249,31 +249,78 @@ def test_normalization_yo_and_accent_match_plain_document(store, seeded) -> None
     accented_query = "Объём вы́ручки по заказа́м"
     docs = store.search(accented_query, V_ORDERS, ctx=CTX_ANALYST, top_k=5)
     assert f"{_REF_PREFIX}glossary-vyruchka" in _refs(docs)
-    # Ё в запросе эквивалентна е: документ с «ё» в сида (нормализован при записи)
+    # Ё в запросе эквивалентна е: документ с «ё» в сида (нормализован при записи).
+    # Отдельный неймспейс (m14 ревью S26): replace-upsert удаляет устаревшие ref'ы
+    # только СВОИХ неймспейсов — частичный upsert не подрезает сид фикстуры
+    yo_ref = "it-hybrid-norm:glossary-yo"
     yo_doc = KnowledgeDocument(
         doc_kind=DocKind.GLOSSARY,
         table_name="orders",
         referenced_tables=["orders"],
         content="[термин: объём-test] объём данных",
         model_version=_MODEL,
-        source_ref=f"{_REF_PREFIX}glossary-yo",
+        source_ref=yo_ref,
     )
     service_dsn = load_settings().postgres_dsn.get_secret_value()
     try:
         assert store.upsert([yo_doc], [V_ORDERS]) == 1
         with psycopg.connect(service_dsn) as conn:
             stored = conn.execute(
-                "SELECT content FROM agent_knowledge WHERE source_ref = %s",
-                (f"{_REF_PREFIX}glossary-yo",),
+                "SELECT content FROM agent_knowledge WHERE source_ref = %s", (yo_ref,)
             ).fetchone()
         assert "объем" in stored[0] and "ё" not in stored[0]  # нормализован при записи
+        assert _count_ref(service_dsn, f"{_REF_PREFIX}glossary-vyruchka") == 1  # сид жив
         docs = store.search("объем данных", V_ORDERS, ctx=CTX_ANALYST, top_k=5)
-        assert f"{_REF_PREFIX}glossary-yo" in _refs(docs)
+        assert yo_ref in _refs(docs)
+    finally:
+        with psycopg.connect(service_dsn) as conn:
+            conn.execute("DELETE FROM agent_knowledge WHERE source_ref = %s", (yo_ref,))
+
+
+def _count_ref(dsn: str, ref: str) -> int:
+    with psycopg.connect(dsn) as conn:
+        row = conn.execute(
+            "SELECT count(*) FROM agent_knowledge WHERE source_ref = %s", (ref,)
+        ).fetchone()
+    return row[0]
+
+
+def test_pure_fts_leg_works_and_filters_rights(store, seeded) -> None:
+    """I4a ревью S26: работоспособность И фильтр прав FTS-ноги — доказаны отдельно
+    от dense. α_dense=0.0 (чистая FTS): документ с уникальным термом и ортогональным
+    вектором находит ТОЛЬКО FTS-нога (dense-вклад нулевой, score > 0 возможен
+    только через content_tsv); у пользователя без прав на referenced_tables
+    документ отсутствует вовсе (ACL-leak = 0 на FTS-ноге)."""
+    settings = load_settings()
+    store_fts_only = PgVectorStore(settings.agent_planner_dsn, rrf_alpha_dense=0.0)
+    # Целевой документ: уникальный терм «hr_regression_term», вектор ортогонален
+    # запросу (V_ORDERS) — dense его не вытащит; таблица bonuses — вне прав u_analyst
+    target = KnowledgeDocument(
+        doc_kind=DocKind.GLOSSARY,
+        table_name="bonuses",
+        referenced_tables=["bonuses"],
+        content="[термин: fts-тест] hr_regression_term в bonuses",
+        model_version=_MODEL,
+        source_ref=f"{_REF_PREFIX}glossary-fts-only",
+    )
+    service_dsn = settings.postgres_dsn.get_secret_value()
+    try:
+        assert store.upsert([target], [V_BONUSES]) == 1
+        # Позитив: u_hr с правами на bonuses — документ найден ЧИСТОЙ FTS-ногой
+        hr_docs = store_fts_only.search("hr_regression_term", V_ORDERS, ctx=CTX_HR, top_k=8)
+        hits = [d for d in hr_docs if d.source_ref == f"{_REF_PREFIX}glossary-fts-only"]
+        assert hits, "FTS-нога обязана находить точный текстовый матч (α=0)"
+        assert hits[0].score > 0, "score > 0 при α=0 возможен только через FTS-ногу"
+        # Негатив: u_analyst без прав на bonuses — документа нет ни одной ногой
+        analyst_docs = store_fts_only.search(
+            "hr_regression_term", V_ORDERS, ctx=CTX_ANALYST, top_k=8
+        )
+        assert f"{_REF_PREFIX}glossary-fts-only" not in _refs(analyst_docs)
     finally:
         with psycopg.connect(service_dsn) as conn:
             conn.execute(
                 "DELETE FROM agent_knowledge WHERE source_ref = %s",
-                (f"{_REF_PREFIX}glossary-yo",),
+                (f"{_REF_PREFIX}glossary-fts-only",),
             )
 
 

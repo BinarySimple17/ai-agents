@@ -76,3 +76,18 @@ def test_fewer_than_two_tables_rejected() -> None:
     # Дистрактор «делит признак с целью» требует ≥ 2 таблиц (кросс-варианты)
     with pytest.raises(ValueError, match="≥ 2 таблиц"):
         generate_noise_corpus(("orders",), model_version=_MODEL)
+
+
+def test_table_without_curated_vocab_gets_fallback() -> None:
+    # I2 ревью S26 (регресс на KeyError): новая бизнес-таблица в каталоге
+    # agent_data_sources (BL-009 M1: «без правки кода») не должна валить
+    # индексацию — генератор берёт фолбэк-лексику, дистрактор по-прежнему
+    # делит признак с целью (имя таблицы) и проходит guard прав
+    docs = generate_noise_corpus(("orders", "new_metric_table"), model_version=_MODEL)
+    assert len(docs) == NOISE_CORPUS_SIZE
+    assert all(d.doc_kind is DocKind.NOISE for d in docs)
+    tables_re = re.compile(r"\b(new_metric_table|orders)\b")
+    for doc in docs:
+        mentioned = set(tables_re.findall(doc.content))
+        assert mentioned == set(doc.referenced_tables)
+    check_declared_references(docs, business_tables=("orders", "new_metric_table"))

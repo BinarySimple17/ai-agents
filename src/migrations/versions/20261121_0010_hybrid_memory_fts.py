@@ -13,6 +13,16 @@ generated-колонка берёт content как есть.
 Правка применённой миграции 0005 запрещена (S00-5, D-028) — расширение CHECK
 doc_kind ('noise') живёт здесь, новым файлом (ruling blocker ARCH-GATE S26:
 CHECK 0005 не знает 'noise', индексация шума падала бы на constraint).
+
+Обязательный шаг ПОСЛЕ upgrade — `make index-knowledge`: до переиндексации
+старый контент не нормализован (ё/акут — D-026 доп. 1(2)) и FTS-нога ведёт
+себя иначе для legacy-строк (прецедент документирования — миграция 0006).
+
+Downgrade удаляет noise-строки: восстановление CHECK без 'noise' при живом
+корпусе валидирует существующие строки и падало бы на 300 дистракторах
+(критическое ревью S26 C1). Шум — измерительная инфраструктура, побитово
+регенерируется генератором (fixed seed), потеря допустима; кураторские знания
+downgrade не трогает.
 """
 
 from alembic import op
@@ -42,6 +52,12 @@ ALTER TABLE agent_knowledge ADD CONSTRAINT agent_knowledge_doc_kind_check
 """
 
 DOWNGRADE_SQL = r"""
+-- Шум удаляется ДО восстановления CHECK: ADD CONSTRAINT валидирует существующие
+-- строки — при живом корпусе 300 дистракторов downgrade детерминированно падал
+-- бы (ревью S26 C1). Шум регенерируется генератором (fixed seed) — потеря
+-- допустима; кураторские документы (ddl/relationship/glossary/few_shot) живы.
+DELETE FROM agent_knowledge WHERE doc_kind = 'noise';
+
 DROP INDEX idx_agent_knowledge_content_tsv;
 ALTER TABLE agent_knowledge DROP COLUMN content_tsv;
 ALTER TABLE agent_knowledge DROP CONSTRAINT agent_knowledge_doc_kind_check;

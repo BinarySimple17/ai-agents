@@ -75,7 +75,9 @@ class KnowledgeDocument(BaseModel):
     content: str = Field(min_length=1)
     model_version: str = Field(min_length=1)
     source_ref: str = Field(min_length=1)  # ключ replace-идемпотентного upsert
-    score: float | None = None  # близость к запросу — пишет адаптер при поиске
+    # Релевантность от адаптера при поиске: гибрид — RRF-оценка (порядка
+    # 1/(RRF_K + rank), не cosine); consumers используют порядок, не шкалу
+    score: float | None = None
 
     @model_validator(mode="after")
     def _anchor_is_declared(self) -> "KnowledgeDocument":

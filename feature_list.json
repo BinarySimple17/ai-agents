@@ -540,8 +540,8 @@
       "dependencies": [
         "feat-006"
       ],
-      "state": "not_started",
-      "status": "not-started",
+      "state": "active",
+      "status": "in-progress",
       "evidence": "",
       "layers": [
         {

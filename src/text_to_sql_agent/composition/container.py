@@ -42,6 +42,7 @@ def build_container(
     *,
     console_trace: bool = False,
     knowledge_writer: bool = False,
+    rrf_alpha_dense: float | None = None,
 ) -> Container:
     """Дефолтная сборка; `settings=None` → fail-fast чтение окружения.
 
@@ -63,10 +64,21 @@ def build_container(
     # make index-knowledge; runtime-роли в память знаний не пишут (ruling W1).
     # expected_model_version (BL-009 M3): смена эмбеддера до пересборки — строки
     # чужого векторного пространства не смешиваются с текущим (Task 5 S26).
+    # rrf_alpha_dense — вес dense-ноги RRF: None = канон D-026 (0.9); явное
+    # значение — для измерительных контуров (bench: α=1.0 = pure dense, I3 ревью —
+    # адаптер собирается ТОЛЬКО здесь, не в apps)
+    vector_store_kwargs = (
+        {}
+        if rrf_alpha_dense is None
+        else {
+            "rrf_alpha_dense": rrf_alpha_dense,
+        }
+    )
     vector_store = PgVectorStore(
         settings.agent_planner_dsn,
         write_dsn=settings.postgres_dsn.get_secret_value() if knowledge_writer else None,
         expected_model_version=settings.embedding_model,
+        **vector_store_kwargs,
     )
     # Графовая память (S07): Neo4j — только топология, реестр/семантика — PG.
     # Чтение реестра — agent_planner (BL-003 п.3: GRANT SELECT на вьюху active

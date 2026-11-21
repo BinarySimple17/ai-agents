@@ -204,8 +204,10 @@ def test_search_top_k_slices_after_merge(monkeypatch: pytest.MonkeyPatch) -> Non
     store = PgVectorStore(_DSN)
     docs = store.search(_QUERY, _VEC, ctx=_CTX, top_k=2)
     assert [d.source_ref for d in docs] == ["ddl:orders:0", "ddl:orders:1"]
-    dense_sql = next(sql for sql, _ in conn.executed if _DENSE_MARKER in sql)
-    assert f"LIMIT {MAX_LEG_DEPTH}" in dense_sql
+    # Кап глубины — на ОБОИХ ногах (m15: регресс замены шаблона одной ноги не поймать)
+    for marker in (_DENSE_MARKER, _FTS_MARKER):
+        leg_sql = next(sql for sql, _ in conn.executed if marker in sql)
+        assert f"LIMIT {MAX_LEG_DEPTH}" in leg_sql
 
 
 def test_rrf_merge_dense_rank_one_beats_fts_only_rank_one() -> None:
@@ -437,6 +439,18 @@ def test_upsert_wrong_dim_rejected() -> None:
     doc = KnowledgeDocument(doc_kind=DocKind.DDL, content="x", model_version="m", source_ref="s")
     with pytest.raises(ValueError, match="переиндексация"):
         store.upsert([doc], [[0.1] * 768])
+
+
+def test_search_normalizes_query_text_for_fts_leg(monkeypatch: pytest.MonkeyPatch) -> None:
+    # I4b ревью S26: normalize_text(query) на FTS-ноге обязателен (D-026 доп. 1(2) —
+    # акут U+0301 режет термы plainto_tsquery пополам); регресс на удаление вызова
+    conn = _FakeConn(rows_by_marker={_DENSE_MARKER: [_row(0)], _FTS_MARKER: [_row(0)]})
+    monkeypatch.setattr(pgvector_module.psycopg, "connect", _connect_to(conn))
+    store = PgVectorStore(_DSN)
+    store.search("Объём вы́ручки", _VEC, ctx=_CTX, top_k=5)
+    fts_sql, fts_params = next(item for item in conn.executed if _FTS_MARKER in item[0])
+    assert "plainto_tsquery" in fts_sql
+    assert fts_params[0] == "Объем выручки"  # акут снят, ё→е; регистр не тронут
 
 
 def test_search_filters_by_model_version_when_expected(monkeypatch: pytest.MonkeyPatch) -> None:

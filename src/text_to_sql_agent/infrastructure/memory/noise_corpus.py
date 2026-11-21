@@ -72,6 +72,13 @@ _CROSS_TABLE_TEMPLATES = (
 
 _HEADER_TEMPLATE = "[шум: {tables}] "
 
+# Фолбэк для таблицы каталога без кураторской лексики: дистрактор всё равно
+# делит признак с целью (имя таблицы в заголовке/тексте — якорь FTS-ноги).
+# Новая бизнес-таблица в каталоге agent_data_sources НЕ требует правки
+# генератора (обещание BL-009 M1: каталог — SoT) — KeyError здесь ломал бы
+# индексацию молча для make check (критическое замечание ревью S26 I2)
+_FALLBACK_VOCAB = "данные таблицы, регламенты, отчётность"
+
 
 def generate_noise_corpus(
     business_tables: Sequence[str], *, model_version: str
@@ -95,7 +102,7 @@ def generate_noise_corpus(
         # целью — у кураторских знаний кросс-табличных большинство)
         table_count = 2 if i % 3 != 0 else 1
         tables = sorted(rng.sample(sorted(business_tables), table_count))
-        vocab = _TABLE_VOCAB[tables[0]]
+        vocab = _TABLE_VOCAB.get(tables[0], _FALLBACK_VOCAB)
         pool = _SINGLE_TABLE_TEMPLATES if table_count == 1 else _CROSS_TABLE_TEMPLATES
         template = pool[i % len(pool)]
         body = template.format(

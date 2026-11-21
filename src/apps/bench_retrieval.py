@@ -8,15 +8,16 @@
 (стоп-сигнал: тюнинг α_dense по канону, реранкер — только решение владельца).
 
 Методика: режим dense-only — тот же адаптер с α_dense=1.0 (вклад FTS-ноги
-нулевой, порядок = чистому dense-ранжированию, hit@5 эквивалентен); гибрид —
-канонное α_dense=0.9 (контейнерный магазин). top_k = RETRIEVAL_TOP_K (8, S24):
-бенч меряет hit@5 по 8 выданным — целевые документы в top-8, выдача не
-«удлиняется» ради метрики (Ловушки-7). Пользователь — u_logist (самые широкие
-права сида: customers/campaigns/orders/order_items/products): шумовой корпус
-объявляет таблицы по упоминаниям (ruling N2), цели датасета лежат в этих
-таблицах; HR-цели (bonuses/employees) в датасет не входят — они вне мира
-u_logist. Реальный шлюз (эмбеддер bge-m3) — ручная Layer-3 операция, в тестах
-не вызывается (S00 правило 7).
+нулевой, порядок = чистому dense-ранжированию, hit@5 эквивалентен; контейнер
+собирается build_container(rrf_alpha_dense=1.0) — сборка зависимостей только
+в composition, I3 ревью S26); гибрид — канонное α_dense=0.9. top_k =
+RETRIEVAL_TOP_K (8, S24): бенч меряет hit@5 по 8 выданным — целевые документы
+в top-8, выдача не «удлиняется» ради метрики (Ловушки-7). Пользователь —
+u_logist (самые широкие права сида: customers/campaigns/orders/order_items/
+products): шумовой корпус объявляет таблицы по упоминаниям (ruling N2), цели
+датасета лежат в этих таблицах; HR-цели (bonuses/employees) в датасет не
+входят — они вне мира u_logist. Реальный шлюз (эмбеддер bge-m3) — ручная
+Layer-3 операция, в тестах не вызывается (S00 правило 7).
 """
 
 import sys
@@ -24,9 +25,9 @@ import sys
 from apps.cli import RETRIEVAL_TOP_K  # S24: 8 документов в выдаче — единый источник
 from text_to_sql_agent.composition.container import build_container
 from text_to_sql_agent.domain.entities import RunContext
-from text_to_sql_agent.infrastructure.memory.pgvector_store import PgVectorStore
 
 BENCH_USER_ID = "u_logist"  # самые широкие права сида 0003 (см. докстринг)
+HIT_K = 5  # метрика hit@5: цель в первых HIT_K позициях выдачи (канон D-026)
 
 # Датасет: (вопрос, целевые source_ref) — цели видны BENCH_USER_ID; вопрос
 # словами пользователя, не дословно заголовком документа (иначе dense всегда
@@ -50,23 +51,18 @@ _DATASET: tuple[tuple[str, tuple[str, ...]], ...] = (
 
 
 def _hit_rank(docs: list, targets: tuple[str, ...]) -> int | None:
-    """Позиция (1-based) первой цели в top-5 выдачи; None — промах hit@5."""
-    for rank, doc in enumerate(docs[:5], start=1):
+    """Позиция (1-based) первой цели в top-HIT_K выдачи; None — промах hit@5."""
+    for rank, doc in enumerate(docs[:HIT_K], start=1):
         if doc.source_ref in targets:
             return rank
     return None
 
 
 def main() -> int:
-    container = build_container()
-    settings = container.settings
+    container = build_container()  # гибрид: канонное α_dense=0.9 (D-026)
     ctx = RunContext(trace_id="bench-retrieval", user_id=BENCH_USER_ID)
-    store_hybrid = container.vector_store  # канонное α_dense=0.9 (D-026)
-    store_dense = PgVectorStore(  # α=1.0: вклад FTS-ноги нулевой — порядок = dense
-        settings.agent_planner_dsn,
-        expected_model_version=settings.embedding_model,
-        rrf_alpha_dense=1.0,
-    )
+    # dense-only: тот же контур с α=1.0 — сборка ТОЛЬКО через composition (I3 ревью)
+    container_dense = build_container(rrf_alpha_dense=1.0)
     modes = ("dense", "hybrid")
     hits: dict[str, int] = {mode: 0 for mode in modes}
     misses: dict[str, list[str]] = {mode: [] for mode in modes}
@@ -78,7 +74,10 @@ def main() -> int:
     for question, targets in _DATASET:
         [vector] = container.llm.embed([question])
         ranks: dict[str, int | None] = {}
-        for mode, store in (("dense", store_dense), ("hybrid", store_hybrid)):
+        for mode, store in (
+            ("dense", container_dense.vector_store),
+            ("hybrid", container.vector_store),
+        ):
             docs = store.search(question, vector, ctx=ctx, top_k=RETRIEVAL_TOP_K)
             rank = _hit_rank(docs, targets)
             ranks[mode] = rank
@@ -88,7 +87,7 @@ def main() -> int:
                 misses[mode].append(question)
         print(f"{question:<52} {str(ranks['dense']):>6} {str(ranks['hybrid']):>7}")
     total = len(_DATASET)
-    print(f"\nИтог hit@5: dense {hits['dense']}/{total}, гибрид {hits['hybrid']}/{total}")
+    print(f"\nИтог hit@{HIT_K}: dense {hits['dense']}/{total}, гибрид {hits['hybrid']}/{total}")
     if hits["hybrid"] < hits["dense"]:
         print("\nСТОП: hit@5(гибрид) < hit@5(dense) — инвариант D-026 нарушен.")
         print("Разбор промахов гибрида:")
