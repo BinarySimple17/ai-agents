@@ -339,22 +339,29 @@ class Neo4jGraphStore:
                 "рёбра отсутствуют в active-реестре (снапшот устарел — "
                 f"перезапустите make sync-graph): {missing}"
             )
-        return [
-            EdgeSemantics(
-                rel_id=row["edge_id"],
-                join_type=row["join_type"],
-                meaning=row["meaning"],
-                usage_notes=row["usage_notes"],
-                intent_tags=list(row["intent_tags"] or []),
-                left_table=row["left_table"],
-                left_columns=tuple(row["left_columns"] or []),
-                right_table=row["right_table"],
-                right_columns=tuple(row["right_columns"] or []),
-                join_operator=row["join_operator"],
-                mandatory_predicates=dict(row["mandatory_predicates"] or {}),
-                cardinality=row["cardinality"],
-                fanout_guard=bool(row["fanout_guard"]),
-                temporal=row["temporal"],
-            )
-            for row in (by_rel_id[rel_id] for rel_id in edge_ids)
-        ]
+        try:
+            return [
+                EdgeSemantics(
+                    rel_id=row["edge_id"],
+                    join_type=row["join_type"],
+                    meaning=row["meaning"],
+                    usage_notes=row["usage_notes"],
+                    intent_tags=list(row["intent_tags"] or []),
+                    left_table=row["left_table"],
+                    left_columns=tuple(row["left_columns"] or []),
+                    right_table=row["right_table"],
+                    right_columns=tuple(row["right_columns"] or []),
+                    join_operator=row["join_operator"],
+                    mandatory_predicates=dict(row["mandatory_predicates"] or {}),
+                    cardinality=row["cardinality"],
+                    fanout_guard=bool(row["fanout_guard"]),
+                    temporal=row["temporal"],
+                )
+                for row in (by_rel_id[rel_id] for rel_id in edge_ids)
+            ]
+        except (ValueError, TypeError) as exc:
+            # Битая строка реестра (jsonb/array поля) — TypedError стыка, не
+            # сырой вылет (ревью M8)
+            raise SchemaGraphError(
+                f"семантика ребра повреждена в реестре: {_shorten(str(exc))}"
+            ) from exc

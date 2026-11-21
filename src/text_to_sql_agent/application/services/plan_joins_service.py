@@ -44,12 +44,24 @@ from text_to_sql_agent.application.ports.llm_provider import (
 from text_to_sql_agent.application.ports.schema_graph_store import (
     EdgeSemantics,
     JoinEdge,
+    JoinPath,
     SchemaGraphError,
     SchemaGraphStore,
 )
-from text_to_sql_agent.application.ports.vector_store import DocKind, VectorStore, VectorStoreError
+from text_to_sql_agent.application.ports.vector_store import (
+    RELATIONSHIP_SOURCE_REF_PREFIX,
+    DocKind,
+    KnowledgeDocument,
+    VectorStore,
+    VectorStoreError,
+)
 from text_to_sql_agent.domain.entities import RunContext
-from text_to_sql_agent.domain.join_plan import JoinPlan, JoinPlanEdge, validate_join_plan
+from text_to_sql_agent.domain.join_plan import (
+    MAX_JOIN_PLAN_TABLES,
+    JoinPlan,
+    JoinPlanEdge,
+    validate_join_plan,
+)
 
 # --- Константы (AGENTS.md: магические числа — именованные, с «почему») ---
 
@@ -73,6 +85,9 @@ _ESCALATION_ATTEMPT = 3
 _WEIGHT_TIE_EPSILON = 1e-9
 # Кап заявок за прогон: очередь владельцу не спамим (частота = COUNT(*) строк)
 _MAX_PROPOSALS_PER_RUN = 3
+# Точность веса в payload промпта: NUMERIC реестра несёт лишние знаки,
+# 4 достаточно для сопоставимости кандидатов (ревью M6 — именованная константа)
+_PAYLOAD_WEIGHT_PRECISION = 4
 
 # Роль попытки 1 — матрица ADR-007 §4: план_joins = дешёвая модель (ранжирование
 # готовых кандидатов — классификационная задача, ошибка дёшево исправима ретраем)
@@ -213,9 +228,11 @@ class PlanJoinsService:
     ) -> PlanJoinsResult:
         """План джойнов для вопроса под правами пользователя (S00 контракт 3).
 
-        permissions — {table: [columns|'*']}, единственный источник мира агента
-        (resolve_access передаёт из state — V4); deny-by-default.
+        permissions — {table: [columns|'*']} (строка-CSV «a,b» нормализуется на
+        границе — agent_permissions.columns хранит текст), единственный источник
+        мира агента (resolve_access передаёт из state — V4); deny-by-default.
         """
+        permissions = _normalize_permissions(permissions)
         allowed = set(permissions)
 
         # --- Нога 1: retrieval (VectorStore-порт; сбой → fail БЕЗ заявки: пары
@@ -243,7 +260,9 @@ class PlanJoinsService:
 
         # --- Нога 2: граф (кандидаты путей строит код; сбой снапшота → fail
         # БЕЗ заявки: это инфраструктурный сбой, не факт отсутствия пути,
-        # Ловушка-3) ---
+        # Ловушка-3). Пин снапшота: версия ДО и ПОСЛЕ ноги — конкурентный
+        # sync-graph между запросами пар перемешал бы пути vN/vN+1 (ревью I6)
+        version_before = self._graph_store.graph_version()
         try:
             paths_by_rel_ids, disconnected_pairs = self._graph_leg(
                 candidate_tables, ctx=ctx, allowed=frozenset(allowed)
@@ -251,6 +270,18 @@ class PlanJoinsService:
             graph_version = self._graph_store.graph_version()
         except SchemaGraphError as exc:
             return self._fail(str(exc))
+        if graph_version != version_before:
+            return self._fail(
+                f"снапшот графа изменился во время планирования "
+                f"(graph_version {version_before} → {graph_version}) — повторите прогон"
+            )
+        if graph_version == 0:
+            # 0 = снапшот ещё не загружен (порт SchemaGraphStore) — это НЕ «чистое
+            # нет пути»: заявка по несуществующему снапшоту — ложный сигнал
+            # владельцу (ревью I1, Q6/Ловушка-3)
+            return self._fail(
+                "снапшот графа не загружен (graph_version=0) — выполните make sync-graph"
+            )
 
         if not paths_by_rel_ids:
             return self._no_path_result(
@@ -274,25 +305,36 @@ class PlanJoinsService:
         sem_by_rel = {s.rel_id: s for s in semantics}
 
         # --- Кандидаты на ранжирование: код pre-rank, кап топ-5 ---
-        # Порядок: (1) рёбра с retrieval-подтверждением (intent-фильтр кодом,
-        # Task 2); (2) МИНИМАЛЬНЫЙ план — лишние таблицы раздувают скелет S10
-        # и бюджет; вес реестра ранжирует параллельные рёбра ОДНОЙ пары
-        # (ADR-003 §4), а не выбор длины пути между разными парами;
-        # (3) вес, (4) детерминированный rel_id-тайбрейк.
+        # Фильтры рёбер — КОДОМ (Task 2 п.4): (1) intent — рёбра с retrieval-
+        # подтверждением (rel:{edge_id}-доки в хитах) идут вперёд; (2) temporal —
+        # пути БЕЗ временных рёбер вперёд: date-чувствительность = допущение,
+        # которое вопрос не просил (temporal-ребро всплывает assumptions);
+        # (3) МИНИМАЛЬНЫЙ план — лишние таблицы раздувают скелет S10 и бюджет;
+        # вес реестра ранжирует параллельные рёбра ОДНОЙ пары (ADR-003 §4), а
+        # не выбор длины пути между разными парами; затем вес и rel_id-тайбрейк.
         candidates = sorted(
-            paths_by_rel_ids.values(),
+            (p for p in paths_by_rel_ids.values() if len(p.tables) <= MAX_JOIN_PLAN_TABLES),
             key=lambda p: (
                 not any(e.rel_id in hit_edge_ids for e in p.edges),
+                any(sem_by_rel[e.rel_id].temporal for e in p.edges),
                 len(p.edges),
                 -p.total_weight,
                 tuple(e.rel_id for e in p.edges),
             ),
         )[:_MAX_RANK_CANDIDATES]
+        if not candidates:
+            # Все найденные пути длиннее лимита JoinPlan (ревью I3: порт не
+            # ограничивает хопы — константа хопа живёт в реализации Neo4j,
+            # замена хранилища по D-015 может вернуть больше)
+            return self._fail(
+                f"связные пути длиннее лимита {MAX_JOIN_PLAN_TABLES} таблиц — "
+                "такой вопрос подлежит декомпозиции, а не джойн-плану"
+            )
 
         winner = candidates[0]
         if len(candidates) > 1:
             verdict, ranking = self._rank_by_llm(question, candidates, sem_by_rel)
-            if verdict is not None:  # CLARIFY или FAIL — честный исход без плана
+            if verdict is not None:  # FAIL — честный исход без плана
                 return verdict
             tie = (
                 abs(candidates[0].total_weight - candidates[1].total_weight) <= _WEIGHT_TIE_EPSILON
@@ -312,7 +354,12 @@ class PlanJoinsService:
         # Один кандидат: ранжировать нечего — вызов шлюза не тратим (экономия
         # бюджета; модель подключается там, где есть выбор)
 
-        plan = self._build_plan(winner, sem_by_rel, graph_version)
+        try:
+            plan = self._build_plan(winner, sem_by_rel, graph_version)
+        except ValueError as exc:
+            # Дрейф граф↔реестр (направление ≠ left/right) или брак сборки —
+            # типизированный честный FAIL, не сырой вылет (ревью I3)
+            return self._fail(f"сборка плана не удалась: {exc}")
         # Defense-in-depth: план собран кодом из активного снапшота, но инвариант
         # «план проверяет код» — валидатор отсекает любой брак до ретраев/SQL
         issues = validate_join_plan(
@@ -331,7 +378,7 @@ class PlanJoinsService:
     # --- Ноги узла ---
 
     @staticmethod
-    def _candidate_tables(documents: Sequence[Any], allowed: set[str]) -> list[str]:
+    def _candidate_tables(documents: Sequence[KnowledgeDocument], allowed: set[str]) -> list[str]:
         """Кандидаты-таблицы из retrieval-хитов ∩ права (deny-by-default).
 
         Порядок = релевантность поиска (score убывает); якорь + все
@@ -344,23 +391,24 @@ class PlanJoinsService:
                 if table and table in allowed and table not in seen:
                     seen.add(table)
                     tables.append(table)
-            if len(tables) >= _MAX_CANDIDATE_TABLES:
-                break
-        return tables
+        # Слайс ПОСЛЕ сбора: break по документу мог утащить якоря из последнего
+        # документа и превысить кап (ревью M4)
+        return tables[:_MAX_CANDIDATE_TABLES]
 
     @staticmethod
-    def _hit_edge_ids(documents: Sequence[Any]) -> set[str]:
+    def _hit_edge_ids(documents: Sequence[KnowledgeDocument]) -> list[str]:
         """Рёбра, чьи RELATIONSHIP-документы retrieval нашёл (source_ref = rel:edge_id).
 
         Подтверждение релевантности ребра вопросу — код-фильтр intent (Task 2):
-        пути с «подтверждёнными» рёбрами идут вперёд при pre-rank.
+        пути с «подтверждёнными» рёбрами идут вперёд при pre-rank. Сортировка —
+        диагностика узла детерминированна (ревью M5).
         """
-        prefix = "rel:"
-        return {
+        prefix = RELATIONSHIP_SOURCE_REF_PREFIX
+        return sorted(
             doc.source_ref[len(prefix) :]
             for doc in documents
             if doc.doc_kind is DocKind.RELATIONSHIP and doc.source_ref.startswith(prefix)
-        }
+        )
 
     def _graph_leg(
         self,
@@ -368,14 +416,14 @@ class PlanJoinsService:
         *,
         ctx: RunContext,
         allowed: frozenset[str],
-    ) -> tuple[dict[tuple[str, ...], Any], list[tuple[str, str]]]:
+    ) -> tuple[dict[tuple[str, ...], JoinPath], list[tuple[str, str]]]:
         """Все пары кандидатов → find_join_paths(k); дедуп по rel_id-последовательности.
 
         Возвращает (пути по rel_id-ключу, пары без пути). Демо-путь
         customers←orders→campaigns длиннее пары rel-дока — пары только из
         RELATIONSHIP-доков недостаточно (ruling Q3).
         """
-        paths: dict[tuple[str, ...], Any] = {}
+        paths: dict[tuple[str, ...], JoinPath] = {}
         disconnected: list[tuple[str, str]] = []
         for i, left in enumerate(candidate_tables):
             for right in candidate_tables[i + 1 :]:
@@ -391,9 +439,9 @@ class PlanJoinsService:
     def _rank_by_llm(
         self,
         question: str,
-        candidates: list[Any],
+        candidates: list[JoinPath],
         sem_by_rel: dict[str, EdgeSemantics],
-    ) -> tuple[PlanJoinsResult, PathRanking | None]:
+    ) -> tuple[PlanJoinsResult | None, PathRanking | None]:
         """Ранжирование моделью с ретраями M1 (Task 3).
 
         Возвращает (FAIL-вердикт, None) или (None, ranking) — исходы «уточнение»
@@ -438,7 +486,7 @@ class PlanJoinsService:
 
     @staticmethod
     def _ranking_payload(
-        candidates: list[Any], sem_by_rel: dict[str, EdgeSemantics]
+        candidates: list[JoinPath], sem_by_rel: dict[str, EdgeSemantics]
     ) -> list[dict[str, Any]]:
         """Кандидаты для промпта: таблицы/вес/рёбра с семантикой (KISS-JSON)."""
         payload: list[dict[str, Any]] = []
@@ -464,7 +512,7 @@ class PlanJoinsService:
                 {
                     "index": index,
                     "tables": list(path.tables),
-                    "total_weight": round(path.total_weight, 4),
+                    "total_weight": round(path.total_weight, _PAYLOAD_WEIGHT_PRECISION),
                     "edges": edges,
                 }
             )
@@ -527,7 +575,9 @@ class PlanJoinsService:
                     ctx=ctx,
                 )
                 recorded.append(f"{left}↔{right}")
-            except EdgeProposalError as exc:
+            except (EdgeProposalError, ValueError) as exc:
+                # ValueError адаптера — нарушение контракта вызова (пустой
+                # question_sample): заявка не записана, вердикт честный (ревью M7)
                 notes.append(str(exc))
         detail = (
             f"активных рёбер нет для пар: {', '.join(f'{a}↔{b}' for a, b in disconnected_pairs)}"
@@ -537,20 +587,29 @@ class PlanJoinsService:
         if notes:
             # Заявка не записана — вердикт остаётся честным: сбой записи виден
             detail += "; " + "; ".join(notes)
+        if recorded:
+            question_text = (
+                "Путь между этими сущностями пока не заведён владельцем данных — "
+                "заявка отправлена; попробуйте переформулировать вопрос"
+            )
+        else:
+            # Ложь «заявка отправлена» при упавших записях — нарушение честных
+            # исходов (ревью I2)
+            question_text = (
+                "Путь между этими сущностями не заведён, и записать заявку владельцу "
+                "не удалось — попробуйте переформулировать вопрос"
+            )
         return PlanJoinsResult(
             outcome=PlanOutcome.NO_PATH,
             graph_version=graph_version,
             error=detail,
-            clarifying_question=(
-                "Путь между этими сущностями пока не заведён владельцем данных — "
-                "заявка отправлена; попробуйте переформулировать вопрос"
-            ),
+            clarifying_question=question_text,
             candidate_tables=candidate_tables,
         )
 
     @staticmethod
     def _build_plan(
-        winner: Any, sem_by_rel: dict[str, EdgeSemantics], graph_version: int
+        winner: JoinPath, sem_by_rel: dict[str, EdgeSemantics], graph_version: int
     ) -> JoinPlan:
         """Сборка JoinPlan кодом из победившего пути (модель план не строит).
 
@@ -603,12 +662,30 @@ class PlanJoinsService:
         )
 
     @staticmethod
-    def _chain(path: Any) -> str:
+    def _chain(path: JoinPath) -> str:
         """Человекочитаемая цепочка пути для уточняющего вопроса: a←b→c."""
         arrows: list[str] = [path.edges[0].from_table]
         for edge in path.edges:
             arrows.append(f"↔{edge.to_table}")
         return "".join(arrows)
+
+
+def _normalize_permissions(
+    permissions: Mapping[str, Sequence[str]],
+) -> dict[str, list[str]]:
+    """Нормализация карты прав на границе узла (S00 контракт 3).
+
+    agent_permissions.columns — CSV-текст («id,name», миграция 0001): строка
+    разворачивается в список колонок ОДИН раз на границе (ревью I4); валидатор
+    домена строку отвергает — fail-closed против подстрочного прохода ключа.
+    """
+    normalized: dict[str, list[str]] = {}
+    for table, columns in permissions.items():
+        if isinstance(columns, str):
+            normalized[table] = [c.strip() for c in columns.split(",") if c.strip()]
+        else:
+            normalized[table] = list(columns)
+    return normalized
 
 
 def _columns_for_direction(

@@ -45,7 +45,11 @@ def _permissions(planner_dsn: str, user_id: str) -> dict[str, list[str]]:
         ).fetchall()
     permissions: dict[str, list[str]] = {}
     for row in rows:
-        permissions.setdefault(row["table_name"], []).extend(row["columns"] or [])
+        # columns — CSV-текст («id,name», миграция 0001): разбор на границе;
+        # сервис дополнительно нормализует строку сам (ревью I4)
+        columns = row["columns"] or ""
+        parsed = [c.strip() for c in columns.split(",") if c.strip()]
+        permissions.setdefault(row["table_name"], []).extend(parsed)
     return permissions
 
 

@@ -185,25 +185,32 @@ class StaticVectorStore:
 
 
 class ScriptedGraphStore:
-    """Fake SchemaGraphStore: пути по парам + семантика по rel_id (или сбои)."""
+    """Fake SchemaGraphStore: пути по парам + семантика по rel_id (или сбои).
+
+    version — ревизия снапшота; sequence версий (список) имитирует конкурентный
+    sync-graph между запросами (регресс ревью I6).
+    """
 
     def __init__(
         self,
         paths: dict[tuple[str, str], list[JoinPath]],
         *,
-        version: int = 13,
+        version: int | list[int] = 13,
         sem: dict[str, EdgeSemantics] | None = None,
         paths_error: str | None = None,
         semantics_error: str | None = None,
     ) -> None:
         self.calls: list[tuple[str, str, frozenset[str], int]] = []
         self._paths = paths
-        self._version = version
+        self._version: int = version if isinstance(version, int) else 0
+        self._version_sequence = version if isinstance(version, list) else None
         self._sem = sem or _REGISTRY_SEM
         self._paths_error = paths_error
         self._semantics_error = semantics_error
 
     def graph_version(self) -> int:
+        if self._version_sequence:
+            self._version = self._version_sequence.pop(0)
         return self._version
 
     def find_join_paths(
@@ -805,3 +812,217 @@ def test_parse_ranking_contracts() -> None:
         _parse_ranking(_tool_response('{"ranking": [0, 0]}'), 3)
     parsed = _parse_ranking(_tool_response({"ranking": [1, 0], "ambiguous": True}), 3)
     assert parsed == PathRanking(ranking=[1, 0], ambiguous=True)
+
+
+# --- Fix-волна ревью (регрессионные тесты) ---
+
+
+def test_snapshot_unloaded_fails_without_proposals() -> None:
+    """I1: graph_version=0 — снапшот не загружен; это НЕ «чистое нет пути»: без заявок."""
+    proposals = RecordingProposals()
+    result = _service(
+        ScriptedLLM(),
+        StaticVectorStore(_demo_docs()),
+        ScriptedGraphStore({}, version=0),
+        proposals,
+    ).plan(_QUESTION, ctx=CTX, permissions=PERMISSIONS_ALL)
+    assert result.outcome is PlanOutcome.FAIL
+    assert "sync-graph" in (result.error or "")
+    assert proposals.calls == []
+
+
+def test_snapshot_version_change_fails_closed() -> None:
+    """I6: конкурентный sync-graph между запросами пар — пин снапшота ловит, плана нет."""
+    graph = ScriptedGraphStore({}, version=[13, 14])
+    result = _service(
+        ScriptedLLM(), StaticVectorStore(_demo_docs()), graph, RecordingProposals()
+    ).plan(_QUESTION, ctx=CTX, permissions=PERMISSIONS_ALL)
+    assert result.outcome is PlanOutcome.FAIL
+    assert "изменился во время планирования" in (result.error or "")
+
+
+def test_no_path_without_proposal_write_honest_question() -> None:
+    """I2: отказ записи заявки — вопрос не утверждает «заявка отправлена»."""
+    proposals = RecordingProposals(error="permission denied")
+    result = _service(
+        ScriptedLLM(), StaticVectorStore(_demo_docs()), ScriptedGraphStore({}), proposals
+    ).plan(_QUESTION, ctx=CTX, permissions=PERMISSIONS_ALL)
+    assert result.outcome is PlanOutcome.NO_PATH
+    assert "заявка отправлена" not in (result.clarifying_question or "")
+    assert "не удалось" in (result.clarifying_question or "")
+
+    ok = _service(
+        ScriptedLLM(),
+        StaticVectorStore(_demo_docs()),
+        ScriptedGraphStore({}),
+        RecordingProposals(),
+    ).plan(_QUESTION, ctx=CTX, permissions=PERMISSIONS_ALL)
+    assert "заявка отправлена" in (ok.clarifying_question or "")
+
+
+def test_overlong_path_is_filtered_not_raised() -> None:
+    """I3: путь длиннее лимита JoinPlan отфильтровывается кодом; все длинные → честный FAIL."""
+    five = JoinPath(
+        edges=[
+            JoinEdge(rel_id=f"r{i}", from_table=f"t{i}", to_table=f"t{i + 1}", weight=1.0)
+            for i in range(4)
+        ],
+        total_weight=4.0,
+    )
+    # 5 таблиц в пути — без фильтра сборка упала бы ValidationError-ом JoinPlan
+    heavy = ScriptedGraphStore(
+        {("campaigns", "customers"): [five]},
+        sem={f"r{i}": _REGISTRY_SEM["e_customers_orders"] for i in range(4)},
+    )
+    result = _service(
+        ScriptedLLM(), StaticVectorStore(_demo_docs()), heavy, RecordingProposals()
+    ).plan(_QUESTION, ctx=CTX, permissions=PERMISSIONS_ALL)
+    assert result.outcome is PlanOutcome.FAIL
+    assert "длиннее лимита" in (result.error or "")
+
+
+def test_direction_drift_fails_typed_not_raised() -> None:
+    """I3: дрейф направления пути против реестра на уровне сервиса → FAIL, не ValueError."""
+    drifted = _path(("e_customers_orders", "orders", "widget", 1.0), total=1.0)
+    graph = ScriptedGraphStore({("orders", "customers"): [drifted]})
+    result = _service(
+        ScriptedLLM(), StaticVectorStore(_demo_docs()), graph, RecordingProposals()
+    ).plan(_QUESTION, ctx=CTX, permissions=PERMISSIONS_ALL)
+    assert result.outcome is PlanOutcome.FAIL
+    assert "сборка плана не удалась" in (result.error or "")
+
+
+def test_validator_rejects_string_permissions() -> None:
+    """I4: строковые колонки — нарушение контракта прав (подстрочный обход ACL)."""
+    with pytest.raises(ValueError, match="контракт прав нарушен"):
+        validate_join_plan(
+            _demo_plan(),
+            permissions={"customers": "customer_id,name", "orders": ["*"], "campaigns": ["*"]},
+            active_rel_ids=frozenset({"e_customers_orders", "e_campaigns_orders"}),
+        )
+
+
+def test_service_normalizes_csv_permissions() -> None:
+    """I4: CSV-строка колонок нормализуется на границе сервиса (agent_permissions.columns)."""
+    csv_permissions = {
+        "customers": "customer_id,name",
+        "orders": "customer_id,order_id,campaign_id,total",
+        "campaigns": "campaign_id",
+    }
+    graph = ScriptedGraphStore({("campaigns", "customers"): [_DEMO_PATH]})
+    result = _service(
+        ScriptedLLM(), StaticVectorStore(_demo_docs()), graph, RecordingProposals()
+    ).plan(_QUESTION, ctx=CTX, permissions=csv_permissions)
+    assert result.outcome is PlanOutcome.PLAN
+    assert result.plan is not None
+
+
+def test_temporal_path_ranks_after_plain() -> None:
+    """I5: код-фильтр temporal — путь без временных рёбер впереди равного."""
+    temporal_sem = EdgeSemantics(
+        rel_id="e_customers_orders",
+        join_type="inner",
+        meaning="клиент разместил заказ",
+        left_table="customers",
+        left_columns=("customer_id",),
+        right_table="orders",
+        right_columns=("customer_id",),
+        temporal={"mode": "на дату заказа"},
+    )
+    sem = {**_REGISTRY_SEM, "e_customers_orders": temporal_sem}
+    # Веса противопоставлены фильтру (temporal тяжелее) — tie не срабатывает,
+    # а порядок pre-fix (по весу) противоречит код-фильтру: тест кусает
+    temporal_path = _path(("e_customers_orders", "orders", "customers", 1.2), total=1.2)
+    plain_path = _path(("e_orders_items", "orders", "order_items", 1.0), total=1.0)
+    graph = ScriptedGraphStore(
+        {("orders", "customers"): [temporal_path], ("orders", "order_items"): [plain_path]},
+        sem=sem,
+    )
+    docs = [
+        KnowledgeDocument(
+            doc_kind=DocKind.RELATIONSHIP,
+            table_name="orders",
+            referenced_tables=["orders", "customers"],
+            content="клиент разместил заказ",
+            model_version="bge-m3",
+            source_ref="rel:e_customers_orders",
+        ),
+        KnowledgeDocument(
+            doc_kind=DocKind.RELATIONSHIP,
+            table_name="orders",
+            referenced_tables=["orders", "order_items"],
+            content="заказ раскрывается в позиции",
+            model_version="bge-m3",
+            source_ref="rel:e_orders_items",
+        ),
+    ]
+    llm = ScriptedLLM(results=[_tool_response({"ranking": [0]})])
+    result = _service(llm, StaticVectorStore(docs), graph, RecordingProposals()).plan(
+        _QUESTION, ctx=CTX, permissions=PERMISSIONS_ALL
+    )
+    assert result.outcome is PlanOutcome.PLAN
+    _, messages, _ = llm.complete_calls[0]
+    payload = json.loads(messages[1]["content"].split("Кандидаты путей (JSON):\n", 1)[1])
+    assert payload[0]["tables"] == ["orders", "order_items"]  # без temporal — вперёд
+    assert result.plan is not None
+    assert result.plan.tables == ["orders", "order_items"]
+
+
+def test_candidate_cap_survives_single_document() -> None:
+    """M4: один документ с длинным referenced_tables не уводит кандидатов за кап."""
+    fat_doc = KnowledgeDocument(
+        doc_kind=DocKind.DDL,
+        table_name="customers",
+        referenced_tables=[
+            "customers",
+            "orders",
+            "campaigns",
+            "order_items",
+            "products",
+            "employees",
+            "bonuses",
+        ],
+        content="fat",
+        model_version="bge-m3",
+        source_ref="ddl:customers",
+    )
+    tables = PlanJoinsService._candidate_tables(
+        [fat_doc], set(PERMISSIONS_ALL) | {"employees", "bonuses"}
+    )
+    assert len(tables) <= 6  # _MAX_CANDIDATE_TABLES — кап соблюлся
+
+
+def test_proposals_capped_per_run() -> None:
+    """M12: 4+ кандидата без путей — заявок не больше капа прогона."""
+    many = ["orders", "customers", "campaigns", "order_items", "products", "employees"]
+    permissions = {t: ["*"] for t in many}
+    docs = [_ddl_doc(t) for t in many]
+    proposals = RecordingProposals()
+    result = _service(
+        ScriptedLLM(), StaticVectorStore(docs), ScriptedGraphStore({}), proposals
+    ).plan(_QUESTION, ctx=CTX, permissions=permissions)
+    assert result.outcome is PlanOutcome.NO_PATH
+    assert len(proposals.calls) == 3  # _MAX_PROPOSALS_PER_RUN
+
+
+def test_hit_edge_ids_deterministic_order() -> None:
+    """M5: диагностика retrieval-ноги — детерминированный порядок рёбер."""
+    docs = [
+        KnowledgeDocument(
+            doc_kind=DocKind.RELATIONSHIP,
+            table_name="orders",
+            referenced_tables=["orders", "campaigns"],
+            content="x",
+            model_version="bge-m3",
+            source_ref="rel:e_campaigns_orders",
+        ),
+        KnowledgeDocument(
+            doc_kind=DocKind.RELATIONSHIP,
+            table_name="orders",
+            referenced_tables=["orders", "customers"],
+            content="y",
+            model_version="bge-m3",
+            source_ref="rel:e_customers_orders",
+        ),
+    ]
+    assert PlanJoinsService._hit_edge_ids(docs) == ["e_campaigns_orders", "e_customers_orders"]

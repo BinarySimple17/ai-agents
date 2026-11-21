@@ -26,6 +26,7 @@ from psycopg.rows import dict_row
 
 from text_to_sql_agent.application.ports.sql_executor import CONNECT_TIMEOUT_S, STATEMENT_TIMEOUT_S
 from text_to_sql_agent.application.ports.vector_store import (
+    RELATIONSHIP_SOURCE_REF_PREFIX,
     DocKind,
     KnowledgeDocument,
     VectorStoreError,
@@ -174,7 +175,7 @@ def relationship_documents(dsn: str, *, model_version: str) -> list[KnowledgeDoc
                 "\n".join(lines),
                 table_name=row["left_table"],  # якорь-таблица (для отладки/аудита)
                 referenced_tables=[row["left_table"], row["right_table"]],
-                source_ref=f"rel:{row['edge_id']}",
+                source_ref=f"{RELATIONSHIP_SOURCE_REF_PREFIX}{row['edge_id']}",
                 model_version=model_version,
             )
         )

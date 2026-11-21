@@ -31,9 +31,9 @@ _CONNECT_TIMEOUT_S = 10  # slow-фейл узла лучше висячего с
 
 def _shorten(message: str) -> str:
     message = " ".join(message.split())
-    if len(message) <= 300:
+    if len(message) <= _QUESTION_SAMPLE_MAX_CHARS:
         return message
-    return message[: 300 - 1] + "…"
+    return message[: _QUESTION_SAMPLE_MAX_CHARS - 1] + "…"
 
 
 class PgEdgeProposalStore:
@@ -51,11 +51,11 @@ class PgEdgeProposalStore:
         ctx: RunContext,
     ) -> None:
         del ctx  # identity владельца очереди — planner-канал; trace_id — V4 (FSM-трейсинг)
-        if not left_table or not right_table or not question_sample:
-            raise ValueError("left_table/right_table/question_sample обязательны")
-        sample = " ".join(question_sample.split())
-        if len(sample) > _QUESTION_SAMPLE_MAX_CHARS:
-            sample = sample[: _QUESTION_SAMPLE_MAX_CHARS - 1] + "…"
+        if not left_table or not right_table:
+            raise ValueError("left_table/right_table обязательны")
+        sample = _shorten(question_sample)
+        if not sample:
+            raise ValueError("question_sample пуст (нормализация whitespace)")
         try:
             with psycopg.connect(
                 self._planner_dsn,

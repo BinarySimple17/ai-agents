@@ -82,6 +82,18 @@ def validate_join_plan(
 
     issues: list[str] = []
 
+    # Контракт прав: значения — список колонок, НЕ строка. str — тоже
+    # Sequence[str], подстрочная проверка `"id" in "customer_id,name"` дала бы
+    # ложный доступ к ключу (ревью I4): fail-closed, нормализация — граница
+    # сервиса (`_normalize_permissions`).
+    for table, permitted in permissions.items():
+        if isinstance(permitted, str):
+            raise ValueError(
+                f"контракт прав нарушен для {table}: колонки — список строк "
+                f"(или '*'), получена строка {permitted!r} — строку «a,b» "
+                "нормализуй на границе (agent_permissions.columns — CSV-текст)"
+            )
+
     # --- Структурные правила ---
     if len(plan.tables) > MAX_JOIN_PLAN_TABLES:
         issues.append(
