@@ -1,0 +1,139 @@
+# S05 — resolve_access: права из таблиц настроек + DevTokenAuth (веха V4, ДЗ-05)
+
+Этап: Веха V4 (ДЗ-05: первый узел FSM — детерминированный, без LLM) | Владелец: агент | Зависимости: S02, S04 | Оценка: 1 | Статус: [ ] не начата
+Фичи: feat-005 — resolve_access; зависимости feat-002 (passing), feat-004 (закрывается S04 до старта)
+Роль по фиче: закрывает feat-005 — финальная сессия, через make verify-feature
+
+## ⚠️ Прочитай перед началом
+
+Исполнитель: ИИ-агент. К моменту старта: S02 закрыта (схема v1.5: `agent_permissions`,
+`agent_user_roles`, `settings_version` с триггерными счётчиками, роли), S04 закрыта
+(каркас FSM: узел resolve_access — заглушка, ребро `rejected` существует). Эта сессия
+наполняет первый узел конвейера: `user_id → роли → права` из таблиц настроек —
+`state.permissions = {tables: {table: [columns]}}` (контракт 3 S00) — единственный
+источник для подграфа, retrieval-фильтра и AST-валидатора (S11). Плюс порт
+`AuthProvider` + `DevTokenAuth` (MVP, S00 таблица портов): identity приходит
+проверенной — аутентификация вне скоупа.
+
+Границы скоупа: БЕЗ RLS-канала исполнения (S13, миграция 0004 — уже живёт в
+SQLExecutor), БЕЗ валидатора SQL (S11 потребляет permissions), БЕЗ кэша прав в Valkey
+(если не доказано needed — см. правило 4: сначала settings_version-сверка), БЕЗ
+OIDC (прод-реализация порта — после MVP).
+
+### Правила для исполнителя
+
+1. Ветка `feat-005-resolve-access` от `milestone/v4` (D-031); merge — в `milestone/v4`.
+2. Fail-closed (S00 правило 8): неизвестный user_id / непроверенный токен →
+   `rejected`-исход БЕЗ вызова LLM; любая недоступность БД настроек → отказ, не «пустые права = всё разрешено».
+3. Права читаются из таблиц настроек на каждый запрос (ADR-005 §4); per-user кэш —
+   только с обязательной сверкой `settings_version` (контракт 3 S00): версия выросла → кэш не используется.
+4. Чтение таблиц настроек — под ролью по миграциям S02 (agent_planner читает настройки;
+   вопрос роли чтения подтвердить в ARCH-GATE — дефолт: существующие гранты, новая миграция только при нехватке).
+5. Узел — детерминированный код, без LLM (behavior feat-005); молчит о недоступном:
+   карта прав не содержит лишнего даже в трейс (S9-политика отказов).
+
+## Предусловия
+
+- [ ] Сессия СТАРТУЕТ: статус в шапке переведён в «◐ в работе» и ARCH-GATE резолвлен ДО кода (canon-check architect ✅ либо обоснованный N/A) — старт-гейт (`guard-subagents.sh --phase start`, D-027) проверяет только стартованные (◐) сессии; «[ ] не начата» — план, гейт её скипает
+- [ ] S02 закрыта: `make infra-up && make infra-migrate && uv run pytest src/tests/integration/test_infra_schema.py -q` → passed
+- [ ] S04 закрыта: `uv run pytest src/tests/unit/test_graph.py -q` → passed (feat-004 passing)
+- [ ] `make check` зелёный (baseline репозитория)
+- [ ] feat-002, feat-004 в state=passing; feat-005 активирована в state=active до старта работ
+
+## Задачи
+
+### Task 1: Порт AuthProvider + DevTokenAuth
+
+`application/ports/auth_provider.py`: `verify(token) -> identity` (ADR-005; MVP —
+`infrastructure/persistence/dev_token_auth.py`): dev-токен → user_id из .env-списка
+демо-пользователей, никаких обращений к внешним IdP; пустой/чужой токен → отказ
+(fail-closed). identity — только из проверенного токена (контракт 3 S00).
+
+**✅ Самопроверка:**
+
+```bash
+uv run pytest src/tests/integration/test_resolve_access.py -q   # раздел Auth: валидный dev-токен → identity; невалидный → отказ без LLM-вызова
+```
+
+---
+
+### Task 2: Сервис resolve_access — карта прав из настроек
+
+`application/services/resolve_access_service.py`: (1) `agent_user_roles` → роли user_id;
+(2) `agent_permissions` → таблицы + колонки + scope; (3) слияние ролей → единая карта
+`{tables: {table: [columns]}}` в `state.permissions` + `graph_version`-пин рядом
+(контракт 1); unknown user_id → вердикт rejected. SQL чтения — параметризованный,
+под ролью из правила 4; пустая карта (роли есть, прав нет) — легальный deny-по-умолчанию, не ошибка.
+
+**✅ Самопроверка:**
+
+```bash
+make infra-up && uv run pytest src/tests/integration/test_resolve_access.py -q   # known u_analyst/u_logist → полная карта по сидам 0003; unknown → rejected
+```
+
+---
+
+### Task 3: Актуальность прав — settings_version
+
+Кэш прав per-user (в-memory процесса достаточно для MVP; Valkey — только если доказано)
+со сверкой `settings_version('permissions')` на каждый запрос: триггер инкрементирует
+счётчик при правке строк настроек → следующий запрос перечитывает права (behavior
+feat-005: «правка строк настроек действует со следующего запроса»).
+
+**✅ Самопроверка:**
+
+```bash
+make infra-up && uv run pytest src/tests/integration/test_resolve_access.py -q   # правка agent_permissions между запросами → вторая карта отличается (счётчик вырос)
+```
+
+---
+
+### Task 4: Подключение в FSM + rejected-ребро
+
+Наполнение заглушки S04: узел resolve_access вызывает сервис, пишет permissions в
+state; routing: rejected-вердикт → терминал `rejected` (отказ без LLM, payload —
+вежливый текст без раскрытия причин настройки). Интеграционный тест через собранный
+Container (не напрямую сервис) — проверка, что FSM-путь жив.
+
+**✅ Самопроверка:**
+
+```bash
+uv run pytest src/tests/unit/test_graph.py src/tests/integration/test_resolve_access.py -q   # оба зелёные; порядок узлов не сломан
+```
+
+## Критерии приёмки
+
+- [ ] Для known user_id узел возвращает полную карту прав в state; для неизвестного — deny-исход с валидным отказом (behavior feat-005)
+- [ ] Права актуальны на момент запроса: правка строк настроек действует со следующего запроса (behavior feat-005)
+- [ ] `state.permissions = {tables: {table: [columns]}}` — формат контракта 3 S00, без локальных расширений
+- [ ] Identity — только из проверенного токена; fail-closed на каждом шаге (контракт 3 S00)
+- [ ] Узел не делает LLM-вызовов (behavior feat-005) — проверить тестом-шпионом
+- [ ] Фича закрыта: `make verify-feature F=feat-005` → PASS, state=passing с evidence
+
+## Ловушки
+
+1. **Не путать два контура прав:** resolve_access (мир агента: подграф/retrieval/валидатор)
+   и RLS-канал исполнения (S13, `SET LOCAL app.user_id`) — независимые рубежи; здесь
+   RLS не трогаем вовсе.
+2. `settings_version` читается той же ролью, что и настройки; если роль не имеет
+   гранта на счётчики — это находка для ARCH-GATE (новая миграция GRANT), не тихий
+   обход через суперюзера.
+3. Кэш прав без сверки версии = устаревшие права после правки настроек — главный
+   риск фичи; тест на «правка между запросами» обязателен (Task 3).
+4. Сиды 0003: u_analyst (широкие права), u_logist (узкие) — использовать как готовые
+   сценарии; демо-сцена deny «премии без прав HR» — на них же (S27).
+5. Гейт strict: строки ARCH/REVIEW заполняются по факту; «N/A — сессия не начата» = FAIL.
+
+## Гейты субагентов (заполняется по факту, до закрытия сессии)
+
+- ARCH-GATE: [✅ <verdict: compliant | violations | needs-decision> + <план/файл> | N/A — <причина>]
+- REVIEW-GATE: [✅ <Ready to merge? вердикт> + <BASE7>..<HEAD7> | N/A — <причина>]
+
+## Отчёт по сессии (заполняется по факту)
+
+- Сделано:
+  - [Task: что реально сделано, коммиты, число тестов/ассертов, live-прогон]
+- Отклонения от плана:
+  - [что сделали не так, как в задаче, и почему; каждое отклонение — осознанное]
+- Перенесено в другие сессии:
+  - [ID сессии — что перенесено и почему; если в беклог — BL-NN-файл в solution/backlog/ (см. backlog/README.md)]
