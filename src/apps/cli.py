@@ -124,6 +124,10 @@ RETRIEVAL_SYSTEM_PROMPT = (
 )
 RETRIEVAL_EMPTY_BLOCK = "\nКонтекст знаний пуст: релевантных разрешённых документов нет."
 
+# Тул-контур ДЗ-02 — без retrieval (соединение с FSM — веха V4), поэтому схема
+# и значения справочников — в промпте (решение S13). Коды справочников — из
+# сида (миграция 0003); до S24 находки #2 их не было, и модель угадывала
+# литералы ('Russia' при сиде 'RU') — уверенный «0 клиентов» при реальных 5
 SYSTEM_PROMPT = (
     "Ты — аналитик данных демо-схемы. Отвечай на бизнес-вопрос по-русски. "
     "Для фактов и цифр вызывай тул run_sql одним SELECT-запросом (PostgreSQL). "
@@ -138,7 +142,11 @@ SYSTEM_PROMPT = (
     "orders(order_id, customer_id, campaign_id, order_date, status, total); "
     "order_items(order_item_id, order_id, product_id, quantity, unit_price); "
     "employees(employee_id, name, department, salary); "
-    "bonuses(bonus_id, employee_id, period, amount)."
+    "bonuses(bonus_id, employee_id, period, amount).\n"
+    "Значения справочников в демо-данных — кодами: country = 'RU'/'KZ'/'DE'/'BY' "
+    "(не «Россия»/«Russia»/«Казахстан»), status = 'paid'/'shipped'/'cancelled'. "
+    "Если фильтр по справочнику вернул 0 строк — проверь фактические значения "
+    "(SELECT DISTINCT) и повтори запрос, прежде чем отвечать «ноль».\n"
 )
 DEGRADED_ANSWER = (
     "Не удалось получить ответ: модель не вернула ни текста, ни вызова тулa. "
