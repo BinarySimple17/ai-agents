@@ -57,6 +57,54 @@ def test_retrieval_block_empty_without_docs() -> None:
     assert "Контекст знаний пуст" in block
 
 
+def test_retrieval_block_never_contains_noise() -> None:
+    # S26/feat-021 (D-026): дистрактор шумового корпуса участвует в ранжировании
+    # (поисковая выдача), но знанием не является — в retrieval-блок промпта не
+    # попадает (фильтр при сборке контекста — отдельный слой от поиска)
+    noise = KnowledgeDocument(
+        doc_kind=DocKind.NOISE,
+        referenced_tables=["orders"],
+        content="[шум: orders] дистрактор не должен попасть в промпт",
+        model_version="test-embedder",
+        source_ref="noise:0001",
+    )
+    real = _doc("[таблица: orders] настоящий контекст", "ddl:orders")
+    block = format_retrieval_block([noise, real])
+    assert "настоящий контекст" in block
+    assert "дистрактор" not in block
+
+
+def test_system_prompt_names_all_demo_schema_tables() -> None:
+    # BL-009 M1 (сверка генерацией): SYSTEM_PROMPT перечисляет ровно бизнес-
+    # таблицы демо-схемы. SoT списка таблиц — каталог agent_data_sources (ADR-011);
+    # здесь сверка с CREATE TABLE миграции 0001 — транзитивно эквивалентна каталогу
+    # (расхождение каталог↔миграция ловит integration-тест
+    # test_catalog_matches_schema_migration), а сам промпт — рукописная проза
+    # с колонками: сверка генерацией ловит дрейф при добавлении таблицы
+    import re as _re
+    from pathlib import Path
+
+    migration = (
+        Path(__file__).resolve().parents[3]
+        / "src"
+        / "migrations"
+        / "versions"
+        / "20261118_0001_schema_v15.py"
+    )
+    all_tables = set(_re.findall(r"CREATE TABLE (\w+) \(", migration.read_text(encoding="utf-8")))
+    # В миграции 0001 и служебные (agent_*/settings_version/query_trace) — бизнес-таблицы
+    tables = {
+        t
+        for t in all_tables
+        if not t.startswith("agent_") and t not in {"settings_version", "query_trace"}
+    }
+    assert len(tables) == 7, "демо-схема = 7 бизнес-таблиц (сид 0003)"
+    for table in sorted(tables):
+        assert f"{table}(" in AGENT_SYSTEM_PROMPT, (
+            f"SYSTEM_PROMPT не описывает таблицу {table} — синхронизируй с каталогом"
+        )
+
+
 def test_agent_system_prompt_marks_context_as_data() -> None:
     # security §3 S6: retrieval-контекст (RAG/few-shot/usage_notes) маркируется
     # как данные, не инструкции — в системном промпте объединённого контура

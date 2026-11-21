@@ -239,7 +239,10 @@ class PlanJoinsService:
         # таблиц не известны — заявлять нечего, S00 правило 8) ---
         try:
             [query_embedding] = self._llm.embed([question])
-            documents = self._vector_store.search(query_embedding, ctx=ctx, top_k=_RETRIEVAL_TOP_K)
+            # Сигнатура гибрида S26: текст вопроса — FTS-ноге, вектор — dense-ноге
+            documents = self._vector_store.search(
+                question, query_embedding, ctx=ctx, top_k=_RETRIEVAL_TOP_K
+            )
         except (LLMProviderError, VectorStoreError) as exc:
             return self._fail(f"retrieval недоступен: {exc}")
 
@@ -395,10 +398,15 @@ class PlanJoinsService:
 
         Порядок = релевантность поиска (score убывает); якорь + все
         referenced_tables документа; кап константой (BL-011 caller-side).
+        Шумовой корпус (doc_kind='noise', S26/D-026) — дистрактор замера,
+        не знание: таблицы шумового документа не становятся кандидатами
+        (measurement-инфраструктура не должна подмешиваться в план джойнов).
         """
         tables: list[str] = []
         seen: set[str] = set()
         for doc in documents:
+            if doc.doc_kind is DocKind.NOISE:
+                continue
             for table in (doc.table_name, *doc.referenced_tables):
                 if table and table in allowed and table not in seen:
                     seen.add(table)

@@ -1,6 +1,6 @@
 # ER Diagram — модель данных
 
-- **Статус:** каноническая схема v1.9 (2026-11-21 — S09 feat-009: runtime-запись заявок — `agent_planner` получил INSERT на `agent_edge_proposals` + USAGE на sequence (миграция 0009, ruling Q1 ARCH-GATE S09, D-030); append-only — UPDATE/DELETE/SELECT не выданы, приватность «чужих вопросов» из 0002 не задета). v1.8 (2026-11-21 — S07 feat-007: ревизия v2 демо-ребра `e_campaigns_orders` — допущение first-touch в `usage_notes`, миграция 008, data-правка реестра без смены DDL). v1.7 (2026-11-20 — S06 fix-волна ревью: `referenced_tables` — права по всем таблицам документа, миграция 006, guard индексатора; кросс-табличные доки скрыты целиком). v1.6 (2026-11-20 — S06 feat-006: +`agent_knowledge` — векторная память знаний, dense-only (D-026 доп. 2), retrieval под ролью `agent_planner` (ruling W1 ARCH-GATE S06, c4-l2 v1.8), запись — только офлайн-индексация под сервисным DSN). v1.5 (2026-11-18 — синхронизация с ревью-03 R1/S8/N3: полный DDL-контракт ребра `agent_relationships` (единственный источник для миграций — ADR-006 §4.1); +`agent_edge_proposals` (заявки владельцу); `graph_version` в трейсе; +`agent_audit` (поля S8, append-only, отдельно от трейсов); pydantic-контракты `JoinPlan`/`QueryPlan`/`ResultCompact` и состав `AgentState` (N3). v1.4 — Neo4j вместо AGE; v1.3 — +`agent_data_sources`; v1.2 — канал `agent_trace`, счётчики `settings_version`)
+- **Статус:** каноническая схема v1.10 (2026-11-21 — S26 feat-021: гибридная память — `agent_knowledge.content_tsv` tsvector GENERATED (to_tsvector('russian') STORED) + GIN, CHECK `doc_kind` + `'noise'` (шумовой корпус-дистрактор), миграция 0010, D-026/BL-007; replace-семантика upsert — BL-009 M3). v1.9 (2026-11-21 — S09 feat-009: runtime-запись заявок — `agent_planner` получил INSERT на `agent_edge_proposals` + USAGE на sequence (миграция 0009, ruling Q1 ARCH-GATE S09, D-030); append-only — UPDATE/DELETE/SELECT не выданы, приватность «чужих вопросов» из 0002 не задета). v1.8 (2026-11-21 — S07 feat-007: ревизия v2 демо-ребра `e_campaigns_orders` — допущение first-touch в `usage_notes`, миграция 008, data-правка реестра без смены DDL). v1.7 (2026-11-20 — S06 fix-волна ревью: `referenced_tables` — права по всем таблицам документа, миграция 006, guard индексатора; кросс-табличные доки скрыты целиком). v1.6 (2026-11-20 — S06 feat-006: +`agent_knowledge` — векторная память знаний, dense-only (D-026 доп. 2), retrieval под ролью `agent_planner` (ruling W1 ARCH-GATE S06, c4-l2 v1.8), запись — только офлайн-индексация под сервисным DSN). v1.5 (2026-11-18 — синхронизация с ревью-03 R1/S8/N3: полный DDL-контракт ребра `agent_relationships` (единственный источник для миграций — ADR-006 §4.1); +`agent_edge_proposals` (заявки владельцу); `graph_version` в трейсе; +`agent_audit` (поля S8, append-only, отдельно от трейсов); pydantic-контракты `JoinPlan`/`QueryPlan`/`ResultCompact` и состав `AgentState` (N3). v1.4 — Neo4j вместо AGE; v1.3 — +`agent_data_sources`; v1.2 — канал `agent_trace`, счётчики `settings_version`)
 - **Требования prd.md:** FR-2 (граф связей), FR-6 (RBAC как настройки), FR-7 (семантика связей), FR-11 (трейс + аудит)
 - **Связанные:** ADR-003 (PG — истина, граф — снапшот), ADR-004 (декомпозиция), ADR-005 (права как данные), ADR-006 (реестр — единственный SoT, DDL §4.1), ADR-009 (кэш — вне этой схемы, Valkey), ADR-011 (agent_data_sources — каталог источников)
 
@@ -243,18 +243,27 @@ erDiagram
   вопрос, SQL, `edge_id` рёбер, `graph_version`, число строк, отказы по правам,
   стоимость, уровни моделей. Пишется вне state агента (не допишет и не скроет);
   PII в логах и трейсах редактируется (security §5).
-- **`agent_knowledge` (v1.6, S06) — векторная память знаний** (feat-006, ADR-003 §4):
-  4 кураторских типа документов (DDL, связи с семантикой, глоссарий, few-shot);
-  автонаполнение запрещено. Поиск dense-only, HNSW по cosine (D-026 доп. 2;
-  гибрид — V3, BL-007). **Фильтр прав — джойн в SQL поиска по ВСЕМ таблицам
-  документа** (`referenced_tables`, миграции 006+007 — инвариант ревью S06 Critical-1:
+- **`agent_knowledge` (v1.10, S26) — векторная память знаний** (feat-006/feat-021, ADR-003 §4):
+  4 кураторских типа документов (DDL, связи с семантикой, глоссарий, few-shot) +
+  шумовой корпус-дистрактор `doc_kind='noise'` (S26, D-026: ранжируется вместе с
+  реальными, в промпт не попадает; `table_name NULL`, `referenced_tables` — по
+  упоминаниям, ruling N2 ARCH-GATE S26 — guard прав универсален); автонаполнение
+  кураторских знаний запрещено. Поиск — гибрид dense+FTS (D-026, S26/BL-007):
+  dense — HNSW по cosine; ключевая нога — `content_tsv tsvector GENERATED ALWAYS AS
+  (to_tsvector('russian', content)) STORED` + GIN (миграция 0010; конфиг литералом —
+  immutable; нормализация U+0301/ё→е — хелпером ДО записи); слияние — взвешенный RRF
+  α_dense=0.9 в адаптере, кап глубины ноги; фильтр `model_version` (смена эмбеддера —
+  BL-009 M3). **Фильтр прав — джойн в SQL ОБЕИХ ног по ВСЕМ таблицам документа ДО
+  слияния** (`referenced_tables`, миграции 006+007 — инвариант ревью S06 Critical-1:
   кросс-табличный few-shot «orders+campaigns» скрыт от пользователя без прав на
   campaigns; ADR-005 «граница знаний = граница прав», NFR-4 ACL-leak = 0);
   `'{}'` — общий документ. Каналы (ruling W1 ARCH-GATE S06): чтение — роль
   `agent_planner` (гранты 0002/0005), запись — только офлайн-индексация под
   сервисным DSN (`make index-knowledge` — флаг knowledge_writer контейнера,
-  ревью S06 I2), идемпотентно по `source_ref`; индексатор заполняет список и
-  guard-ом запрещает контент с необъявленными таблицами.
+  ревью S06 I2), replace-семантика полной коллекции (upsert + транзакционное
+  удаление устаревших `source_ref` её неймспейсов — BL-009 M3, ruling N1 S26);
+  индексатор читает список бизнес-таблиц из каталога `agent_data_sources` (SoT —
+  ADR-011, BL-009 M1) и guard-ом запрещает контент с необъявленными таблицами.
 - **Чего в схеме нет сознательно:** таблицы пользователей/сессий (история диалога —
   не-цель v1), таблицы кэша (Valkey — не истина, ADR-003), per-user GRANT-ов в
   PostgreSQL (права живут здесь, в настройках — ADR-005).
@@ -263,4 +272,4 @@ erDiagram
 
 ## Трассировка
 
-Ревизии: v1.9 (S09: agent_planner — INSERT-only на agent_edge_proposals, миграция 0009, ruling Q1/D-030) · v1.8 (S07: ревизия v2 демо-ребра e_campaigns_orders — first-touch в usage_notes, миграция 008) · v1.7 (S06 fix-волна: referenced_tables — инвариант прав по всем таблицам, миграции 006+007 — content-based backfill 0007 закрывает окно апгрейда) · v1.6 (S06: agent_knowledge — векторная память, dense-only, ruling W1) · v1.5 (контракт ребра R1, agent_edge_proposals, graph_version, аудит S8, pydantic N3) · Связанные ADR: ADR-003, ADR-004, ADR-005, ADR-006, ADR-007, ADR-009, ADR-011 · Канон: hw-01/README.md §3.3, §3.5
+Ревизии: v1.10 (S26: гибридная память — content_tsv+GIN, CHECK doc_kind + 'noise', миграция 0010, D-026/BL-007; replace-семантика upsert — BL-009 M3) · v1.9 (S09: agent_planner — INSERT-only на agent_edge_proposals, миграция 0009, ruling Q1/D-030) · v1.8 (S07: ревизия v2 демо-ребра e_campaigns_orders — first-touch в usage_notes, миграция 008) · v1.7 (S06 fix-волна: referenced_tables — инвариант прав по всем таблицам, миграции 006+007 — content-based backfill 0007 закрывает окно апгрейда) · v1.6 (S06: agent_knowledge — векторная память, dense-only, ruling W1) · v1.5 (контракт ребра R1, agent_edge_proposals, graph_version, аудит S8, pydantic N3) · Связанные ADR: ADR-003, ADR-004, ADR-005, ADR-006, ADR-007, ADR-009, ADR-011 · Канон: hw-01/README.md §3.3, §3.5

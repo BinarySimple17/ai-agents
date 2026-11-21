@@ -19,6 +19,7 @@ relationship — left+right; markdown — явные метаданные заг
 """
 
 import re
+from collections.abc import Sequence
 from pathlib import Path
 
 import psycopg
@@ -31,17 +32,34 @@ from text_to_sql_agent.application.ports.vector_store import (
     KnowledgeDocument,
     VectorStoreError,
 )
+from text_to_sql_agent.infrastructure.memory.errors import shorten_error_message
 
-# 7 бизнес-таблиц демо-схемы (миграция 0001); agent_* — служебные, не индексируются
-BUSINESS_TABLES = (
-    "customers",
-    "campaigns",
-    "products",
-    "orders",
-    "order_items",
-    "employees",
-    "bonuses",
-)
+
+def business_tables_from_catalog(dsn: str) -> tuple[str, ...]:
+    """SoT списка бизнес-таблиц — каталог `agent_data_sources` (ADR-011; BL-009 M1).
+
+    Раньше список дублировался константой (knowledge_sources / test_infra_schema /
+    SYSTEM_PROMPT / сиды): новая бизнес-таблица молча не попадала в DDL-доки.
+    v1 — все строки каталога (сид 0003: все таблицы демо-схемы, protocol='sql');
+    сортировка — детерминизм guard-regex и сообщений об ошибках.
+    """
+    query = "SELECT table_name FROM agent_data_sources ORDER BY table_name"
+    try:
+        with psycopg.connect(dsn, row_factory=dict_row, connect_timeout=CONNECT_TIMEOUT_S) as conn:
+            conn.execute(f"SET LOCAL statement_timeout = '{STATEMENT_TIMEOUT_S}s'")  # правило 9
+            rows = conn.execute(query).fetchall()
+    except psycopg.Error as exc:
+        raise VectorStoreError(
+            f"каталог источников недоступен: {shorten_error_message(str(exc))}"
+        ) from exc
+    tables = tuple(row["table_name"] for row in rows)
+    if not tables:
+        raise ValueError(
+            "каталог agent_data_sources пуст — индексировать нечего; засейте каталог "
+            "миграцией (снимок 0003) или добавьте источники (ADR-011)"
+        )
+    return tables
+
 
 # Блок CREATE TABLE в SCHEMA_SQL миграции 0001: от заголовка до `\n);`
 # (DEFAULT now() внутри строки не мешает — конец блока всегда на своей строке)
@@ -73,25 +91,33 @@ def _doc(
     )
 
 
-def _tables_field(field: str) -> list[str]:
+def _tables_field(field: str, *, business_tables: Sequence[str]) -> list[str]:
     """Позиция заголовка → список таблиц: «orders, customers» → [...]; «null» → []."""
     names = [part.strip() for part in field.split(",")]
     if names == ["null"]:
         return []
-    unknown = [name for name in names if name not in BUSINESS_TABLES]
+    unknown = [name for name in names if name not in business_tables]
     if unknown:
-        raise ValueError(f"заголовок объявляет таблицы вне демо-схемы: {unknown}")
+        raise ValueError(f"заголовок объявляет таблицы вне каталога источников: {unknown}")
     return names
 
 
-def check_declared_references(docs: list[KnowledgeDocument]) -> None:
+def check_declared_references(
+    docs: list[KnowledgeDocument], *, business_tables: Sequence[str]
+) -> None:
     """Guard инварианта прав: содержимое не упоминает таблицы вне referenced_tables.
 
     Вторая линия инварианта C1 (первая — фильтр в SQL поиска): кривой заголовок
     куратора (забыл дописать вторую таблицу) падает ЗДЕСЬ, при индексации, а не
-    течёт в контекст пользователя с чужими именами таблиц.
+    течёт в контекст пользователя с чужими именами таблиц. Универсален и для
+    шумового корпуса (ruling N2 S26: дистрактор объявляет таблицы, которые
+    упоминает, — NFR-4 без исключений).
     """
-    tables_re = re.compile(r"\b(" + "|".join(BUSINESS_TABLES) + r")\b")
+    if not business_tables:
+        raise ValueError("business_tables пуст — guard не может построить regex таблиц")
+    # re.escape: имена таблиц идут в regex как литералы — метасимвол в будущем
+    # имени не сделает guard непредсказуемым (m9 ревью S26)
+    tables_re = re.compile(r"\b(" + "|".join(re.escape(t) for t in business_tables) + r")\b")
     for doc in docs:
         mentioned = set(tables_re.findall(doc.content))
         undeclared = mentioned - set(doc.referenced_tables)
@@ -109,16 +135,20 @@ def check_declared_references(docs: list[KnowledgeDocument]) -> None:
 _FK_REFERENCE_RE = re.compile(r"\s*REFERENCES \w+\s*\([^)]*\)")
 
 
-def ddl_documents(migration_path: Path, *, model_version: str) -> list[KnowledgeDocument]:
+def ddl_documents(
+    migration_path: Path, *, model_version: str, business_tables: Sequence[str]
+) -> list[KnowledgeDocument]:
     """DDL бизнес-таблиц с комментариями колонок — из файла миграции 0001.
 
     REFERENCES-фрагменты вырезаются из контента (см. _FK_REFERENCE_RE) — иначе
     DDL orders проносил бы customers/campaigns в контекст пользователя без прав.
+    Список таблиц — из каталога agent_data_sources (BL-009 M1), не константой:
+    новая таблица в каталоге без CREATE TABLE в миграции падает ЗДЕСЬ.
     """
     sql = migration_path.read_text(encoding="utf-8")
     docs = []
     for table, body in _CREATE_TABLE_RE.findall(sql):
-        if table not in BUSINESS_TABLES:
+        if table not in business_tables:
             continue
         sanitized = _FK_REFERENCE_RE.sub("", body)
         content = (
@@ -135,7 +165,7 @@ def ddl_documents(migration_path: Path, *, model_version: str) -> list[Knowledge
                 model_version=model_version,
             )
         )
-    missing = set(BUSINESS_TABLES) - {d.table_name for d in docs}
+    missing = set(business_tables) - {d.table_name for d in docs}
     if missing:
         raise ValueError(
             f"миграция {migration_path.name}: не найдены CREATE TABLE для {sorted(missing)}"
@@ -160,7 +190,9 @@ def relationship_documents(dsn: str, *, model_version: str) -> list[KnowledgeDoc
             rows = conn.execute(query).fetchall()
     except psycopg.Error as exc:
         # Типизированная ошибка стыка (прецедент адаптера памяти), не сырой psycopg
-        raise VectorStoreError(f"реестр связей недоступен: {exc}") from exc
+        raise VectorStoreError(
+            f"реестр связей недоступен: {shorten_error_message(str(exc))}"
+        ) from exc
     for row in rows:
         lines = [
             f"[связь: {row['left_table']} → {row['right_table']}] "
@@ -183,7 +215,7 @@ def relationship_documents(dsn: str, *, model_version: str) -> list[KnowledgeDoc
 
 
 def markdown_documents(
-    path: Path, *, doc_kind: DocKind, model_version: str
+    path: Path, *, doc_kind: DocKind, model_version: str, business_tables: Sequence[str]
 ) -> list[KnowledgeDocument]:
     """Разделы `## [термин|few-shot: имя] — таблица|таблицы …` кураторского файла.
 
@@ -191,7 +223,8 @@ def markdown_documents(
     одна таблица, список через запятую (кросс-табличный контент) или `null`
     (общий документ). doc_kind — явно (опечатка в префиксе не должна молча
     проиндексировать few-shot как глоссарий — ревью S06 Minor-4); сторонний
-    DocKind не маппится молча (ревью-2: неверный source_ref-префикс).
+    DocKind не маппится молча (ревью-2: неверный source_ref-префикс). Таблицы
+    заголовков сверяются с каталогом agent_data_sources (BL-009 M1).
     """
     if doc_kind not in (DocKind.GLOSSARY, DocKind.FEW_SHOT):
         raise ValueError(
@@ -206,7 +239,7 @@ def markdown_documents(
     docs = []
     for i, match in enumerate(matches):
         name, field = match.group(1), match.group(2)
-        tables = _tables_field(field)
+        tables = _tables_field(field, business_tables=business_tables)
         body_end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
         content = text[match.start() : body_end].strip()
         docs.append(

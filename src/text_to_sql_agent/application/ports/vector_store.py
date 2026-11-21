@@ -1,8 +1,11 @@
 """Порт `VectorStore` — контракт векторной памяти знаний (S00 стык; ADR-003 §4).
 
-Поиск — **dense-only** на вехе V2 (решение владельца 2026-11-20, D-026 доп. 2):
-cosine distance по эмбеддингу; механика качества (гибрид FTS+RRF, шумовой корпус,
-реранкер) — веха V3 (BL-007), порт абстрагирует способ поиска.
+Поиск — **гибридный** (S26, feat-021; канон D-026 с дополнениями, BL-007):
+(A) dense — pgvector cosine; (B) ключевая нога — PostgreSQL FTS (ts_rank по
+generated-колонке content_tsv) по тексту запроса. Слияние — взвешенный RRF
+внутри адаптера; порт абстрагирует способ поиска (сигнатура несёт оба входа:
+`query` — текст для FTS-ноги, `query_embedding` — вектор для dense; прецедент
+расширения сигнатуры — N1/S06, синк строки порта в S00 тем же коммитом).
 
 Права — deny-by-default (ADR-005 «граница знаний = граница прав», NFR-4
 ACL-leak = 0): фильтр прав живёт в самом запросе поиска (джойн с правами,
@@ -11,9 +14,14 @@ ADR-003 §4), не пост-фильтрация выдачи. Инвариан�
 кураторский few-shot «выручка по кампаниям» ссылается на orders И campaigns —
 пользователь без прав на campaigns документ не видит (ревью S06 Critical-1).
 
+Запись — replace-семантика полной коллекции (BL-009 M3, ruling N1 ARCH-GATE
+S26): upsert всех переданных документов + транзакционное удаление устаревших
+source_ref переиндексируемых неймспейсов (префикс до ':') в одной транзакции.
+Контент нормализуется при записи (снятие U+0301, ё→е — D-026 доп. 1(2)).
+
 Ошибки стыка типизированы (прецедент `SQLExecutionError`): `VectorStoreError` —
 сбой хранилища (соединение/БД); нарушение контракта вызова (размерность,
-параллельные списки) — ValueError.
+параллельные списки, пустой текст запроса) — ValueError.
 
 DTO стыка — pydantic и живут здесь (прецедент: `sql_executor.py`).
 """
@@ -38,12 +46,15 @@ RELATIONSHIP_SOURCE_REF_PREFIX = "rel:"
 
 
 class DocKind(StrEnum):
-    """Тип документа знаний — ровно 4 из feat-006 (ADR-003 §4; hw-plan §3)."""
+    """Тип документа знаний: 4 канонических из feat-006 (ADR-003 §4) + шумовой
+    корпус-дистрактор feat-021 (S26; D-026: ранжируется вместе с реальными,
+    в промпт не попадает — фильтр при сборке контекста)."""
 
     DDL = "ddl"  # DDL таблицы с комментариями колонок
     RELATIONSHIP = "relationship"  # связь таблиц с семантикой (meaning/usage_notes)
     GLOSSARY = "glossary"  # бизнес-термин → определение
     FEW_SHOT = "few_shot"  # кураторский пример «вопрос → SQL» (автонаполнение запрещено)
+    NOISE = "noise"  # шумовой корпус-дистрактор (генератор, фиксированный сид)
 
 
 class VectorStoreError(Exception):
@@ -58,12 +69,15 @@ class KnowledgeDocument(BaseModel):
     doc_kind: DocKind
     table_name: str | None = None  # якорь-таблица (null = общий документ); не фильтр
     # Таблицы, упомянутые в содержимом: права проверяются по ВСЕМ (NFR-4 ACL-leak=0,
-    # ревью S06 Critical-1). Пусто = общий документ без табличных ссылок.
+    # ревью S06 Critical-1). Пусто = общий документ без табличных ссылок. Шум
+    # объявляет таблицы, которые упоминает (ruling N2 S26: guard универсален).
     referenced_tables: list[str] = Field(default_factory=list)
     content: str = Field(min_length=1)
     model_version: str = Field(min_length=1)
-    source_ref: str = Field(min_length=1)  # ключ идемпотентного upsert
-    score: float | None = None  # близость к запросу — пишет адаптер при поиске
+    source_ref: str = Field(min_length=1)  # ключ replace-идемпотентного upsert
+    # Релевантность от адаптера при поиске: гибрид — RRF-оценка (порядка
+    # 1/(RRF_K + rank), не cosine); consumers используют порядок, не шкалу
+    score: float | None = None
 
     @model_validator(mode="after")
     def _anchor_is_declared(self) -> "KnowledgeDocument":
@@ -79,16 +93,26 @@ class KnowledgeDocument(BaseModel):
 
 @runtime_checkable
 class VectorStore(Protocol):
-    """Векторная память: идемпотентная индексация + поиск с фильтром прав.
+    """Векторная память: replace-идемпотентная индексация + гибридный поиск с
+    фильтром прав.
 
-    `upsert` — параллельные списки (documents[i] ↔ embeddings[i]); запись
-    идемпотентна по source_ref (повторная индексация обновляет, не дублирует).
-    `search` — dense-поиск: top_k документов, у которых права ctx.user_id
-    покрывают все referenced_tables.
+    `upsert` — параллельные списки (documents[i] ↔ embeddings[i]); replace-
+    семантика полной коллекции: все переданные документы пишутся (update по
+    source_ref), устаревшие source_ref переиндексируемых неймспейсов удаляются
+    в той же транзакции (BL-009 M3). `search` — гибрид dense+FTS: top_k
+    документов, у которых права ctx.user_id покрывают все referenced_tables.
+    Диапазон выдачи: каждая нога отдаёт не больше MAX_LEG_DEPTH строк, поэтому
+    top_k > 2×MAX_LEG_DEPTH молча недостижим (выдача короче запрошенного);
+    канонные вызовы top_k ≤ 8 (S24) при глубине ноги 50 (m17 ревью S26).
     """
 
     def upsert(self, documents: list[KnowledgeDocument], embeddings: list[list[float]]) -> int: ...
 
     def search(
-        self, query_embedding: list[float], *, ctx: RunContext, top_k: int
+        self,
+        query: str,
+        query_embedding: list[float],
+        *,
+        ctx: RunContext,
+        top_k: int,
     ) -> list[KnowledgeDocument]: ...
