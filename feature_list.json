@@ -515,8 +515,8 @@
         "feat-006",
         "feat-013"
       ],
-      "state": "active",
-      "status": "in_progress",
+      "state": "passing",
+      "status": "done",
       "layers": [
         {
           "label": "layer-1-static",
@@ -528,7 +528,8 @@
           "cmd": "uv run pytest src/tests/unit/test_agent_flow.py -q",
           "repair": "Read failing test (LLM/хранилище мокаются, S00 правило 7); fix flow handling and re-run."
         }
-      ]
+      ],
+      "evidence": "command «uv run pytest src/tests/unit/test_agent_flow.py -q» exited 0 at 2026-11-21T12:40:07+03:00 (scripts/verify-feature.sh)"
     }
   ]
 }
