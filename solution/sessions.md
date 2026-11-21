@@ -12,7 +12,7 @@
 > В разделе — ТОЛЬКО статус последней закрытой сессии; подробности исполнения —
 > в файле самой сессии (закрытые переносятся `make archive` в sessions/archive/).
 
-- Последняя ✅: S25 — 2026-11-21: feat-020 объединённый контур ДЗ-03 → passing (retrieval-блок в промпт тул-контура, цикл ходов на complete_stream — тул-дельты склеиваются в StreamFinal.tool_calls и исполняются, --plain сохраняет ДЗ-02, --retrieve упразднён); layer-3: LLM_REASONING_EFFORT (reasoning qwen3 глушит контент-стрим — off + guardrail счёта сущностей) и ConsoleTracer-фикс (0 строк при непустых колонках); артефакты hw-03 пересняты (71 чанк, «5 клиентов»); два ревью «With fixes» закрыты fix-волнами (a1c9d6f, 10f5b47; I1 re-review опровергнут трейсом); 259 passed
+- Последняя ✅: S07 — 2026-11-21: feat-007 граф связей Neo4j → passing (порт SchemaGraphStore + адаптер neo4j_graph_store: синк полной перезагрузкой ТОЛЬКО по вьюхе agent_relationships_active [ruling R1 canon-check: реестр — единственный SoT, FK — не ребро], Neo4j хранит {rel_id, вес} без семантики [R2], k путей 1..3 хопов детерминированным ранжированием, path_semantics из PG fail-closed на дрейф, graph_version по счётчику relationships; миграция 008 — first-touch демо-ребра, er v1.8; make sync-graph; BL-003 п.3 — agent_planner без новых грантов; ревью «With fixes» ×2 → fix-волны d4b7084/99d57d4: skip-гвард с subprocess-регрессом, weight-валидация, except + DriverError с fake-driver-регрессом; 283 passed)
 ## Владельцы треков
 
 | Трек | Владелец | Зона |
@@ -41,7 +41,7 @@
 | S04 | sessions/S04_session.md | State machine LangGraph: каркас графа, CLI e2e на заглушках | агент | S01, S03 | feat-004 — закрывает | 1.5 | P0 | ⬜ |
 | S05 | sessions/S05_session.md | resolve_access: права из таблиц настроек | агент | S02, S04 | feat-005 — закрывает | 1 | P0 | ⬜ |
 | S06 | [sessions/S06_session.md](sessions/archive/S06_session.md) | Векторная память pgvector + фильтр прав (dense-only, фильтр прав по всем таблицам документа; retrieval-контур ДЗ-03) | агент | S02 | feat-006 — закрывает | 1.5 | P0 | ✅ 2026-11-20 (feat-006 passing; ARCH-GATE rulings W1 planner-DSN/W2 --user; REVIEW-GATE «Принято» после 2 fix-волн — C1 referenced_tables/0007; 197 passed) |
-| S07 | [sessions/S07_session.md](sessions/S07_session.md) | Граф связей Neo4j: снапшот реестра (active-рёбра, graph_version), k взвешенных путей + ранжирование топ-5, синк + reconciliation (ADR-006 §4.3) | агент | S02 | feat-007 — закрывает | 1.5 | P0 | ⬜ |
+| S07 | [sessions/S07_session.md](sessions/S07_session.md) | Граф связей Neo4j: снапшот реестра (active-рёбра, graph_version), k взвешенных путей + ранжирование топ-5, синк + reconciliation (ADR-006 §4.3) | агент | S02 | feat-007 — закрывает | 1.5 | P0 | ✅ 2026-11-21 (feat-007 passing; ARCH-GATE violations→rulings R1–R3; REVIEW-GATE 2 fix-волны d4b7084/99d57d4; 283 passed; BL-003 п.3 закрыт, BL-011 открыт) |
 | S08 | sessions/S08_session.md | clarify: допущения / один уточняющий вопрос | агент | S04, S03 | feat-008 — закрывает | 1 | P0 | ⬜ |
 | S09 | [sessions/S09_session.md](sessions/S09_session.md) | plan_joins: JoinPlan ≤ 4 таблиц по edge_id активных рёбер; валидация плана + ретраи M1 (D-016: попытка 2 — та же модель + текст ошибки, попытка 3 — уровень вверх) | агент | S06, S07 | feat-009 — закрывает | 1.5 | P0 | ⬜ |
 | S10 | sessions/S10_session.md | generate_sql: наполнение скелета (build_skeleton — код, skeleton_hash) по JoinPlan; ретраи M1: попытка 2 — та же модель + текст ошибки, попытка 3 — эскалация на флагман | агент | S09 | feat-010 — закрывает | 1 | P0 | ⬜ |

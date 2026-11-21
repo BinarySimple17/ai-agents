@@ -164,9 +164,9 @@
       "dependencies": [
         "feat-002"
       ],
-      "state": "active",
-      "status": "in-progress",
-      "evidence": "",
+      "state": "passing",
+      "status": "done",
+      "evidence": "command «make infra-up && uv run pytest src/tests/integration/test_join_graph.py -q» exited 0 at 2026-11-21T15:58:11+03:00 (scripts/verify-feature.sh)",
       "layers": [
         {
           "label": "layer-1-static",

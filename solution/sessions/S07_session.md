@@ -1,6 +1,6 @@
 # S07 — Граф связей Neo4j: снапшот реестра, синк + reconciliation (веха V3, ДЗ-04)
 
-Этап: Веха V3 (ДЗ-04: графовая половина памяти) | Владелец: агент | Зависимости: S02 | Оценка: 1.5 | Статус: ◐ в работе (старт 2026-11-21)
+Этап: Веха V3 (ДЗ-04: графовая половина памяти) | Владелец: агент | Зависимости: S02 | Оценка: 1.5 | Статус: ✅ 2026-11-21 (feat-007 passing: make verify-feature — 12 integration; ревью 2 fix-волн; 283 passed)
 Фичи: feat-007 — Граф связей (Neo4j); её зависимость feat-002 уже в passing
 Роль по фиче: закрывает feat-007 — финальная сессия, через make verify-feature
 
@@ -164,7 +164,7 @@ grep -c "shortestPath\|graph" hw-04/README.md   # раздел существу�
 - [x] Фильтр прав: пути через недоступные таблицы не возвращаются (deny-by-default)
 - [x] BL-003 п.3 решён (роль/DSN чтения реестра; GRANT миграцией) — отражён в отчёте
 - [x] Раздел hw-04 «Связи между объектами» написан
-- [ ] Фича закрыта: `make verify-feature F=feat-007` → PASS, state=passing с evidence
+- [x] Фича закрыта: `make verify-feature F=feat-007` → PASS, state=passing с evidence
 
 ## Ловушки
 
@@ -187,7 +187,7 @@ grep -c "shortestPath\|graph" hw-04/README.md   # раздел существу�
 ## Гейты субагентов (заполняется по факту, до закрытия сессии)
 
 - ARCH-GATE: ✅ violations → rulings применены ДО кода (canon-check architect, 2026-11-21): R1-blocker — источник синка ТОЛЬКО вьюха `agent_relationships_active` (ADR-006 v1.3: реестр — единственный источник рёбер, FK каталога — генератор кандидатов владельцу, НЕ ребро), reconciliation «активные строки реестра = рёбра графа» (S00:123), формулировки Task 2/5d/критериев сессии синхронизированы; R2 — свойства ребра в Neo4j {rel_id, направление, weight} без join_type (ADR-003:89 — граф хранит пары+edge_id; join_type приходит из PG через path_semantics); R3 — синк S00 тем же коммитом: строка порта (S00:85) + точки входа (S00:53, sync_graph.py) + подкаталог infrastructure/graph/ (S00:71); notes приняты: чтение синка под agent_planner (GRANT 0002 есть — BL-003 п.3 решён без новых грантов), полная перезагрузка снапшота допустима (комментарий «почему»)
-- REVIEW-GATE: N/A — сессия не начата (ревью диапазона — по факту закрытия)
+- REVIEW-GATE: ✅ Ready to merge: Yes — ревью 1 «With fixes» (1C/3I/11M) → fix-волна d4b7084; scoped re-review «With fixes» (C1/I2–I4/minors закрыты по-настоящему, живые пробы SHOW CONSTRAINTS/transaction_isolation; НОВЫЙ Important: except пропускал DriverError/ServiceUnavailable — neo4j 6.x DriverError вне Neo4jError) → fix-волна-2 99d57d4: except (Neo4jError, DriverError, OSError) + РЕГРЕСС test_neo4j_graph_store_errors.py на fake-driver (3 failed на до-фиксовом HEAD — проверено, зелёные после) + session(database=) + дубль константы; критерий ревьюера «участок + зелёный make check» выполнен; 283 passed; диапазон 27897b6..99d57d4
 
 ## Отчёт по сессии (заполняется по факту)
 
