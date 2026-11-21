@@ -26,13 +26,15 @@ SQL: SELECT COUNT(*) AS orders_count
 ## [few-shot: выручка-по-кампаниям] — таблицы orders, campaigns
 
 Вопрос: Какая выручка по каждой рекламной кампании?
-SQL: SELECT ca.name AS campaign, SUM(o.total) AS revenue
+SQL: SELECT ca.name AS campaign,
+            SUM(CASE WHEN o.status IN ('paid', 'shipped') THEN o.total END) AS revenue
      FROM campaigns ca
      LEFT JOIN orders o ON o.campaign_id = ca.campaign_id
      GROUP BY ca.name
      ORDER BY revenue DESC;
-Комментарий: LEFT JOIN, чтобы заказы конкретной кампании не терялись; выручка
-— SUM(orders.total) (см. глоссарий «выручка»).
+Комментарий: выручка — по глоссарию «выручка» (paid + shipped, НЕ брутто по
+всем статусам); LEFT JOIN, чтобы кампании без выручки не терялись —
+cancelled-кампании покажут NULL, а не исчезнут из отчёта.
 
 ## [few-shot: не-премированы] — таблицы employees, bonuses
 
