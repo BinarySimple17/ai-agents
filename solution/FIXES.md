@@ -149,4 +149,4 @@
 
 **Где исправлено:** [docs/diagrams/state-agent.md](../docs/diagrams/state-agent.md) → v1.5 (входящие рёбра overflow/short_circuit + ребро шагового цикла merge_results → generate_step_sql + примечание «Чтение схемы»), `solution/sessions/S00_session.md` стык 1 (обвязочные поля state, состав терминалов, гвард капов, перехват GraphRecursionError в orchestration — ruling R2), orchestration/routing.py (константы флагов — единственный источник имён).
 
-**Статус:** решение по (a)/(b) grounded в hw-01 §3.5.4 (норматив для шагового цикла) и применено в каркасе S04 тем же коммитом; финальное подтверждение владельца — при clock-out S04 (REVIEWS S04).
+**Статус:** ЗАКРЫТ — подтверждение владельца 2026-11-21 (сразу после clock-out S04): правка диаграммы v1.5 и wiring feat-004 остаются каноном (диаграмма v1.4 → v1.5 не откатывается).
