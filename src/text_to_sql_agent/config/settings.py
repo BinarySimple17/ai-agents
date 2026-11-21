@@ -101,6 +101,25 @@ class Settings(BaseSettings):
             )
         return SecretStr(raw)
 
+    @field_validator("llm_reasoning_effort")
+    @classmethod
+    def _reasoning_effort_canonical(cls, value: str) -> str:
+        # Fail-fast, как соседние валидаторы: опечатка/хвостовой пробел в .env
+        # иначе дали бы HTTP 400 на КАЖДОМ вызове (400 не ретраится) — деградацию
+        # с невнятной причиной (ревью S25 re-review I2). Allowlist — канонический
+        # набор SDK ReasoningEffort; LM Studio дополнительно знает "on"/"off",
+        # их "off" соответствует "none" (ревью владельцем настройки шлюза)
+        normalized = value.strip().lower()
+        if not normalized:
+            return ""  # пусто — параметр не отправляется (дефолт)
+        allowed = {"none", "minimal", "low", "medium", "high", "xhigh"}
+        if normalized not in allowed:
+            raise ValueError(
+                f"llm_reasoning_effort={value!r} вне канонического набора {sorted(allowed)} "
+                "(или пусто — параметр не отправляется)"
+            )
+        return normalized
+
     # --- Роли моделей (ADR-007 §4): имя модели — только из Settings, не хардкод ---
     model_cheap: str
     model_mid: str

@@ -1,3 +1,4 @@
 **Ответ: 5 клиентов из РФ пришло через рекламные кампании.**
 
-Это означает, что у 5 уникальных клиентов из России есть заказы, привязанные к одной или нескольким рекламным кампаниям (`campaign_id IS NOT NULL`).
+*   **SQL:** `SELECT COUNT(DISTINCT c.customer_id) FROM customers c JOIN orders o ON ... WHERE c.country = 'RU' AND o.campaign_id IS NOT NULL`
+*   **Результат:** 5 уникальных клиентов.

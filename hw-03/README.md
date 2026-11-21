@@ -19,7 +19,7 @@
 | Фиксация архитектуры | [ADR-003](../docs/adr/ADR-003-single-postgres.md) (pgvector как истина данных), [ADR-005](../docs/adr/ADR-005-rbac-as-data.md) (права проверяются в SQL поиска), [ADR-008](../docs/adr/ADR-008-structured-outputs-tools.md) (тулы параметром), выжимка внизу страницы |
 
 Запись стриминга для сдачи: [stream-timeline.txt](stream-timeline.txt) показывает
-прибытие чанков с метками времени (52 чанка ответа) и структуру ходов
+прибытие чанков с метками времени (71 чанк ответа) и структуру ходов
 (agent.retrieve → tool_call → observation → answer), [stream-stdout.txt](stream-stdout.txt)
 и [stream-stderr.txt](stream-stderr.txt) демонстрируют разделение ответа и
 служебных этапов по потокам (D-022). Терминальную запись живого прогона (видео
@@ -48,16 +48,17 @@ uv run --env-file .env python -m apps.cli --user u_logist \
 ## Доказательства прогона 2026-11-21
 
 - [stream-stdout.txt](stream-stdout.txt) содержит только ответ: «**Ответ: 5
-  клиентов из РФ…**» — реальное число из БД (358 байт). Через пайп `| cat`
-  наружу выходит ровно ответ и ничего больше (D-022).
+  клиентов из РФ…**» с SQL и результатом — реальное число из БД (323 байта).
+  Через пайп `| cat` наружу выходит ровно ответ и ничего больше (D-022).
 - [stream-stderr.txt](stream-stderr.txt) показывает структуру ходов в stderr:
-  retrieval (8 документов: few-shot «заказы-из-РФ», глоссарии «справочник
-  стран»/«клиент из РФ»/«заказ вне кампании», DDL campaigns/customers, …),
-  ход 1 — вызов модели (1775→73 ток · первый чанк 419мс) → `run_sql: SELECT
+  retrieval (список 8 документов — в [stream-timeline.txt](stream-timeline.txt)),
+  ход 1 — вызов модели (1769→73 ток · первый чанк 252мс) → `run_sql: SELECT
   COUNT(DISTINCT c.customer_id)…` → Observation «5», ход 2 — стрим объяснения
-  (первый чанк 326мс), `✓ ответ (agent_stream)`.
-- [stream-timeline.txt](stream-timeline.txt): 52 чанка за 4.9с с метками
-  времени, события этапов (agent.start/retrieve/tool_call/observation/answer).
+  (первый чанк 173мс), `✓ ответ (agent_stream)`.
+- [stream-timeline.txt](stream-timeline.txt): 71 чанк за 2.5с с метками
+  времени, события этапов (agent.start/retrieve/tool_call/observation/answer),
+  полный SQL с обоими фильтрами (stderr режет его на 100 символах — лимит
+  консольного рендера S21).
 - [stream-quiet-stdout.txt](stream-quiet-stdout.txt): при `--quiet` stderr пуст
   (0 байт), ответ печатается как обычно.
 
@@ -68,11 +69,13 @@ LM Studio отдал его терминальным чанком, поэтом�
 
 ## Качество ответа: retrieval-контекст работает
 
-Фильтр `country = 'RU'` (кодами, не «Россия») взят из глоссария, условие
-`campaign_id IS NOT NULL` — из few-shot «заказ вне кампании» (INNER JOIN
-отбросил бы заказы вне кампаний молча), паттерн `COUNT(DISTINCT …)` — few-shot
-«заказы-из-РФ» + guardrail промпта. Ответ = 5 подтверждён независимым
-прогоном в ДЗ-02 (тул-контур без retrieval отвечает тем же числом).
+Выполненный SQL (полная версия — в [stream-timeline.txt](stream-timeline.txt)):
+`SELECT COUNT(DISTINCT c.customer_id) … WHERE c.country = 'RU' AND
+o.campaign_id IS NOT NULL`. Код страны — из глоссария, фильтр кампании —
+из few-shot «заказ вне кампании» (INNER JOIN-ловушка: без него заказы вне
+кампаний учитывались бы молча), счёт уникальных сущностей — guardrail промпта
+(S25). Число 5 независимо подтверждено журналом S24 (верификация находки #2,
+тул-контур без retrieval).
 
 Reasoning-канал: с гашением thinking модель стримит финальный ответ чанками;
 без него (reasoning on) тот же вопрос отвечает верно, но финал приходит

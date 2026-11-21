@@ -367,6 +367,14 @@ def test_system_prompt_carries_dictionary_codes() -> None:
     assert "SELECT DISTINCT" in SYSTEM_PROMPT
 
 
+def test_system_prompt_carries_counting_guardrail() -> None:
+    # Re-review S25 m4 (layer-3): без thinking модель считала строки JOIN
+    # (COUNT(*) → «100 клиентов» вместо 5) и теряла фильтры вопроса —
+    # guardrail счёта сущностей пинен: удаление строки иначе пройдёт молча
+    assert "COUNT(DISTINCT" in SYSTEM_PROMPT
+    assert "в WHERE" in SYSTEM_PROMPT
+
+
 def test_main_quiet_flag_disables_console_trace(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     # Ревью S21 (Minor): проводка --quiet → build_container(console_trace=False)
     # держалась только живым прогоном; переворот флага при рефакторинге — тест

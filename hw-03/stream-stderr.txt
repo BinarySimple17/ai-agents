@@ -1,11 +1,11 @@
 ▶ Вопрос: Сколько клиентов из РФ пришло из рекламных кампаний всего?
   · agent.retrieve
 ─ Ход 1
-  · qwen3.8-9b · 1775→73 ток · 2.2с · 0.00₽ · первый чанк 419мс
+  · qwen3.8-9b · 1769→73 ток · 1.1с · 0.00₽ · первый чанк 252мс
   → run_sql: SELECT COUNT(DISTINCT c.customer_id) AS clients_count FROM customers c JOIN orders o ON o.customer_…
   ← 1 строк (усечён: нет)
     │ clients_count │
     │ 5             │
 ─ Ход 2
-  · qwen3.8-9b · 1921→52 ток · 2.5с · 0.00₽ · первый чанк 326мс
+  · qwen3.8-9b · 1915→71 ток · 1.3с · 0.00₽ · первый чанк 173мс
 ✓ ответ (agent_stream)
