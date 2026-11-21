@@ -9,6 +9,7 @@ state СИМУЛИРУЮТ кодовое решение будущих сесс
 
 from typing import Any
 
+import pytest
 from langgraph.errors import GraphRecursionError
 
 from text_to_sql_agent.application.ports.llm_provider import BudgetExceededError, LLMRequestError
@@ -17,6 +18,7 @@ from text_to_sql_agent.application.use_cases.answer_question import AnswerQuesti
 from text_to_sql_agent.domain.entities import TERMINAL_OUTCOMES
 from text_to_sql_agent.orchestration.graph import RETRY_GATES, build_fsm_app
 from text_to_sql_agent.orchestration.routing import (
+    LLM_NODES,
     MAX_NODE_RETRIES,
     FSMGuardCaps,
     attempts_used,
@@ -221,6 +223,18 @@ class TestGlobalCaps:
         final = _invoke()
         assert final["budget_used"]["llm_calls"] == 4
 
+    @pytest.mark.parametrize("node", sorted(LLM_NODES))
+    def test_every_llm_node_pays_one_call(self, node: str) -> None:
+        # Ревью-2 минор-3: инвариант «узел ∈ LLM_NODES ⟺ заглушка платит» —
+        # дрейф (добавили узел в LLM_NODES, забыли bump) остаётся зелёным
+        # только без этого теста; гвард капов тогда молча протекает
+        from text_to_sql_agent.application.services.stub_nodes import STUB_NODES
+
+        state = initial_state(QUESTION)
+        updates = STUB_NODES[node](state)
+        budget = updates.get("budget_used") or state.get("budget_used") or {}
+        assert budget.get("llm_calls") == 1, f"заглушка {node} не платит вызовом"
+
     def test_retry_edge_is_guarded_by_caps(self) -> None:
         # Ревью I1(b), регрессия: ребро ГЕЙТА ретрая — тоже вход в LLM-узел.
         # Счётчик подобран так, чтобы кап исчерпался на первом входе plan_joins:
@@ -265,9 +279,11 @@ class TestBinderTransitionFlags:
             "visited_nodes": ["execute_sql"],  # ре-вход
             "route_flags": {"step_done": True, "steps_pending": True, "acl_denied": False},
         }
+        state["route_flags"]["probe_lost_join"] = True  # вердикт пробы (S14)
         updates = binder(state)
         assert "step_done" not in updates["route_flags"]
         assert "steps_pending" not in updates["route_flags"]
+        assert "probe_lost_join" not in updates["route_flags"]  # одноразовый (ревью-2)
         assert updates["route_flags"]["acl_denied"] is False  # решенческие не тронуты
 
     def test_first_entry_keeps_injected_flags(self) -> None:

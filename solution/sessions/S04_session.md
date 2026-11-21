@@ -67,7 +67,7 @@ uv run pytest src/tests/unit/test_domain_entities.py -q   # AgentState: сост
 (`resolve_access, clarify, plan_joins, build_skeleton, plan_query, generate_sql,
 generate_step_sql, validate_sql, check_cost, execute_sql, merge_results,
 compact_result, diagnose_error, interpret_result, degrade`) — заглушки-транзиты.
-`routing.py`: условные рёбра по state-agent v1.4 — clarify-ветка (флаг из заглушки),
+`routing.py`: условные рёбра по state-agent v1.5 — clarify-ветка (флаг из заглушки),
 validate-ветка (ok/галлюцинация/чужие данные), probe после execute при 0 строк,
 терминальные исходы `done/degrade/short_circuit/overflow/fail/rejected/degraded_out/
 budget_stop/clarification` (END с различимым payload-типом исхода, не traceback).
@@ -117,7 +117,7 @@ uv run python -m apps.cli "Сколько заказов у клиентов и�
 - [ ] `uv run python -m apps.cli "<вопрос>"` (FSM-режим) прогоняет вопрос через все узлы-заглушки в правильном порядке и печатает результат (behavior feat-004)
 - [ ] LLM не может изменить маршрут: route_flags/счётчики пишет только код, тест-инвариант (behavior feat-004)
 - [ ] Попытки ограничены двумя уровнями кода (per-node ≤ 3 + recursion_limit) и глобальными капами ≤ 8 вызовов / ≤ 90 s / ≤ 2 ₽ (behavior feat-004)
-- [ ] Все терминальные исходы FSM (state-agent v1.4) достижимы и различимы в payload
+- [ ] Все терминальные исходы FSM (state-agent v1.5) достижимы и различимы в payload
 - [ ] Дефолтное поведение CLI (тул-луп feat-020, --plain) не изменилось — артефакты ДЗ-02/03 живы
 - [ ] Фича закрыта: `make verify-feature F=feat-004` → PASS, state=passing с evidence
 

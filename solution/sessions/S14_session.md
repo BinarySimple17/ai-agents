@@ -34,7 +34,7 @@ execute_sql (feat-013) встаёт в граф; probe COUNT — код посл
    не traceback наверх (behavior фичи).
 5. Пустой результат ≠ ошибка: 0 строк → probe COUNT (код, не LLM): подтверждённый
    ноль — валидный пустой ответ (short_circuit-путь), подозрение на потерянный
-   джойн (COUNT по факту > 0 в связанной таблице) → diagnose_error (state-agent v1.4).
+   джойн (COUNT по факту > 0 в связанной таблице) → diagnose_error (state-agent v1.5).
 
 ## Предусловия
 
@@ -113,7 +113,7 @@ make infra-up && uv run pytest src/tests/integration/test_retry_cycle.py -q   # 
 - [ ] Попытка 2 — та же модель + текст ошибки, попытка 3 — эскалация после проверки остатка бюджета (behavior feat-014)
 - [ ] Исчерпание — валидный отказ с уточняющим вопросом, не бесконечный цикл; recursion_limit — второй предохранитель (behavior feat-014)
 - [ ] Узел execute_sql подключён в FSM: SQL-ошибка → diagnose_error, 0 строк → probe COUNT (feat-013 в V4, behavior feat-014)
-- [ ] Probe: реально пусто — валидный пустой ответ; подозрение на потерянный джойн — в diagnose_error (state-agent v1.4)
+- [ ] Probe: реально пусто — валидный пустой ответ; подозрение на потерянный джойн — в diagnose_error (state-agent v1.5)
 - [ ] Фича закрыта: `make verify-feature F=feat-014` → PASS, state=passing с evidence
 
 ## Ловушки

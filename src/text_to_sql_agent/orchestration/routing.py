@@ -53,6 +53,8 @@ TRANSITION_FLAGS: frozenset[str] = frozenset(
         FLAG_STEPS_PENDING,
         FLAG_STEP_EMPTY_KEYSET,
         FLAG_STEP_KEYSET_OVERFLOW,
+        FLAG_PROBE_LOST_JOIN,  # вердикт пробы (S14) — одноразовый: стейл-True
+        # после ретрая уводил бы следующий прогон в diagnose_error мимо пробы
     }
 )
 
@@ -288,7 +290,7 @@ def route_degrade(state: State) -> str:
 
 
 def make_guarded_route(
-    route: Callable[[State], str], caps: FSMGuardCaps, llm_targets: set[str]
+    route: Callable[[State], str], caps: FSMGuardCaps, llm_targets: frozenset[str]
 ) -> Callable[[State], str]:
     """Обвязка условного ребра к узлу с LLM: глобальные капы — до вызова узла.
 

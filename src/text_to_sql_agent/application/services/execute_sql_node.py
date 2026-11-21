@@ -2,7 +2,7 @@
 
 Узел читает `sql` из state и пишет `rows`/`row_count`/`truncated`/`error`; переходы
 назначает граф (ADR-002 — модель не рулит маршрутом), здесь — заготовка условного
-ребра по FSM state-agent v1.4: SQL-ошибка → `diagnose_error`, 0 строк → `probe`
+ребра по FSM state-agent v1.5: SQL-ошибка → `diagnose_error`, 0 строк → `probe`
 (probe COUNT — не отдельный узел), успех → `compact_result`. Подключение к графу —
 V4. Пустой результат — валидный исход (S00 правило 8), не ошибка.
 """

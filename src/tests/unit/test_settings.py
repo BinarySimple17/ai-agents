@@ -276,7 +276,7 @@ def test_reasoning_effort_env_binding() -> None:
 
 
 def test_fsm_caps_defaults_are_canon() -> None:
-    # Глобальные капы FSM-прогона (S04, state-agent v1.4): ≤ 8 вызовов / ≤ 90 s;
+    # Глобальные капы FSM-прогона (S04, state-agent v1.5): ≤ 8 вызовов / ≤ 90 s;
     # recursion_limit — запас над худшими ретраями (обоснование — settings.py)
     settings = Settings(**REQUIRED_ENV, _env_file=None)
     assert settings.fsm_max_llm_calls == 8
