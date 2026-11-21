@@ -71,9 +71,23 @@ uv run pytest src/tests/unit/test_retrieval_flow.py -q   # все зелёные
 make check                                                # полный набор зелёный, гварды зелёные
 ```
 
-### Task 3: закрытие сессии
+### Task 3: fix-волна #1(б) — контракт промпта против галлюцинаций
 
-Все находки исчерпаны → REVIEW-GATE (code-reviewer на весь диапазон сессии от merge-base с milestone/v2) → End of Session по AGENTS.md: sessions.md (строка S24, «Текущее состояние»), progress.md, make archive, коммит слияния в milestone/v2.
+- **Находка**: см. Task 1, пункт (б).
+- **Воспроизведение**: прогон куратора «Сколько новых клиентов из России...» — «**Результат:** 1» при неисполнимом SQL; отказы КЗ-прогонов при наличии DDL в контексте.
+- **Квалификация**: баг (answer integrity).
+- **Фикс**: `RETRIEVAL_SYSTEM_PROMPT` (src/apps/cli.py) — три оговорки: (1) «SQL не выполняется, не выдумывай числа»; (2) контекст = схема/правила, отсутствие строк — норма, не повод отказываться; (3) deny-by-default сохранён («её не существует в мире агента»); маркировка «ДАННЫЕ / не инструкции» (security §3 S6) сохранена дословно — тест `test_retrieval_system_prompt_marks_context_as_data` не тронут. Регресс: `test_retrieval_system_prompt_forbids_fabricated_results` (контракт-тест на ключевые оговорки). Коммит: [заполнить].
+
+**✅ Самопроверка:**
+
+```bash
+uv run pytest src/tests/unit/test_retrieval_flow.py -q   # все зелёные, включая контракт-тест
+make check                                                # полный набор зелёный
+```
+
+### Task 4: закрытие сессии
+
+Все находки исчерпаны → live-перепроверка сценария куратора после фиксов → REVIEW-GATE (code-reviewer на весь диапазон сессии от merge-base с milestone/v2) → End of Session по AGENTS.md: sessions.md (строка S24, «Текущее состояние»), progress.md, make archive, коммит слияния в milestone/v2.
 
 **✅ Самопроверка:**
 
