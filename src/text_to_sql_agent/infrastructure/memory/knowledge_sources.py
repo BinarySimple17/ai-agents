@@ -32,15 +32,7 @@ from text_to_sql_agent.application.ports.vector_store import (
     KnowledgeDocument,
     VectorStoreError,
 )
-
-_ERROR_MESSAGE_MAX_CHARS = 300  # сообщения стыка — не простыня psycopg-хинтов
-
-
-def _shorten(message: str) -> str:
-    message = " ".join(message.split())
-    if len(message) <= _ERROR_MESSAGE_MAX_CHARS:
-        return message
-    return message[: _ERROR_MESSAGE_MAX_CHARS - 1] + "…"
+from text_to_sql_agent.infrastructure.memory.errors import shorten_error_message
 
 
 def business_tables_from_catalog(dsn: str) -> tuple[str, ...]:
@@ -57,7 +49,9 @@ def business_tables_from_catalog(dsn: str) -> tuple[str, ...]:
             conn.execute(f"SET LOCAL statement_timeout = '{STATEMENT_TIMEOUT_S}s'")  # правило 9
             rows = conn.execute(query).fetchall()
     except psycopg.Error as exc:
-        raise VectorStoreError(f"каталог источников недоступен: {_shorten(str(exc))}") from exc
+        raise VectorStoreError(
+            f"каталог источников недоступен: {shorten_error_message(str(exc))}"
+        ) from exc
     tables = tuple(row["table_name"] for row in rows)
     if not tables:
         raise ValueError(
@@ -121,7 +115,9 @@ def check_declared_references(
     """
     if not business_tables:
         raise ValueError("business_tables пуст — guard не может построить regex таблиц")
-    tables_re = re.compile(r"\b(" + "|".join(business_tables) + r")\b")
+    # re.escape: имена таблиц идут в regex как литералы — метасимвол в будущем
+    # имени не сделает guard непредсказуемым (m9 ревью S26)
+    tables_re = re.compile(r"\b(" + "|".join(re.escape(t) for t in business_tables) + r")\b")
     for doc in docs:
         mentioned = set(tables_re.findall(doc.content))
         undeclared = mentioned - set(doc.referenced_tables)
@@ -194,7 +190,9 @@ def relationship_documents(dsn: str, *, model_version: str) -> list[KnowledgeDoc
             rows = conn.execute(query).fetchall()
     except psycopg.Error as exc:
         # Типизированная ошибка стыка (прецедент адаптера памяти), не сырой psycopg
-        raise VectorStoreError(f"реестр связей недоступен: {_shorten(str(exc))}") from exc
+        raise VectorStoreError(
+            f"реестр связей недоступен: {shorten_error_message(str(exc))}"
+        ) from exc
     for row in rows:
         lines = [
             f"[связь: {row['left_table']} → {row['right_table']}] "

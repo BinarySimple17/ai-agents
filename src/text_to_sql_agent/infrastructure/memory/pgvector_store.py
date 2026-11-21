@@ -62,9 +62,8 @@ from text_to_sql_agent.application.ports.vector_store import (
     VectorStoreError,
 )
 from text_to_sql_agent.domain.entities import RunContext
+from text_to_sql_agent.infrastructure.memory.errors import shorten_error_message
 from text_to_sql_agent.infrastructure.memory.text_normalizer import normalize_text
-
-_ERROR_MESSAGE_MAX_CHARS = 300  # сообщения стыка — не простыня psycopg-хинтов
 
 # --- Числа-якоря взвешенного RRF (D-026 доп. 1(1); Ловушки-6: именованные, не в SQL) ---
 # α_dense: вес dense-ноги. 0.9 — старт без тюнинга: невзвешенный RRF (0.5) проигрывает
@@ -209,13 +208,6 @@ def _check_dim(vector: list[float], *, what: str) -> None:
         )
 
 
-def _shorten(message: str) -> str:
-    message = " ".join(message.split())
-    if len(message) <= _ERROR_MESSAGE_MAX_CHARS:
-        return message
-    return message[: _ERROR_MESSAGE_MAX_CHARS - 1] + "…"
-
-
 def _doc_from_row(row: dict) -> KnowledgeDocument:
     return KnowledgeDocument(
         doc_kind=row["doc_kind"],
@@ -291,7 +283,9 @@ class PgVectorStore:
                     _fts_leg_sql(model_filter=model_filter), fts_params
                 ).fetchall()
         except psycopg.Error as exc:
-            raise VectorStoreError(f"векторная память недоступна: {_shorten(str(exc))}") from exc
+            raise VectorStoreError(
+                f"векторная память недоступна: {shorten_error_message(str(exc))}"
+            ) from exc
         dense_docs = [_doc_from_row(row) for row in dense_rows]
         fts_docs = [_doc_from_row(row) for row in fts_rows]
         merged = _rrf_merge(dense_docs, fts_docs, alpha_dense=self._rrf_alpha_dense)
@@ -351,6 +345,6 @@ class PgVectorStore:
                     cursor.execute(_DELETE_STALE_SQL, (namespaces, source_refs))
         except psycopg.Error as exc:
             raise VectorStoreError(
-                f"запись в векторную память не удалась: {_shorten(str(exc))}"
+                f"запись в векторную память не удалась: {shorten_error_message(str(exc))}"
             ) from exc
         return len(documents)

@@ -7,9 +7,9 @@
 ## Current State
 
 **Last Updated:** 2026-11-21
-**Session ID:** … → S25 → S07 → **S09 (feat-009 plan_joins → passing: гибридный поиск — retrieval (порт VectorStore) + граф (SchemaGraphStore) → JoinPlan ≤ 4 таблиц по rel_id с типом/направлением/ключами из ребра, допущениями usage_notes и пином graph_version; LLM только ранжирует кандидатов через тул ADR-008 — валидатор domain/join_plan.py отсекает выдуманные джойны [инвариант hw-01 §2.1]; ретраи M1/D-016 с бюджетным швом ruling Q7; «нет пути» → заявка agent_edge_proposals INSERT-only под agent_planner [миграция 0009, D-030 — BL-003 п.2 закрыт]; layer-3 живой прогон демо-вопроса — путь campaigns↔orders↔customers, first-touch в допущениях, gv=41; ревью With fixes ×2 → fix-волны 7bb4285/62f4c3e с регрессами, кусающими до-фиксовый код; 329 passed)**
-**Active Feature:** — (feat-009 passing; веха V3: осталась feat-021/S26 — retrieval-усиление BL-007/009, не блокирует сдачу)
-**Last commit:** ветка `feat-009-plan-joins` (361a97c → 7bb4285 → 62f4c3e) — merge в `milestone/v3` по факту закрытия сессии (D-029)
+**Session ID:** … → S07 → S09 → **S26 (feat-021 гибридная память → passing: dense+FTS — content_tsv generated+GIN миграция 0010 [CHECK+noise: downgrade чистит шум ДО ADD CONSTRAINT — C1 ревью], взвешенный RRF α_dense=0.9/RRF_K=60/MAX_LEG_DEPTH=50 — числа-якоря D-026, фильтр прав в ОБЕИХ ногах ДО слияния NFR-4; шумовой корпус 300 дистракторов [сид 20261121, делят признак с целью] — ранжируются, в промпт/кандидаты plan_joins не попадают; нормализация U+0301/ё→е одним хелпером на upsert и запрос; BL-009 M1/M3 — SoT каталог agent_data_sources, replace-транзакция upsert [DELETE неймспейсов], model_version-фильтр смены эмбеддера; порт search(query,…) прецедент N1/S06; bench hit@5: 14/14 dense = 14/14 гибрид — baseline model-card v1.5, реранкер не потребовался; hw-04 README — итоговая сборка вехи V3; ревью «No» 1C/4I/12m → fix-волна 3fdf014 [C1 — транзакционный регресс, stash-проверка] → re-review «Yes» → доводка миноров; 370 passed)**
+**Active Feature:** — (feat-021 passing; веха V3 закрыта: feat-007+feat-009+feat-021)
+**Last commit:** ветка `feat-021-hybrid-memory` (92141e1 → c9f12f2 → ece1e04 → 3fdf014 → fix-волна-2) — merge в `milestone/v3` по факту закрытия сессии (D-029)
 
 ## Status
 
@@ -57,15 +57,15 @@
 
 ### What's In Progress
 
-- **S26 (feat-021, гибридная память) — код ЗАВЕРШЁН, сессия НЕ закрыта:** 3 коммита на ветке `feat-021-hybrid-memory` (92141e1 нормализатор+миграция 0010, c9f12f2 гибрид+шум+BL-009, ece1e04 bench+артефакты); make check EXIT=0 (364 passed = 305 unit + 59 integration); миграция 0010 применена, индексация 324 документа (24 кураторских + 300 шумовых), bench hit@5 = 14/14 dense = 14/14 гибрид (baseline в model-card v1.5); BL-007/BL-009 закрыты, hw-04 README — итоговая сборка вехи. **БЛОКЕР закрывающих шагов:** диспетчеризация code-reviewer (REVIEW-GATE) упёрлась в дневной лимит API-ключа шлюза — «API key daily spending limit exceeded: 50,12 ₽ / 50,00 ₽» (ревью-агент израсходовал ~2,55 млн токенов на чтении диапазона d0c78c9..ece1e04 и не вернул вердикт); verify-feature блокирован гейтом строгости (REVIEW-GATE «N/A — сессия не начата» не проходит) — feat-021 остаётся active. Продолжение — после сброса/повышения лимита (команда владельца «продолжай s26»): re-dispatch code-reviewer на диапазон d0c78c9..HEAD, fix-волна, verify-feature, End of Session, merge в milestone/v3.
+- (ничего — S26 закрывается 2026-11-21; веха V3 собрана: feat-007+feat-009+feat-021 passing)
 
 ### Next Steps
 
-1. **S26 — закрыть после восстановления бюджета шлюза:** re-dispatch code-reviewer (BASE d0c78c9, HEAD — текущий), fix-волны, `make verify-feature F=feat-021`, End of Session (артефакты, make archive, clean-check), merge `feat-021-hybrid-memory` → `milestone/v3` (D-029)
+1. **Merge feat-021-hybrid-memory → milestone/v3 (--no-ff, D-029)** + финальный make check — веха V3 (ДЗ-04) собрана: feat-007+feat-009+feat-021 passing
 2. **Сдача ДЗ-02/ДЗ-03 по команде владельца** (01.12/07.12): видео/скрин ДЗ-03 — за владельцем; ДЗ-02 артефакт `hw-02/README.md` уже синхронизирован (--plain)
-3. **Веха V3 (ДЗ-04, гибридная память)**: S07 ✅ → S09 ✅ → S26 (код готов, ждёт REVIEW-GATE) — закрывает веху; hw-04 README собран
+3. **Веха V3 (ДЗ-04, гибридная память)**: S07 ✅ → S09 ✅ → S26 ✅ — веха закрыта (hw-04 README — итоговая сборка); BL-012 (P3) — датасет бенча сверх hit@5 — под будущие апгрейды retrieval
 4. Хвосты S19 — в s19-переносах (отчёт сессии): finish_reason=length с текстом — incomplete-политика feat-015 (V4); abandon генератора не учитывает потраченные токены — S15/BudgetGuard; TTFT 5.7с локально > порога 3с — SLO-калибровка (выпускная)
-5. BL-006 (P3): полная механическая связка «коммит ↔ файл сессии»; BL-010 (P3): справочник стран в глоссарий к V4; BL-011 (P3, S07): лимит кандидатов энумерации k путей при росте реестра (caller-side кап S09 не закрывает); BL-001/BL-005 — открыты (BL-003 решён целиком: п.1 S20, п.2 S09/D-030, п.3 S07; остался п.4 — за S8/аудитом); BL-007/BL-009 — закрыты S26
+5. Открытые беклоги: BL-001 (P2), BL-005/BL-006/BL-010/BL-011/BL-012 (P3); BL-007/BL-009 закрыты S26; BL-003 решён целиком (п.1 S20, п.2 S09/D-030, п.3 S07; п.4 — за S8/аудитом)
 
 ## Blockers / Risks
 

@@ -295,27 +295,30 @@ def test_pure_fts_leg_works_and_filters_rights(store, seeded) -> None:
     store_fts_only = PgVectorStore(settings.agent_planner_dsn, rrf_alpha_dense=0.0)
     # Целевой документ: уникальный терм «hr_regression_term», вектор ортогонален
     # запросу (V_ORDERS) — dense его не вытащит; таблица bonuses — вне прав u_analyst
+    # Собственный неймспейс (new-m6 ревью S26, как m14): replace-upsert теста
+    # не подрезает сид фикстуры
+    fts_ref = "it-hybrid-fts:glossary-fts-only"
     target = KnowledgeDocument(
         doc_kind=DocKind.GLOSSARY,
         table_name="bonuses",
         referenced_tables=["bonuses"],
         content="[термин: fts-тест] hr_regression_term в bonuses",
         model_version=_MODEL,
-        source_ref=f"{_REF_PREFIX}glossary-fts-only",
+        source_ref=fts_ref,
     )
     service_dsn = settings.postgres_dsn.get_secret_value()
     try:
         assert store.upsert([target], [V_BONUSES]) == 1
         # Позитив: u_hr с правами на bonuses — документ найден ЧИСТОЙ FTS-ногой
         hr_docs = store_fts_only.search("hr_regression_term", V_ORDERS, ctx=CTX_HR, top_k=8)
-        hits = [d for d in hr_docs if d.source_ref == f"{_REF_PREFIX}glossary-fts-only"]
+        hits = [d for d in hr_docs if d.source_ref == fts_ref]
         assert hits, "FTS-нога обязана находить точный текстовый матч (α=0)"
         assert hits[0].score > 0, "score > 0 при α=0 возможен только через FTS-ногу"
         # Негатив: u_analyst без прав на bonuses — документа нет ни одной ногой
         analyst_docs = store_fts_only.search(
             "hr_regression_term", V_ORDERS, ctx=CTX_ANALYST, top_k=8
         )
-        assert f"{_REF_PREFIX}glossary-fts-only" not in _refs(analyst_docs)
+        assert fts_ref not in _refs(analyst_docs)
     finally:
         with psycopg.connect(service_dsn) as conn:
             conn.execute(

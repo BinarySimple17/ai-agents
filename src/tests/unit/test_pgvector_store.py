@@ -417,6 +417,15 @@ def test_upsert_deletes_stale_refs_of_reindexed_namespaces(fake_conn: _FakeConn)
     assert delete_params == (["ddl", "noise"], ["ddl:orders", "noise:0001"])
 
 
+def test_upsert_ref_without_namespace_rejected() -> None:
+    # m13/new-m5 ревью S26: source_ref без неймспейса (нет ':' или пустой префикс)
+    # сделал бы DELETE-скоуп replace-семантики непредсказуемым — fail-fast до соединения
+    store = PgVectorStore(_DSN, write_dsn=_WRITE_DSN)
+    bad = KnowledgeDocument(doc_kind=DocKind.DDL, content="x", model_version="m", source_ref=":x")
+    with pytest.raises(ValueError, match="неймспейс"):
+        store.upsert([bad], [_VEC])
+
+
 def test_upsert_empty_batch_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
     # Replace-семантика: пустой вызов = «стери неймспейсы» — footgun, fail-fast
     connected: list[str] = []

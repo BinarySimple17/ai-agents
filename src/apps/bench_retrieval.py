@@ -58,14 +58,13 @@ def _hit_rank(docs: list, targets: tuple[str, ...]) -> int | None:
     return None
 
 
-def main() -> int:
-    container = build_container()  # гибрид: канонное α_dense=0.9 (D-026)
-    ctx = RunContext(trace_id="bench-retrieval", user_id=BENCH_USER_ID)
-    # dense-only: тот же контур с α=1.0 — сборка ТОЛЬКО через composition (I3 ревью)
-    container_dense = build_container(rrf_alpha_dense=1.0)
-    modes = ("dense", "hybrid")
-    hits: dict[str, int] = {mode: 0 for mode in modes}
-    misses: dict[str, list[str]] = {mode: [] for mode in modes}
+def _run_bench(
+    container,  # гибридный контур (канонное α_dense=0.9, D-026)
+    container_dense,  # dense-only контур (α_dense=1.0 — вклад FTS-ноги нулевой)
+    ctx: RunContext,
+    hits: dict[str, int],
+    misses: dict[str, list[str]],
+) -> None:
     print(
         f"Бенч retrieval: hit@5 на {len(_DATASET)} вопросах (top_k={RETRIEVAL_TOP_K}, "
         f"пользователь {BENCH_USER_ID}, корпус = кураторский + шумовой)"
@@ -86,10 +85,26 @@ def main() -> int:
             else:
                 misses[mode].append(question)
         print(f"{question:<52} {str(ranks['dense']):>6} {str(ranks['hybrid']):>7}")
+
+
+def main() -> int:
+    container = build_container()  # гибрид: канонное α_dense=0.9 (D-026)
+    ctx = RunContext(trace_id="bench-retrieval", user_id=BENCH_USER_ID)
+    # dense-only: тот же контур с α=1.0 — сборка ТОЛЬКО через composition (I3 ревью)
+    container_dense = build_container(rrf_alpha_dense=1.0)
+    modes = ("dense", "hybrid")
+    hits: dict[str, int] = {mode: 0 for mode in modes}
+    misses: dict[str, list[str]] = {mode: [] for mode in modes}
+    try:
+        _run_bench(container, container_dense, ctx, hits, misses)
+    finally:
+        # Второй контейнер — свой Neo4j-драйвер: не закрывать — незакрытый ресурс
+        # (new-m2 ревью S26; бенч — one-shot, но гигиена одна для всех точек входа)
+        container_dense.graph_store.close()
     total = len(_DATASET)
     print(f"\nИтог hit@{HIT_K}: dense {hits['dense']}/{total}, гибрид {hits['hybrid']}/{total}")
     if hits["hybrid"] < hits["dense"]:
-        print("\nСТОП: hit@5(гибрид) < hit@5(dense) — инвариант D-026 нарушен.")
+        print(f"\nСТОП: hit@{HIT_K}(гибрид) < hit@{HIT_K}(dense) — инвариант D-026 нарушен.")
         print("Разбор промахов гибрида:")
         for question in misses["hybrid"]:
             print(f"  - {question}")

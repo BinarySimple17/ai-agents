@@ -21,6 +21,7 @@
 | [BL-009](BL-009-knowledge-index-hygiene.md) | Гигиена индексации знаний: SoT списка бизнес-таблиц (agent_data_sources), транзакционное удаление устаревших source_ref / смена эмбеддера | **закрыт 2026-11-21 (S26, feat-021): M1 — каталог SoT (indexer/test/SYSTEM_PROMPT сверяются), M3 — replace-транзакция upsert + фильтр model_version** | S06 (REVIEW-GATE Minors M1/M3) | P2 |
 | [BL-010](BL-010-country-reference-knowledge.md) | Справочник стран/справочников с кодами — в глоссарий знаний к V4 (сейчас: точечная запись + коды в промпте тул-контура) | открыт | S24 (находка #2) | P3 |
 | [BL-011](BL-011-join-path-enumeration-cap.md) | Лимит кандидатов энумерации k путей find_join_paths (масштабирование при росте реестра) | открыт | S07 (REVIEW-GATE Set aside) | P3 |
+| [BL-012](BL-012-bench-dataset-discrimination.md) | Датасет bench_retrieval: вопросы, где FTS обыгрывает dense + MRR/recall@8 (насыщенный baseline 14/14 не различает режимы) | открыт | S26 (REVIEW-GATE Set aside) | P3 |
 
 При создании записи — добавить строку в реестр; при закрытии — обновить статус в реестре (файл уедет в archive/, строка остаётся как история).
 

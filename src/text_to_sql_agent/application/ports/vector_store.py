@@ -101,6 +101,9 @@ class VectorStore(Protocol):
     source_ref), устаревшие source_ref переиндексируемых неймспейсов удаляются
     в той же транзакции (BL-009 M3). `search` — гибрид dense+FTS: top_k
     документов, у которых права ctx.user_id покрывают все referenced_tables.
+    Диапазон выдачи: каждая нога отдаёт не больше MAX_LEG_DEPTH строк, поэтому
+    top_k > 2×MAX_LEG_DEPTH молча недостижим (выдача короче запрошенного);
+    канонные вызовы top_k ≤ 8 (S24) при глубине ноги 50 (m17 ревью S26).
     """
 
     def upsert(self, documents: list[KnowledgeDocument], embeddings: list[list[float]]) -> int: ...

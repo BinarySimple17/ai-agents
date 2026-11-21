@@ -1,6 +1,6 @@
 # S26 — Гибридная память: dense+FTS (взвешенный RRF) + гигиена индексации (веха V3, BL-007/BL-009)
 
-Этап: Веха V3 (ДЗ-04: усиление векторной половины памяти — решение владельца, D-026 доп.2) | Владелец: агент | Зависимости: S06 | Оценка: 1.5 | Статус: ◐ в работе (старт 2026-11-21)
+Этап: Веха V3 (ДЗ-04: усиление векторной половины памяти — решение владельца, D-026 доп.2) | Владелец: агент | Зависимости: S06 | Оценка: 1.5 | Статус: ✅ 2026-11-21
 Фичи: feat-021 — Гибридная память: dense+FTS (взвешенный RRF) + гигиена индексации; её зависимость feat-006 уже в passing
 Роль по фиче: закрывает feat-021 — финальная сессия, через make verify-feature
 
@@ -187,14 +187,14 @@ make infra-up && make infra-migrate && make index-knowledge && uv run pytest src
 
 ## Критерии приёмки
 
-- [ ] Фильтр прав в обеих ногах ДО слияния: недоступные документы не возвращаются ни dense-, ни FTS-ногой (ACL-leak = 0, behavior feat-021)
-- [ ] hit@5 гибрида не ниже dense-only на замерном корпусе; baseline зафиксирован в отчёте сессии и model-card
-- [ ] Дистракторы (~300, fixed seed, делят признак с целью) участвуют в ранжировании и не попадают в промпт (behavior feat-021)
-- [ ] Переиндексация транзакционно чистит устаревшие source_ref; SoT бизнес-таблиц — каталог agent_data_sources (BL-009 M1/M3)
-- [ ] Нормализация U+0301/ё→е общим хелпером на upsert и запрос (BL-007)
-- [ ] BL-007 и BL-009 закрыты: статус «закрыт (дата, S26)» в обоих файлах + строки реестра backlog/README.md
-- [ ] Раздел hw-04 «векторный поиск» дополнен гибридом (замер hit@5); итоговая сборка README — последняя закрывающаяся сессия вехи
-- [ ] Фича закрыта: `make verify-feature F=feat-021` → PASS, state=passing с evidence
+- [x] Фильтр прав в обеих ногах ДО слияния: недоступные документы не возвращаются ни dense-, ни FTS-ногой (ACL-leak = 0, behavior feat-021)
+- [x] hit@5 гибрида не ниже dense-only на замерном корпусе; baseline зафиксирован в отчёте сессии и model-card
+- [x] Дистракторы (~300, fixed seed, делят признак с целью) участвуют в ранжировании и не попадают в промпт (behavior feat-021)
+- [x] Переиндексация транзакционно чистит устаревшие source_ref; SoT бизнес-таблиц — каталог agent_data_sources (BL-009 M1/M3)
+- [x] Нормализация U+0301/ё→е общим хелпером на upsert и запрос (BL-007)
+- [x] BL-007 и BL-009 закрыты: статус «закрыт (дата, S26)» в обоих файлах + строки реестра backlog/README.md
+- [x] Раздел hw-04 «векторный поиск» дополнен гибридом (замер hit@5); итоговая сборка README — последняя закрывающаяся сессия вехи
+- [x] Фича закрыта: `make verify-feature F=feat-021` → PASS, state=passing с evidence
 
 ## Ловушки
 
@@ -222,13 +222,71 @@ make infra-up && make infra-migrate && make index-knowledge && uv run pytest src
 ## Гейты субагентов (заполняется по факту, до закрытия сессии)
 
 - ARCH-GATE: ✅ canon-check архитектора 2026-11-21 — verdict violations → rulings N1–N4 ДО кода: (blocker) миграция 0010 включает DROP/ADD CONSTRAINT doc_kind CHECK (+ 'noise') рядом с content_tsv+GIN — CHECK 0005 (20261120_0005_vector_memory.py:29) не знает 'noise', индексация шума упала бы на constraint; (N1) upsert-семантика — вариант A: replace-транзакция полной коллекции (кураторские + шум одним вызовом, DELETE отсутствующих source_ref в той же транзакции, контракт `-> int` сохранён; отдельный prune-метод отвергнут — второй способ той же операции), синк строки порта в S00 — search И upsert тем же коммитом; (N2) шум несёт непустой referenced_tables (= упомянутые таблицы — дистрактор и так делит признак с целью) — guard check_declared_references универсален, NFR-4 без исключений, table_name остаётся NULL (D-026), бенч — пользователь с широкими правами; вариант B «шум вне guard» отвергнут (исключение из инварианта C1); (N3) каждая нога берёт LIMIT MAX_LEG_DEPTH, срез top_k — после RRF; (N4) bench_retrieval.py регистрируется в S00 «Точки входа» тем же коммитом (прецедент Q8/S09). Compliant: порт-расширение search(query, …) прецедентом N1/S06 (потребители cli.py:506, plan_joins_service.py:242, фейки), миграция новым файлом (S00-5/D-028), фильтр промпта в presentation-слое (cli.py format_retrieval_block, doc_kind — поле DTO порта), SoT — каталог agent_data_sources (ADR-011, засеян 0003), константы RRF/нормализация в infrastructure/memory (адаптер реализует порт, D-026), реранкер/BL-010 — вне скоупа (D-026, решение владельца)
-- REVIEW-GATE: N/A — сессия не начата (ревью диапазона — по факту закрытия)
+- REVIEW-GATE: ✅ Ready to merge: Yes — ревью-1 «Ready to merge: No» (1C/4I/12m, диапазон d0c78c9..ece1e04) → fix-волна 3fdf014: **C1** DOWNGRADE_SQL удаляет noise-строки ДО ADD CONSTRAINT (CHECK без 'noise' валидирует существующие строки — downgrade на живом корпусе падал бы CheckViolation) с транзакционным регрессом test_migration_0010_downgrade_survives_noise_rows (importlib + ROLLBACK; stash-прогон: на до-фиксовом коде CheckViolation — кусает); **I2** фолбэк-лексика генератора шума (обещание BL-009 M1 «новая таблица без правки кода») + тест; **I3** bench — build_container(rrf_alpha_dense=1.0), сборка адаптера только в composition + wiring-тест; **I4a** integration test_pure_fts_leg_works_and_filters_rights (α=0: score>0 только через content_tsv + ACL-leak=0 негатив), **I4b** unit test_search_normalizes_query_text_for_fts_leg (fts_params[0]); **I5** quality-document memory/ под feat-021; minors m6–m17 → scoped re-review «Ready to merge: Yes» (5/5 ключевых закрыто, диапазон d0c78c9..3fdf014) → доводка миноров re-review (коммит закрытия): m9 re.escape guard-regex, m17 top_k ≤ 2×MAX_LEG_DEPTH в порте, общий shorten_error_message (errors.py — дубль m8), docstring build_container, graph_store.close() dense-контура bench, тест неймспейс-гварда, неймспейсы тестов it-hybrid-norm:/it-hybrid-fts:; BL-012 (P3) — датасет бенча сверх hit@5 (set aside re-review); make check EXIT=0 (**370 passed**)
 
 ## Отчёт по сессии (заполняется по факту)
 
 - Сделано:
-  - [Task: что реально сделано, коммиты, число тестов/ассертов, live-прогон]
+  - Task 1 — `infrastructure/memory/text_normalizer.py`: снятие U+0301, ё→е (оба регистра),
+    регистр не трогается, идемпотентность; 7 unit (test_text_normalizer.py).
+  - Task 2 — миграция `20261121_0010_hybrid_memory_fts.py` (down_revision s09_0009):
+    content_tsv GENERATED to_tsvector('russian') STORED + GIN + CHECK doc_kind + 'noise'
+    (blocker ruling canon-check); применена живьём (column/index/checks/tsv-sample
+    верифицированы), er-data-model v1.9 → v1.10 тем же коммитом (92141e1).
+  - Task 3 — порт `search(query, query_embedding, *, ctx, top_k)` (прецедент N1/S06) +
+    DocKind.NOISE; PgVectorStore: две ноги на одном соединении, фильтр прав в SQL ОБЕИХ
+    ног ДО слияния (общий _RIGHTS_FILTER_SQL, FTS-нога — k-квалификация), взвешенный RRF
+    в чистой функции _rrf_merge (α_dense=0.9, RRF_K=60, MAX_LEG_DEPTH=50 — числа-якоря
+    D-026 с «почему»; ранги 1-based, tie-break source_ref, срез top_k после слияния —
+    ruling N3), plainto_tsquery по нормализованному тексту, model_version-фильтр (M3),
+    контейнером прокидывается expected_model_version; синк S00-строки порта (c9f12f2).
+  - Task 4 — `noise_corpus.py`: 300 дистракторов, stdlib + сид 20261121 (побитовая
+    воспроизводимость), 2/3 кросс-табличных, делят признак с целью, referenced_tables по
+    упоминаниям (ruling N2 — guard универсален); подключены в index-knowledge
+    (кураторские + шум одной replace-коллекцией); фильтр noise в format_retrieval_block
+    (presentation) и в _candidate_tables plan_joins.
+  - Task 5 — BL-009: M1 — business_tables_from_catalog (SoT agent_data_sources), сборщики
+    knowledge_sources параметризованы, константа BUSINESS_TABLES удалена, test_infra_schema
+    сверяет каталог↔миграция 0001 (test_catalog_matches_schema_migration), SYSTEM_PROMPT —
+    unit-сверкой генерацией; M3 — upsert replace-семантики (DELETE устаревших неймспейсов
+    в транзакции upsert) + фильтр model_version (решение исполнителя — model-card §1 v1.5).
+  - Task 6 — `apps/bench_retrieval.py` + make bench-retrieval (ruling N4 — S00 «Точки
+    входа»): 14 фиксированных вопросов, hit@5 по top_k=8 (S24), dense-only = тот же
+    контур с α=1.0; live-прогон (корпус 324 = 24 кураторских + 300 шумовых):
+    **hit@5 dense 14/14 = гибрид 14/14** — инвариант D-026 выполнен, baseline в
+    model-card §1; hw-04/README.md — итоговая сборка вехи (раздел «Гибридная векторная
+    память» с живым выводом).
+  - Task 7 — `test_hybrid_memory.py` (integration, синтетические векторы — S00 правило 7):
+    (a) ACL-leak=0, (b) шум ранжируется/не в промпте, (c) гибрид ≥ dense, (d) replace-чистка
+    source_ref, (e) нормализация ё/акут + test_vector_memory адаптирован под гибрид (8 passed).
+  - Гейты: ARCH-GATE ✅ canon-check (violations → rulings N1–N4 + blocker до кода);
+    REVIEW-GATE — ревью-1 «Ready to merge: No» (1C/4I/12m) → fix-волна 3fdf014 (C1 downgrade
+    миграции — DELETE noise ДО ADD CONSTRAINT — с транзакционным регресс-тестом, проверен
+    stash-прогоном: на до-фиксовом коде CheckViolation; I2 фолбэк-лексика шума + тест;
+    I3 bench через build_container(rrf_alpha_dense) + wiring-тест; I4a чистая FTS-нога
+    α=0 + ACL-leak-негатив, I4b unit-тест нормализации запроса; I5 quality-document;
+    minors m6–m17 точечными правками) → scoped re-review. make check EXIT=0 (369 passed).
 - Отклонения от плана:
-  - [что сделали не так, как в задаче, и почему; каждое отклонение — осознанное]
+  - Ruling N1 уточнён при реализации: DELETE устаревших source_ref скоупится
+    НЕЙМСПЕЙСАМИ коллекции (префикс до ':'), а не «всем, чего нет в батче» — живой
+    корпус и integration-сиды сосуществуют в одной таблице; безусловный delete сделал
+    бы тестовый сид очисткой живого корпуса (test_real_corpus остался без данных).
+    Зафиксировано в докстринге адаптера и файла сессии (Правило-5/Task 5).
+  - FTS-запрос — plainto_tsquery (AND-семантика), не websearch: канон выбор не фиксирует
+    (architect — set aside); точные латинские идентификаторы работают термом.
+  - «Dense-only» в bench — тот же гибридный контур с α_dense=1.0 (вклад FTS-ноги
+    нулевой, порядок = чистому dense): отдельного метода/ноги в порт не вводилось.
+  - Тест (c) «гибрид ≥ dense» — на синтетическом корпусе с синтетическими векторами
+    (реальный шлюз в тестах не вызывается, S00 правило 7); настоящий замер — bench
+    (layer-3) + baseline в model-card.
+  - Нормализация НЕ применяется к входу эмбеддера (контент эмбеддируется сырым,
+    запрос — сырым): она адресована FTS-ноге (лексический разбор), bge-m3 к ё/акуту
+    устойчив (осознанный дизайн; reviewer — set aside, не находка).
+  - Helper сверка «миграция ↔ таблицы» дублируется в двух тест-файлах (unit — SYSTEM_PROMPT,
+    integration — каталог): разные поверхности проверки, дубль осознанный (m16).
 - Перенесено в другие сессии:
-  - [ID сессии — что перенесено и почему; если в беклог — BL-NN-файл]
+  - BL-012 (P3, создан по set-aside re-review): датасет bench — вопросы, где FTS
+    обыгрывает dense, + MRR/recall@8 (насыщенный baseline 14/14 не различает режимы) —
+    под будущие апгрейды retrieval.
+  - Реранкер — остаётся решением владельца при недостаточном baseline (D-026): baseline
+    14/14 достаточен, не потребовался (BL-007 закрыт с этой формулировкой).
