@@ -12,7 +12,9 @@ behavior feat-006: поиск по эмбеддингу возвращает т�
 вызывается): ортонормированные 1024-мерные векторы образуют «кластеры» таблиц
 (cosine 0 между кластерами) — релевантность определяется вектором запроса, а
 эффект фильтра прав — чисто табличным джойном. Сид — через идемпотентный upsert
-адаптера (попутно покрывает upsert на живой БД); очистка — по префиксу source_ref.
+адаптера (попутно покрывает upsert на живой БД; ruling N1 S26: upsert полной
+коллекции + удаление устаревших source_ref её неймспейсов одной транзакцией —
+живой корпус тестовый сид не затирает); очистка — по префиксу source_ref.
 """
 
 import re
@@ -23,7 +25,7 @@ import pytest
 from text_to_sql_agent.application.ports.vector_store import DocKind, KnowledgeDocument
 from text_to_sql_agent.config.settings import load_settings
 from text_to_sql_agent.domain.entities import RunContext
-from text_to_sql_agent.infrastructure.memory.knowledge_sources import BUSINESS_TABLES
+from text_to_sql_agent.infrastructure.memory.knowledge_sources import business_tables_from_catalog
 from text_to_sql_agent.infrastructure.memory.pgvector_store import PgVectorStore
 
 _REF_PREFIX = "it-vector:"
@@ -157,37 +159,41 @@ def test_upsert_is_idempotent_by_source_ref(store) -> None:
 
 
 def test_search_returns_only_allowed_tables(store, seeded) -> None:
-    docs = store.search(V_ORDERS, ctx=CTX_ANALYST, top_k=50)
+    docs = store.search("выручка по заказам", V_ORDERS, ctx=CTX_ANALYST, top_k=50)
     tables = {t for d in docs for t in d.referenced_tables}
     assert "bonuses" not in tables  # недоступная таблица — не существует в мире агента
-    assert "employees" not in tables  # и вторая HR-таблица тоже
+    assert "employees" not in tables  # и вторая HR-таблица тоже (обе ноги фильтруют)
     assert f"{_REF_PREFIX}ddl-orders" in _refs(docs)  # разрешённая — в выдаче
 
 
 def test_glossary_and_few_shot_surface_for_relevant_tables(store, seeded) -> None:
-    # Векторы ddl/glossary/few-shot orders совпадают с запросом → топ выдачи
-    docs = store.search(V_ORDERS, ctx=CTX_ANALYST, top_k=3)
-    assert {DocKind.GLOSSARY, DocKind.FEW_SHOT, DocKind.DDL} <= {d.doc_kind for d in docs}
-    refs = _refs(docs)
+    # Векторы ddl/glossary/few-shot orders совпадают с запросом → топ выдачи.
+    # S26: дистракторы ранжируются ВМЕСТЕ с реальными (D-026) — знание-документы
+    # сверяются в выдаче БЕЗ шума (так же собирает промпт format_retrieval_block)
+    docs = store.search("выручка заказы", V_ORDERS, ctx=CTX_ANALYST, top_k=8)
+    knowledge_docs = [d for d in docs if d.doc_kind is not DocKind.NOISE]
+    assert {DocKind.GLOSSARY, DocKind.FEW_SHOT, DocKind.DDL} <= {d.doc_kind for d in knowledge_docs}
+    refs = _refs(knowledge_docs)
     assert f"{_REF_PREFIX}glossary-orders" in refs
     assert f"{_REF_PREFIX}few-shot-orders" in refs
 
 
 def test_denied_table_never_surfaces_even_with_exact_match(store, seeded) -> None:
     # Запрос = вектор документа bonuses: без фильтра это cosine distance 0 (топ-1).
-    # u_analyst без прав на bonuses → документ не в выдаче вообще (NFR-4 ACL-leak = 0)
-    analyst_docs = store.search(V_BONUSES, ctx=CTX_ANALYST, top_k=50)
+    # u_analyst без прав на bonuses → документ не в выдаче вообще (NFR-4 ACL-leak = 0);
+    # S26: и FTS-нога по тексту «премии bonuses» его не вернёт — фильтр в ОБЕИХ ногах
+    analyst_docs = store.search("премии bonuses", V_BONUSES, ctx=CTX_ANALYST, top_k=50)
     assert f"{_REF_PREFIX}ddl-bonuses" not in _refs(analyst_docs)
     assert "bonuses" not in {t for d in analyst_docs for t in d.referenced_tables}
     # Позитивный контроль: u_hr с правами на bonuses видит тот же документ
-    hr_docs = store.search(V_BONUSES, ctx=CTX_HR, top_k=5)
+    hr_docs = store.search("премии bonuses", V_BONUSES, ctx=CTX_HR, top_k=5)
     assert f"{_REF_PREFIX}ddl-bonuses" in _refs(hr_docs)
 
 
 def test_cross_table_doc_hidden_without_rights_on_referenced_table(store, seeded) -> None:
     # Регресс ревью S06 C1: few-shot-cross привязан к разрешённой orders и упоминает
     # bonuses — для u_analyst скрыт (до фикса возвращался: фильтр смотрел только якорь)
-    analyst_docs = store.search(V_ORDERS, ctx=CTX_ANALYST, top_k=50)
+    analyst_docs = store.search("выручка и премии", V_ORDERS, ctx=CTX_ANALYST, top_k=50)
     assert f"{_REF_PREFIX}few-shot-cross" not in _refs(analyst_docs)
     # Позитивный контроль: временный пользователь с правами на ОБЕ таблицы видит документ
     service_dsn = load_settings().postgres_dsn.get_secret_value()
@@ -202,7 +208,7 @@ def test_cross_table_doc_hidden_without_rights_on_referenced_table(store, seeded
         )
     try:
         ctx_cross = RunContext(trace_id="it-vector", user_id="it-cross-user")
-        cross_docs = store.search(V_ORDERS, ctx=ctx_cross, top_k=50)
+        cross_docs = store.search("выручка и премии", V_ORDERS, ctx=ctx_cross, top_k=50)
         assert f"{_REF_PREFIX}few-shot-cross" in _refs(cross_docs)
     finally:
         with psycopg.connect(service_dsn) as conn:
@@ -214,7 +220,7 @@ def test_cross_table_doc_hidden_without_rights_on_referenced_table(store, seeded
 
 def test_unknown_user_gets_only_common_documents(store, seeded) -> None:
     # Deny-by-default: нет строки в agent_user_roles → только referenced_tables = '{}'
-    docs = store.search(V_COMMON, ctx=CTX_UNKNOWN, top_k=50)
+    docs = store.search("термин без привязки к таблице", V_COMMON, ctx=CTX_UNKNOWN, top_k=50)
     assert docs, "общие документы видны и без ролей"
     assert all(not d.referenced_tables for d in docs)
     assert f"{_REF_PREFIX}glossary-common" in _refs(docs)
@@ -280,7 +286,7 @@ def test_migration_backfill_restores_list_from_content(store) -> None:
         }  # корпус не изменился — backfill эквивалентен объявленному
         # Нулевой вектор: cosine не определён (NaN), релевантность не важна —
         # документ отсекается правами (ни employees, ни bonuses u_analyst недоступны)
-        docs = store.search(V_ORDERS, ctx=CTX_ANALYST, top_k=50)
+        docs = store.search("премии", V_ORDERS, ctx=CTX_ANALYST, top_k=50)
         assert f"{_REF_PREFIX}backfill-test" not in _refs(docs)
     finally:
         with psycopg.connect(service_dsn) as conn:
@@ -291,21 +297,24 @@ def test_migration_backfill_restores_list_from_content(store) -> None:
 
 def test_real_corpus_leaks_no_tables_outside_rights(store) -> None:
     """Инвариант C1 на живом корпусе (make index-knowledge): всё, что видит
-    u_analyst, ссылается только на его таблицы (orders/order_items/products)."""
+    u_analyst, ссылается только на его таблицы (orders/order_items/products).
+    BL-009 M1: список бизнес-таблиц — из каталога agent_data_sources (SoT)."""
     settings = load_settings()
-    with psycopg.connect(settings.postgres_dsn.get_secret_value()) as conn:
+    service_dsn = settings.postgres_dsn.get_secret_value()
+    business_tables = business_tables_from_catalog(service_dsn)
+    with psycopg.connect(service_dsn) as conn:
         row = conn.execute(
             "SELECT count(*) FROM agent_knowledge WHERE source_ref NOT LIKE %s",
             (f"{_REF_PREFIX}%",),
         ).fetchone()
     if row[0] == 0:
         pytest.skip("корпус не проиндексирован — выполните make index-knowledge")
-    docs = store.search(V_ORDERS, ctx=CTX_ANALYST, top_k=100)  # > размера корпуса
+    docs = store.search("заказы", V_ORDERS, ctx=CTX_ANALYST, top_k=100)  # > размера корпуса
     real = [d for d in docs if not d.source_ref.startswith(_REF_PREFIX)]
     assert real, "живой корпус должен быть виден разрешённому пользователю"
     allowed = {"orders", "order_items", "products"}
     # Границы слова — как в guard и backfill миграции 0007
-    mentioned_re = re.compile(r"\b(" + "|".join(BUSINESS_TABLES) + r")\b")
+    mentioned_re = re.compile(r"\b(" + "|".join(business_tables) + r")\b")
     for d in real:
         assert set(d.referenced_tables) <= allowed, (
             f"{d.source_ref}: referenced_tables {d.referenced_tables} выходят за права u_analyst"

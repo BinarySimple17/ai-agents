@@ -8,6 +8,7 @@ dblink/file_fdw не установлены; Neo4j по bolt с паролем �
 """
 
 import os
+import re
 import uuid
 from pathlib import Path
 
@@ -16,15 +17,28 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
-BUSINESS_TABLES = (
-    "customers",
-    "campaigns",
-    "orders",
-    "order_items",
-    "products",
-    "employees",
-    "bonuses",
-)
+
+def _business_tables_from_migration() -> tuple[str, ...]:
+    """BL-009 M1 (S26): локальная константа BUSINESS_TABLES устранена — дубль
+    дрейфует молча при добавлении таблицы. SoT: миграция 0001 (CREATE TABLE —
+    схема демо-данных; служебные agent_*/settings_version/query_trace — не
+    бизнес-таблицы, отфильтрованы); сверка с каталогом agent_data_sources
+    (ADR-011) — test_catalog_matches_schema_migration."""
+    sql = (REPO_ROOT / "src" / "migrations" / "versions" / "20261118_0001_schema_v15.py").read_text(
+        encoding="utf-8"
+    )
+    all_tables = set(re.findall(r"CREATE TABLE (\w+) \(", sql))
+    business = (
+        all_tables
+        - {t for t in all_tables if t.startswith("agent_")}
+        - {
+            "settings_version",
+            "query_trace",
+        }
+    )
+    return tuple(sorted(business))
+
+
 AGENT_TABLES = (
     "agent_permissions",
     "agent_user_roles",
@@ -125,8 +139,21 @@ def test_schema_tables_exist(admin_conn):
             "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'"
         )
         existing = {row[0] for row in cur.fetchall()}
-    for table in (*BUSINESS_TABLES, *AGENT_TABLES):
+    for table in (*_business_tables_from_migration(), *AGENT_TABLES):
         assert table in existing, f"таблица {table} отсутствует"
+
+
+def test_catalog_matches_schema_migration(admin_conn):
+    """BL-009 M1 (S26): SoT списка бизнес-таблиц — каталог agent_data_sources
+    (ADR-011): строки каталога = бизнес-таблицы миграции 0001. Расхождение
+    означает: таблица есть в схеме, но индексатор её молча не увидит (или наоборот)."""
+    with admin_conn.cursor() as cur:
+        cur.execute("SELECT table_name FROM agent_data_sources")
+        catalog = {row[0] for row in cur.fetchall()}
+    assert catalog == set(_business_tables_from_migration()), (
+        f"каталог agent_data_sources {sorted(catalog)} ≠ CREATE TABLE миграции 0001 "
+        f"{list(_business_tables_from_migration())} — засейте каталог синхронно со схемой"
+    )
 
 
 def test_active_view_exists(admin_conn):

@@ -58,12 +58,15 @@ def build_container(
     # Канал SQL — строго AGENT_RO_DSN (security §2.1); сервисный POSTGRES_DSN — не здесь.
     executor = PostgresExecutor(settings.agent_ro_dsn.get_secret_value())
     run_sql_tool = RunSqlTool(executor)
-    # Векторная память (S06): поиск — agent_planner (c4-l2 v1.8 «пул agent_planner:
+    # Векторная память (S06/S26): поиск — agent_planner (c4-l2 v1.8 «пул agent_planner:
     # retrieval»); write_dsn (сервисный) — только офлайн-индексация
     # make index-knowledge; runtime-роли в память знаний не пишут (ruling W1).
+    # expected_model_version (BL-009 M3): смена эмбеддера до пересборки — строки
+    # чужого векторного пространства не смешиваются с текущим (Task 5 S26).
     vector_store = PgVectorStore(
         settings.agent_planner_dsn,
         write_dsn=settings.postgres_dsn.get_secret_value() if knowledge_writer else None,
+        expected_model_version=settings.embedding_model,
     )
     # Графовая память (S07): Neo4j — только топология, реестр/семантика — PG.
     # Чтение реестра — agent_planner (BL-003 п.3: GRANT SELECT на вьюху active

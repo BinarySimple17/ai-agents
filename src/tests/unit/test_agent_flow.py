@@ -93,8 +93,11 @@ class FakeStore:
         self._error = error
         self.calls: list[dict[str, Any]] = []
 
-    def search(self, query_embedding: list[float], *, ctx: Any, top_k: int) -> list[Any]:
-        self.calls.append({"ctx": ctx, "top_k": top_k, "vector": query_embedding})
+    def search(
+        self, query: str, query_embedding: list[float], *, ctx: Any, top_k: int
+    ) -> list[Any]:
+        # Сигнатура гибрида S26: текст запроса (FTS-нога) + вектор (dense)
+        self.calls.append({"ctx": ctx, "top_k": top_k, "vector": query_embedding, "query": query})
         if self._error is not None:
             raise self._error
         return self._docs

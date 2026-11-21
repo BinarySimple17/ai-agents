@@ -76,6 +76,7 @@ from text_to_sql_agent.application.ports.tracer import (
     Tracer,
 )
 from text_to_sql_agent.application.ports.vector_store import (
+    DocKind,
     KnowledgeDocument,
     VectorStore,
     VectorStoreError,
@@ -429,11 +430,15 @@ def format_retrieval_block(
 
     Кап — по границе документа: чанк, разрезанный посередине, теряет якорь-
     заголовок («[таблица: orders] …») и смысл (ACCURACY §6.2). Документы уже
-    отфильтрованы по правам в SQL поиска — блок не пост-фильтруется.
+    отфильтрованы по правам в SQL поиска — блок не пост-фильтруется. Шумовой
+    корпус (doc_kind='noise', D-026) участвует в ранжировании, но знанием не
+    является — фильтр при сборке контекста (отдельный слой от поиска, S26).
     """
     chunks: list[str] = []
     total = len(RETRIEVAL_BLOCK_HEADER)
     for doc in docs:
+        if doc.doc_kind is DocKind.NOISE:
+            continue  # дистрактор ранжируется вместе с реальными, в промпт не попадает
         if total + len(RETRIEVAL_SEPARATOR) + len(doc.content) > max_chars:
             break  # бюджет ≈2К токенов исчерпан — остальные документы не влезают целиком
         chunks.append(doc.content)
@@ -503,7 +508,8 @@ def run_agent_flow(
     system_prompt = AGENT_SYSTEM_PROMPT
     try:
         query_vector = llm.embed([question])[0]
-        docs = vector_store.search(query_vector, ctx=ctx, top_k=top_k)
+        # Сигнатура гибрида S26: текст вопроса — FTS-ноге, вектор — dense-ноге
+        docs = vector_store.search(question, query_vector, ctx=ctx, top_k=top_k)
     except (LLMProviderError, VectorStoreError, RuntimeError, ValueError) as exc:
         _emit(
             tracer,

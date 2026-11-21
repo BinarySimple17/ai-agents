@@ -30,6 +30,18 @@ _MIGRATION = (
     / "20261118_0001_schema_v15.py"
 )
 
+# Таблицы демо-схемы (сид каталога agent_data_sources, миграция 0003) —
+# BL-009 M1: сборщики параметризованы SoT-каталогом, константы больше нет
+_TABLES = (
+    "customers",
+    "campaigns",
+    "products",
+    "orders",
+    "order_items",
+    "employees",
+    "bonuses",
+)
+
 
 def _glossary(tmp_path: Path, text: str) -> Path:
     path = tmp_path / "glossary.md"
@@ -39,7 +51,7 @@ def _glossary(tmp_path: Path, text: str) -> Path:
 
 # --- DDL: санитизация FK + объявление ровно своей таблицы ---
 def test_ddl_docs_sanitize_fk_and_declare_own_table() -> None:
-    docs = ddl_documents(_MIGRATION, model_version="m")
+    docs = ddl_documents(_MIGRATION, model_version="m", business_tables=_TABLES)
     assert len(docs) == 7
     orders = next(d for d in docs if d.table_name == "orders")
     # FK-ссылки вырезаны: имена customers/campaigns не проносятся в DDL-контент (C1)
@@ -54,7 +66,7 @@ def test_ddl_docs_missing_table_rejected(tmp_path: Path, monkeypatch: pytest.Mon
     fake = tmp_path / "migration.py"
     fake.write_text("CREATE TABLE orders (\n    id integer PRIMARY KEY\n);", encoding="utf-8")
     with pytest.raises(ValueError, match="не найдены CREATE TABLE"):
-        ddl_documents(fake, model_version="m")
+        ddl_documents(fake, model_version="m", business_tables=_TABLES)
 
 
 # --- markdown: форматы заголовков и отказ на неизвестной таблице ---
@@ -69,7 +81,9 @@ def test_markdown_parses_singular_plural_and_null(tmp_path: Path) -> None:
         "## [термин: общий] — таблица null\n"  # ← общий документ
         "Тело общего.\n",
     )
-    docs = markdown_documents(path, doc_kind=DocKind.GLOSSARY, model_version="m")
+    docs = markdown_documents(
+        path, doc_kind=DocKind.GLOSSARY, model_version="m", business_tables=_TABLES
+    )
     assert [d.referenced_tables for d in docs] == [["orders"], ["orders", "campaigns"], []]
     assert [d.table_name for d in docs] == ["orders", "orders", None]
     assert docs[0].content.startswith("## [термин: один] — таблица orders")
@@ -79,7 +93,7 @@ def test_markdown_parses_singular_plural_and_null(tmp_path: Path) -> None:
 def test_markdown_rejects_foreign_doc_kind(tmp_path: Path) -> None:
     path = _glossary(tmp_path, "## [термин: x] — таблица orders\nТело.\n")
     with pytest.raises(ValueError, match="только как glossary/few_shot"):
-        markdown_documents(path, doc_kind=DocKind.DDL, model_version="m")
+        markdown_documents(path, doc_kind=DocKind.DDL, model_version="m", business_tables=_TABLES)
 
 
 def test_build_documents_runs_the_guard(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -95,9 +109,11 @@ def test_build_documents_runs_the_guard(monkeypatch: pytest.MonkeyPatch) -> None
         model_version="m",
         source_ref="ddl:orders",
     )
+    monkeypatch.setattr(app, "business_tables_from_catalog", lambda *a, **kw: _TABLES)
     monkeypatch.setattr(app, "ddl_documents", lambda *a, **kw: [leak])
     monkeypatch.setattr(app, "relationship_documents", lambda *a, **kw: [])
     monkeypatch.setattr(app, "markdown_documents", lambda *a, **kw: [])
+    monkeypatch.setattr(app, "generate_noise_corpus", lambda *a, **kw: [])
     container = SimpleNamespace(
         settings=SimpleNamespace(
             embedding_model="m", postgres_dsn=SecretStr("postgresql://u:p@h/db")
@@ -109,27 +125,31 @@ def test_build_documents_runs_the_guard(monkeypatch: pytest.MonkeyPatch) -> None
 
 def test_markdown_unknown_table_in_header_rejected(tmp_path: Path) -> None:
     path = _glossary(tmp_path, "## [термин: x] — таблица secret_table\nТело.\n")
-    with pytest.raises(ValueError, match="вне демо-схемы"):
-        markdown_documents(path, doc_kind=DocKind.GLOSSARY, model_version="m")
+    with pytest.raises(ValueError, match="вне каталога источников"):
+        markdown_documents(
+            path, doc_kind=DocKind.GLOSSARY, model_version="m", business_tables=_TABLES
+        )
 
 
 def test_markdown_without_sections_rejected(tmp_path: Path) -> None:
     path = _glossary(tmp_path, "# Просто текст без разделов\n")
     with pytest.raises(ValueError, match="не найдено ни одного раздела"):
-        markdown_documents(path, doc_kind=DocKind.GLOSSARY, model_version="m")
+        markdown_documents(
+            path, doc_kind=DocKind.GLOSSARY, model_version="m", business_tables=_TABLES
+        )
 
 
 # --- guard: вторая линия инварианта C1 ---
 def test_guard_rejects_undeclared_table_mention() -> None:
-    docs = ddl_documents(_MIGRATION, model_version="m")
+    docs = ddl_documents(_MIGRATION, model_version="m", business_tables=_TABLES)
     # Санитизированный DDL проходит guard: контент ⊆ объявленных таблиц
-    check_declared_references(docs)
+    check_declared_references(docs, business_tables=_TABLES)
     # До-фиксовая утечка: контент упоминает bonuses, объявлена только orders
     leak = next(d for d in docs if d.table_name == "orders").model_copy(
         update={"content": "[few-shot] выручка и премии: orders.total + bonuses.amount"}
     )
     with pytest.raises(ValueError, match="bonuses"):
-        check_declared_references([leak])
+        check_declared_references([leak], business_tables=_TABLES)
 
 
 def test_guard_accepts_full_declaration(tmp_path: Path) -> None:
@@ -137,5 +157,7 @@ def test_guard_accepts_full_declaration(tmp_path: Path) -> None:
         tmp_path,
         "## [термин: кросс] — таблицы orders, bonuses\nТело: orders.total + bonuses.amount.\n",
     )
-    docs = markdown_documents(path, doc_kind=DocKind.GLOSSARY, model_version="m")
-    check_declared_references(docs)  # не падает
+    docs = markdown_documents(
+        path, doc_kind=DocKind.GLOSSARY, model_version="m", business_tables=_TABLES
+    )
+    check_declared_references(docs, business_tables=_TABLES)  # не падает

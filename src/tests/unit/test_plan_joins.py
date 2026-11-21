@@ -177,8 +177,9 @@ class StaticVectorStore:
         self._documents = documents
 
     def search(
-        self, query_embedding: list[float], *, ctx: RunContext, top_k: int
+        self, query: str, query_embedding: list[float], *, ctx: RunContext, top_k: int
     ) -> list[KnowledgeDocument]:
+        # Сигнатура гибрида S26: текст запроса (FTS-нога) + вектор (dense)
         if isinstance(self._documents, Exception):
             raise self._documents
         return self._documents[:top_k]
@@ -994,6 +995,32 @@ def test_candidate_cap_survives_single_document() -> None:
         [fat_doc], set(PERMISSIONS_ALL) | {"employees", "bonuses"}
     )
     assert len(tables) <= 6  # _MAX_CANDIDATE_TABLES — кап соблюлся
+
+
+def test_noise_docs_never_become_candidates() -> None:
+    """S26 (D-026, ruling N2): шумовой корпус — дистрактор замера, не знание:
+    retrieval-хит noise-документа не подмешивает свои таблицы в кандидаты
+    плана джойнов (измерительная инфраструктура не влияет на план)."""
+    real_doc = KnowledgeDocument(
+        doc_kind=DocKind.DDL,
+        table_name="orders",
+        referenced_tables=["orders"],
+        content="[таблица: orders] DDL",
+        model_version="bge-m3",
+        source_ref="ddl:orders",
+    )
+    noise_doc = KnowledgeDocument(
+        doc_kind=DocKind.NOISE,
+        table_name=None,
+        referenced_tables=["bonuses", "employees"],
+        content="[шум: bonuses, employees] дистрактор",
+        model_version="bge-m3",
+        source_ref="noise:0001",
+    )
+    tables = PlanJoinsService._candidate_tables(
+        [real_doc, noise_doc], {"orders", "bonuses", "employees"}
+    )
+    assert tables == ["orders"]  # noise-таблицы не кандидаты, real — кандидат
 
 
 def test_proposals_capped_per_run() -> None:
