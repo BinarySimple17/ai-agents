@@ -1,6 +1,6 @@
 # ER Diagram — модель данных
 
-- **Статус:** каноническая схема v1.7 (2026-11-20 — S06 fix-волна ревью: `referenced_tables` — права по всем таблицам документа, миграция 006, guard индексатора; кросс-табличные доки скрыты целиком). v1.6 (2026-11-20 — S06 feat-006: +`agent_knowledge` — векторная память знаний, dense-only (D-026 доп. 2), retrieval под ролью `agent_planner` (ruling W1 ARCH-GATE S06, c4-l2 v1.8), запись — только офлайн-индексация под сервисным DSN). v1.5 (2026-11-18 — синхронизация с ревью-03 R1/S8/N3: полный DDL-контракт ребра `agent_relationships` (единственный источник для миграций — ADR-006 §4.1); +`agent_edge_proposals` (заявки владельцу); `graph_version` в трейсе; +`agent_audit` (поля S8, append-only, отдельно от трейсов); pydantic-контракты `JoinPlan`/`QueryPlan`/`ResultCompact` и состав `AgentState` (N3). v1.4 — Neo4j вместо AGE; v1.3 — +`agent_data_sources`; v1.2 — канал `agent_trace`, счётчики `settings_version`)
+- **Статус:** каноническая схема v1.8 (2026-11-21 — S07 feat-007: ревизия v2 демо-ребра `e_campaigns_orders` — допущение first-touch в `usage_notes`, миграция 008, data-правка реестра без смены DDL). v1.7 (2026-11-20 — S06 fix-волна ревью: `referenced_tables` — права по всем таблицам документа, миграция 006, guard индексатора; кросс-табличные доки скрыты целиком). v1.6 (2026-11-20 — S06 feat-006: +`agent_knowledge` — векторная память знаний, dense-only (D-026 доп. 2), retrieval под ролью `agent_planner` (ruling W1 ARCH-GATE S06, c4-l2 v1.8), запись — только офлайн-индексация под сервисным DSN). v1.5 (2026-11-18 — синхронизация с ревью-03 R1/S8/N3: полный DDL-контракт ребра `agent_relationships` (единственный источник для миграций — ADR-006 §4.1); +`agent_edge_proposals` (заявки владельцу); `graph_version` в трейсе; +`agent_audit` (поля S8, append-only, отдельно от трейсов); pydantic-контракты `JoinPlan`/`QueryPlan`/`ResultCompact` и состав `AgentState` (N3). v1.4 — Neo4j вместо AGE; v1.3 — +`agent_data_sources`; v1.2 — канал `agent_trace`, счётчики `settings_version`)
 - **Требования prd.md:** FR-2 (граф связей), FR-6 (RBAC как настройки), FR-7 (семантика связей), FR-11 (трейс + аудит)
 - **Связанные:** ADR-003 (PG — истина, граф — снапшот), ADR-004 (декомпозиция), ADR-005 (права как данные), ADR-006 (реестр — единственный SoT, DDL §4.1), ADR-009 (кэш — вне этой схемы, Valkey), ADR-011 (agent_data_sources — каталог источников)
 
@@ -193,7 +193,10 @@ erDiagram
   deny / деградация) и семантики (`LEFT JOIN ... IS NULL` для «не был премирован»)
   были не синтетикой. Полезная ловушка в данных: `orders.campaign_id` NULLABLE —
   заказы вне кампаний молча теряются в INNER JOIN, что делает `join_type` ребра
-  содержательным решением, а не деталью синтаксиса (ADR-006).
+  содержательным решением, а не деталью синтаксиса (ADR-006). Ревизия v2 ребра
+  `e_campaigns_orders` (миграция 008, S07): `usage_notes` дополняется допущением
+  атрибуции — «пришли из рекламы» = first-touch, any-touch завышает цифру
+  (ADR-006 §4.7); `path_semantics` (S07) выводит его в ответы как допущение.
 - **Таблицы настроек — данные, не конфиг** (ADR-005/006): `agent_permissions`,
   `agent_user_roles`, `agent_relationships` редактируются владельцами (реестр —
   только через ревью, роль `registry_writer`); агент только читает. Роль —
@@ -257,4 +260,4 @@ erDiagram
 
 ## Трассировка
 
-Ревизии: v1.7 (S06 fix-волна: referenced_tables — инвариант прав по всем таблицам, миграции 006+007 — content-based backfill 0007 закрывает окно апгрейда) · v1.6 (S06: agent_knowledge — векторная память, dense-only, ruling W1) · v1.5 (контракт ребра R1, agent_edge_proposals, graph_version, аудит S8, pydantic N3) · Связанные ADR: ADR-003, ADR-004, ADR-005, ADR-006, ADR-007, ADR-009, ADR-011 · Канон: hw-01/README.md §3.3, §3.5
+Ревизии: v1.8 (S07: ревизия v2 демо-ребра e_campaigns_orders — first-touch в usage_notes, миграция 008) · v1.7 (S06 fix-волна: referenced_tables — инвариант прав по всем таблицам, миграции 006+007 — content-based backfill 0007 закрывает окно апгрейда) · v1.6 (S06: agent_knowledge — векторная память, dense-only, ruling W1) · v1.5 (контракт ребра R1, agent_edge_proposals, graph_version, аудит S8, pydantic N3) · Связанные ADR: ADR-003, ADR-004, ADR-005, ADR-006, ADR-007, ADR-009, ADR-011 · Канон: hw-01/README.md §3.3, §3.5
