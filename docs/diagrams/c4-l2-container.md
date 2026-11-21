@@ -1,6 +1,6 @@
 # C4 Level 2 — Container
 
-- **Статус:** каноническая схема v1.8 (2026-11-18 — развёртывание N1 (ревью-03, D-017 Python-native): асинхронный API — `agent-api` FastAPI/uvicorn (stateless Deployment + HPA; `POST /ask → 202 + job_id`, `GET /ask/{id}/stream` — SSE) и `agent-worker` arq (очередь — Valkey Streams; Deployment); PostgreSQL StatefulSet + PVC, миграции — Alembic Job; раздельные psycopg-пулы по ролям (`agent_planner`/`agent_ro`); NetworkPolicy — egress только к LLM-шлюзу; OTel-instrumentation fastapi/psycopg/httpx; аудит (S8) отдельно от трейсов; `asyncio.timeout(90)`; minikube — целевой dev-контур. v1.7 — Neo4j вместо AGE; v1.6 — решения владельца FIX-005 (кэш точного совпадения, источник `/metrics` — Streamlit-демо); v1.5 — ревизия 02 + SAP)
+- **Статус:** каноническая схема v1.9 (2026-11-21 — S09: пул agent_planner — +INSERT заявок agent_edge_proposals, миграция 0009, D-030; остальное — v1.8). v1.8 (2026-11-18 — развёртывание N1 (ревью-03, D-017 Python-native): асинхронный API — `agent-api` FastAPI/uvicorn (stateless Deployment + HPA; `POST /ask → 202 + job_id`, `GET /ask/{id}/stream` — SSE) и `agent-worker` arq (очередь — Valkey Streams; Deployment); PostgreSQL StatefulSet + PVC, миграции — Alembic Job; раздельные psycopg-пулы по ролям (`agent_planner`/`agent_ro`); NetworkPolicy — egress только к LLM-шлюзу; OTel-instrumentation fastapi/psycopg/httpx; аудит (S8) отдельно от трейсов; `asyncio.timeout(90)`; minikube — целевой dev-контур. v1.7 — Neo4j вместо AGE; v1.6 — решения владельца FIX-005 (кэш точного совпадения, источник `/metrics` — Streamlit-демо); v1.5 — ревизия 02 + SAP)
 - **Требования prd.md:** FR-1…FR-14 (контур целиком), NFR-1 (p95/TTFT), NFR-7 (смена провайдера конфигом)
 - **Связанные:** ADR-002 (state machine), ADR-003 (хранилища: PG + Neo4j), ADR-005 (RBAC, AuthProvider, рубеж БД), ADR-006 (реестр-SoT, синк снапшота графа), ADR-007 (роутер моделей), ADR-008 (принудительные форматы), ADR-009 (кэш), ADR-010 (Observability Plane); code-architecture-draft.md (слои и порты); observability.md (сигналы наблюдаемости); security.md §5 (сеть)
 
@@ -46,7 +46,7 @@ graph TB
     API & WORKER --> GUARD
     WORKER -->|"LLM-вызовы по ролям узлов"| LLM
     WORKER -->|"кэш: lookup после clarify, ключ с правами и graph_version"| VK
-    WORKER & GUARD -->|"пул agent_planner: retrieval, настройки, EXPLAIN"| PG
+    WORKER & GUARD -->|"пул agent_planner: retrieval, настройки, EXPLAIN,<br/>INSERT заявек agent_edge_proposals (v1.9 S09)"| PG
     WORKER & GUARD -->|"пул agent_ro: исполнение SQL (read-only, RLS + SET LOCAL)"| PG
     WORKER -->|"find_join_paths: k путей по снапшоту"| NEO
     WORKER -.->|"трейс прогона → query_trace (роль agent_trace, INSERT-only)"| PG
@@ -80,7 +80,7 @@ graph TB
 - **PostgreSQL — StatefulSet + PVC** (официальный образ pgvector/pgvector);
   **схема создаётся только миграциями Alembic** (`make infra-migrate`; Job/init-контур
   при деплое — D-009). **Раздельные psycopg-пулы по ролям:** планировщик
-  (`agent_planner` — retrieval, настройки, `EXPLAIN`, `search_path` со служебными
+  (`agent_planner` — retrieval, настройки, `EXPLAIN`, INSERT заявок (S09), `search_path` со служебными
   схемами графа), исполнитель (`agent_ro` — read-only, RLS + `SET LOCAL
   app.user_id`, без служебных схем), трейс (`agent_trace`, INSERT-only), владелец
   реестра (`registry_writer` — запись рёбер только через ревью; агент read-only).

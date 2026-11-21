@@ -215,9 +215,9 @@
         "feat-006",
         "feat-007"
       ],
-      "state": "active",
-      "status": "not-started",
-      "evidence": "",
+      "state": "passing",
+      "status": "done",
+      "evidence": "command «uv run pytest src/tests/unit/test_plan_joins.py -q» exited 0 at 2026-11-21T17:14:12+03:00 (scripts/verify-feature.sh)",
       "layers": [
         {
           "label": "layer-1-static",
