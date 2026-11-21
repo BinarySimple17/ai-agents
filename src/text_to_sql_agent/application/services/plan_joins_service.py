@@ -260,10 +260,13 @@ class PlanJoinsService:
 
         # --- Нога 2: граф (кандидаты путей строит код; сбой снапшота → fail
         # БЕЗ заявки: это инфраструктурный сбой, не факт отсутствия пути,
-        # Ловушка-3). Пин снапшота: версия ДО и ПОСЛЕ ноги — конкурентный
-        # sync-graph между запросами пар перемешал бы пути vN/vN+1 (ревью I6)
-        version_before = self._graph_store.graph_version()
+        # Ловушка-3). Пин снапшота: версия ДО и ПОСЛЕ ноги И ПОСЛЕ чтения
+        # семантики — конкурентный sync-graph между запросами пар перемешал бы
+        # пути/семантику vN/vN+1 (ревью I6 + re-review m4; оба чтения версии
+        # под тем же try — re-review C1: graph_version() штатно бросает
+        # SchemaGraphError при недоступном Neo4j)
         try:
+            version_before = self._graph_store.graph_version()
             paths_by_rel_ids, disconnected_pairs = self._graph_leg(
                 candidate_tables, ctx=ctx, allowed=frozenset(allowed)
             )
@@ -300,6 +303,15 @@ class PlanJoinsService:
                     unique_rel_ids.append(edge.rel_id)
         try:
             semantics = self._graph_store.path_semantics(unique_rel_ids, ctx=ctx)
+            # Третий контроль пина: семантика прочитана из PG позже путей —
+            # sync в этом окне склеил бы топологию vN с семантикой vN+1
+            # (re-review m4; остаточное окно после этой проверки — только
+            # сборка/валидация в памяти, без IO)
+            if self._graph_store.graph_version() != graph_version:
+                raise SchemaGraphError(
+                    "снапшот графа изменился при чтении семантики "
+                    f"(graph_version {graph_version}) — повторите прогон"
+                )
         except SchemaGraphError as exc:
             return self._fail(str(exc))
         sem_by_rel = {s.rel_id: s for s in semantics}

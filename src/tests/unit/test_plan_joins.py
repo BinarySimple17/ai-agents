@@ -114,7 +114,7 @@ _REGISTRY_SEM: dict[str, EdgeSemantics] = {
         left_table="products",
         left_columns=("product_id",),
         right_table="order_items",
-        right_columns=("order_id",),
+        right_columns=("product_id",),
         cardinality="1:n",
         fanout_guard=True,
     ),
@@ -199,6 +199,7 @@ class ScriptedGraphStore:
         sem: dict[str, EdgeSemantics] | None = None,
         paths_error: str | None = None,
         semantics_error: str | None = None,
+        version_error: str | None = None,
     ) -> None:
         self.calls: list[tuple[str, str, frozenset[str], int]] = []
         self._paths = paths
@@ -207,8 +208,11 @@ class ScriptedGraphStore:
         self._sem = sem or _REGISTRY_SEM
         self._paths_error = paths_error
         self._semantics_error = semantics_error
+        self._version_error = version_error
 
     def graph_version(self) -> int:
+        if self._version_error:
+            raise SchemaGraphError(self._version_error)
         if self._version_sequence:
             self._version = self._version_sequence.pop(0)
         return self._version
@@ -1026,3 +1030,75 @@ def test_hit_edge_ids_deterministic_order() -> None:
         ),
     ]
     assert PlanJoinsService._hit_edge_ids(docs) == ["e_campaigns_orders", "e_customers_orders"]
+
+
+def test_graph_version_failure_fails_typed() -> None:
+    """Re-review C1: graph_version() штатно бросает SchemaGraphError (Neo4j недоступен)
+    — typed FAIL, не сырой вылет из plan()."""
+    proposals = RecordingProposals()
+    result = _service(
+        ScriptedLLM(),
+        StaticVectorStore(_demo_docs()),
+        ScriptedGraphStore({}, version_error="Neo4j недоступен"),
+        proposals,
+    ).plan(_QUESTION, ctx=CTX, permissions=PERMISSIONS_ALL)
+    assert result.outcome is PlanOutcome.FAIL
+    assert "Neo4j недоступен" in (result.error or "")
+    assert proposals.calls == []
+
+
+def test_csv_superstring_key_denied_after_normalization() -> None:
+    """Re-review m1: нормализация CSV защищает от подстрочного прохода — ключ
+    customer_id НЕ покрыт правами «customer_id_legacy,name» (до-фиксовая
+    подстрочная проверка дала бы PLAN)."""
+    csv_permissions = {
+        "customers": "customer_id_legacy,name",
+        "orders": "customer_id,order_id,campaign_id,total",
+        "campaigns": "campaign_id",
+    }
+    graph = ScriptedGraphStore({("campaigns", "customers"): [_DEMO_PATH]})
+    result = _service(
+        ScriptedLLM(), StaticVectorStore(_demo_docs()), graph, RecordingProposals()
+    ).plan(_QUESTION, ctx=CTX, permissions=csv_permissions)
+    assert result.outcome is PlanOutcome.FAIL
+    assert "недоступно целиком" in (result.error or "")
+
+
+def test_overlong_path_fail_is_not_side_effect() -> None:
+    """Re-review m2: семантика согласована с путём — FAIL «длиннее лимита»
+    из фильтра, а не KeyError/ValidationError сборки."""
+    five = JoinPath(
+        edges=[
+            JoinEdge(rel_id=f"r{i}", from_table=f"t{i}", to_table=f"t{i + 1}", weight=1.0)
+            for i in range(4)
+        ],
+        total_weight=4.0,
+    )
+    sem = {
+        f"r{i}": EdgeSemantics(
+            rel_id=f"r{i}",
+            join_type="inner",
+            meaning=f"связь {i}",
+            left_table=f"t{i}",
+            left_columns=(f"k{i}",),
+            right_table=f"t{i + 1}",
+            right_columns=(f"k{i}",),
+        )
+        for i in range(4)
+    }
+    heavy = ScriptedGraphStore({("campaigns", "customers"): [five]}, sem=sem)
+    result = _service(
+        ScriptedLLM(), StaticVectorStore(_demo_docs()), heavy, RecordingProposals()
+    ).plan(_QUESTION, ctx=CTX, permissions=PERMISSIONS_ALL)
+    assert result.outcome is PlanOutcome.FAIL
+    assert "длиннее лимита" in (result.error or "")
+
+
+def test_version_change_during_semantics_fails() -> None:
+    """Re-review m4: третий контроль пина — sync между путями и семантикой ловится."""
+    graph = ScriptedGraphStore({("campaigns", "customers"): [_DEMO_PATH]}, version=[13, 13, 14])
+    result = _service(
+        ScriptedLLM(), StaticVectorStore(_demo_docs()), graph, RecordingProposals()
+    ).plan(_QUESTION, ctx=CTX, permissions=PERMISSIONS_ALL)
+    assert result.outcome is PlanOutcome.FAIL
+    assert "изменился при чтении семантики" in (result.error or "")
