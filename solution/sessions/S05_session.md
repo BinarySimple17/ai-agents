@@ -1,6 +1,6 @@
 # S05 — resolve_access: права из таблиц настроек + DevTokenAuth (веха V4, ДЗ-05)
 
-Этап: Веха V4 (ДЗ-05: первый узел FSM — детерминированный, без LLM) | Владелец: агент | Зависимости: S02, S04 | Оценка: 1 | Статус: [ ] не начата
+Этап: Веха V4 (ДЗ-05: первый узел FSM — детерминированный, без LLM) | Владелец: агент | Зависимости: S02, S04 | Оценка: 1 | Статус: ◐ в работе (2026-11-21)
 Фичи: feat-005 — resolve_access; зависимости feat-002 (passing), feat-004 (закрывается S04 до старта)
 Роль по фиче: закрывает feat-005 — финальная сессия, через make verify-feature
 
@@ -32,9 +32,44 @@ OIDC (прод-реализация порта — после MVP).
 5. Узел — детерминированный код, без LLM (behavior feat-005); молчит о недоступном:
    карта прав не содержит лишнего даже в трейс (S9-политика отказов).
 
+### Rulings ARCH-GATE (canon-check architect 2026-11-21 — verdict violations, закрыты до кода)
+
+- **R1 (Q1, гранты):** грантов agent_planner достаточно (`GRANT SELECT ON
+  agent_permissions, agent_user_roles, agent_data_sources, settings_version` —
+  миграция 0002:80-83), новой миграции НЕТ. Подключение — `settings.agent_planner_dsn`
+  (c4-l2: пул planner «retrieval, настройки»).
+- **R2 (Q2, порт):** порт чтения прав — `PermissionStore` (НЕ `AccessPolicy` —
+  ADR-005:42 резервирует это имя под будущий policy-движок RLS/region);
+  `application/ports/permission_store.py` + адаптер
+  `infrastructure/persistence/pg_permission_store.py` (образец пары —
+  edge_proposal_store). Строка в таблице портов S00 — тем же коммитом
+  (канон-дисциплина S00).
+- **R3 (Q3, счётчики):** кэш прав сверяет ОБА счётчика `'permissions'` +
+  `'user_roles'` одним SELECT (выдача/отзыв роли инкрементирует `'user_roles'` —
+  миграция 0001:177; сверка только 'permissions' — дыра revoke, нарушает ADR-005 §4).
+  Тест Task 3: правка agent_permissions И выдача/отзыв роли — оба перечитывают права.
+  In-memory per-user кэш в MVP правомерен (ADR-005 §4: пользователей ≤ 10, сброс
+  целиком при росте версии).
+- **R4 (Q4, identity-проводка):** верификация — в точке входа: CLI вызывает
+  `AuthProvider.verify(token)` (composition поставляет DevTokenAuth) ДО `graph.invoke`;
+  verified `user_id` кладётся в state (поле `user_id` в `AgentState`,
+  `initial_state(question, user_id)`); сырой `--user` verify не обходит. Узел
+  resolve_access fail-closed на пустой/отсутствующей identity. Синк стыка 1 S00
+  тем же коммитом.
+- **R5 (Q5, колонки):** CSV-нормализация на границе адаптера (прецедент ruling I4
+  S09: str-CSV → list, fail-closed ValueError на мусор); `'*'` остаётся литералом
+  `'*'` в списке колонок — разворот в конкретные колонки требует DDL-интроспекции,
+  интерпретация `'*'` — зона S11/S09, не S05.
+- **R6 (Q6, rejected/пустая карта):** unknown user_id (нет строк в agent_user_roles)
+  и непроверенный токен — оба `FLAG_IDENTITY_FAILED` → существующее ребро
+  `terminal_rejected` (routing.py:123-127, роутинг не трогаем). «Роли есть, прав нет»
+  — легальный deny-по-умолчанию: пустая карта, продолжение по графу (отдельный флаг
+  НЕ нужен; подграф/retrieval/валидатор в S09/S11 закроют всё сами).
+  `graph_version=0` (снапшот не загружен) пишет S05; реальный пин снапшота — S07.
+
 ## Предусловия
 
-- [ ] Сессия СТАРТУЕТ: статус в шапке переведён в «◐ в работе» и ARCH-GATE резолвлен ДО кода (canon-check architect ✅ либо обоснованный N/A) — старт-гейт (`guard-subagents.sh --phase start`, D-027) проверяет только стартованные (◐) сессии; «[ ] не начата» — план, гейт её скипает
+- [x] Сессия СТАРТУЕТ: статус в шапке переведён в «◐ в работе» и ARCH-GATE резолвлен ДО кода (canon-check architect ✅ либо обоснованный N/A) — старт-гейт (`guard-subagents.sh --phase start`, D-027) проверяет только стартованные (◐) сессии; «[ ] не начата» — план, гейт её скипает
 - [ ] S02 закрыта: `make infra-up && make infra-migrate && uv run pytest src/tests/integration/test_infra_schema.py -q` → passed
 - [ ] S04 закрыта: `uv run pytest src/tests/unit/test_graph.py -q` → passed (feat-004 passing)
 - [ ] `make check` зелёный (baseline репозитория)
@@ -48,6 +83,9 @@ OIDC (прод-реализация порта — после MVP).
 `infrastructure/persistence/dev_token_auth.py`): dev-токен → user_id из .env-списка
 демо-пользователей, никаких обращений к внешним IdP; пустой/чужой токен → отказ
 (fail-closed). identity — только из проверенного токена (контракт 3 S00).
+Проводка identity — ruling R4: verify вызывается в точке входа (CLI) ДО
+`graph.invoke`, verified `user_id` → поле `user_id` в `AgentState`
+(`initial_state(question, user_id)`); сырой `--user` verify не обходит.
 
 **✅ Самопроверка:**
 
@@ -61,9 +99,12 @@ uv run pytest src/tests/integration/test_resolve_access.py -q   # раздел A
 
 `application/services/resolve_access_service.py`: (1) `agent_user_roles` → роли user_id;
 (2) `agent_permissions` → таблицы + колонки + scope; (3) слияние ролей → единая карта
-`{tables: {table: [columns]}}` в `state.permissions` + `graph_version`-пин рядом
-(контракт 1); unknown user_id → вердикт rejected. SQL чтения — параметризованный,
-под ролью из правила 4; пустая карта (роли есть, прав нет) — легальный deny-по-умолчанию, не ошибка.
+`{tables: {table: [columns]}}` в `state.permissions` + `graph_version=0` (снапшот не
+загружен — ruling R6; реальный пин — S07); unknown user_id → вердикт rejected. SQL
+чтения — параметризованный, через порт `PermissionStore` (ruling R2), под ролью из
+правила 4; колонки — CSV-нормализация на границе адаптера, `'*'` литералом (ruling
+R5); пустая карта (роли есть, прав нет) — легальный deny-по-умолчанию, не ошибка
+(ruling R6).
 
 **✅ Самопроверка:**
 
@@ -76,9 +117,11 @@ make infra-up && uv run pytest src/tests/integration/test_resolve_access.py -q  
 ### Task 3: Актуальность прав — settings_version
 
 Кэш прав per-user (в-memory процесса достаточно для MVP; Valkey — только если доказано)
-со сверкой `settings_version('permissions')` на каждый запрос: триггер инкрементирует
-счётчик при правке строк настроек → следующий запрос перечитывает права (behavior
-feat-005: «правка строк настроек действует со следующего запроса»).
+со сверкой ОБЕИХ версий `settings_version` — `'permissions'` + `'user_roles'` одним
+SELECT (ruling R3: выдача/отзыв роли инкрементирует 'user_roles'; сверка только
+'permissions' — дыра revoke) на каждый запрос: триггер инкрементирует счётчик при
+правке строк настроек → следующий запрос перечитывает права (behavior feat-005:
+«правка строк настроек действует со следующего запроса»).
 
 **✅ Самопроверка:**
 
@@ -91,9 +134,11 @@ make infra-up && uv run pytest src/tests/integration/test_resolve_access.py -q  
 ### Task 4: Подключение в FSM + rejected-ребро
 
 Наполнение заглушки S04: узел resolve_access вызывает сервис, пишет permissions в
-state; routing: rejected-вердикт → терминал `rejected` (отказ без LLM, payload —
-вежливый текст без раскрытия причин настройки). Интеграционный тест через собранный
-Container (не напрямую сервис) — проверка, что FSM-путь жив.
+state; routing НЕ трогаем — rejected-вердикт это `FLAG_IDENTITY_FAILED` (unknown
+user_id И непроверенный токен, ruling R6) → существующее ребро `terminal_rejected`
+(отказ без LLM, payload — вежливый текст без раскрытия причин настройки).
+Интеграционный тест через собранный Container (не напрямую сервис) — проверка, что
+FSM-путь жив.
 
 **✅ Самопроверка:**
 
@@ -126,7 +171,7 @@ uv run pytest src/tests/unit/test_graph.py src/tests/integration/test_resolve_ac
 
 ## Гейты субагентов (заполняется по факту, до закрытия сессии)
 
-- ARCH-GATE: [✅ <verdict: compliant | violations | needs-decision> + <план/файл> | N/A — <причина>]
+- ARCH-GATE: ✅ verdict violations → rulings R1–R6 закрыты до кода (canon-check architect 2026-11-21, план S05_session.md: гранты 0002 достаточны — R1; порт `PermissionStore` + S00-строка — R2; ОБА счётчика settings_version + тест revoke — R3; identity-проводка verify→state — R4; CSV/'\*' на границе — R5; rejected/пустая карта/graph_version=0 — R6)
 - REVIEW-GATE: [✅ <Ready to merge? вердикт> + <BASE7>..<HEAD7> | N/A — <причина>]
 
 ## Отчёт по сессии (заполняется по факту)

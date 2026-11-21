@@ -117,23 +117,29 @@ def build_fsm_app(
     *,
     tracer: Tracer | None = None,
     caps: FSMGuardCaps | None = None,
+    node_overrides: Mapping[str, Callable[[State], dict[str, Any]]] | None = None,
 ) -> Any:
     """Собрать компилированный граф FSM (15 узлов канона + glue рёбер).
 
     ``caps`` — глобальные капы прогона; None — гвард капов не ставится
-    (тесты маршрутов без Settings). Сборка — только через composition (S00);
-    единственная точка вызова вне composition — self-тест гварда в docs нет.
+    (тесты маршрутов без Settings). ``node_overrides`` — подмена заглушек
+    содержательными узлами (S05+: resolve_access и далее; сборка подмен —
+    только composition, граф не правится — биндер принимает любую функцию).
+    Сборка — только через composition (S00).
     """
     graph: StateGraph = StateGraph(AgentState)
 
-    # 15 содержательных узлов канона (реестр — STUB_NODES; S05+ подменяет
-    # заглушки сервисами, граф не правится — биндер принимает любую функцию).
-    # Гвард глобальных капов — на ВСЕХ условных рёбрах (и на рёбрах гейтов
-    # ретрая ниже): сработать он должен на ребре, ВЕДУЩЕМ в узел с LLM
-    # (решение ребра = имя LLM-узла → llm_guard), не на ребре «из» него
-    # (первый LLM-узел — clarify, входящее ребро — resolve_access, который
-    # сам LLM не зовёт)
-    for name, node_fn in STUB_NODES.items():
+    # 15 содержательных узлов канона (реестр — STUB_NODES; подмены —
+    # node_overrides поверх реестра). Гвард глобальных капов — на ВСЕХ условных
+    # рёбрах (и на рёбрах гейтов ретрая ниже): сработать он должен на ребре,
+    # ВЕДУЩЕМ в узел с LLM (решение ребра = имя LLM-узла → llm_guard), не на
+    # ребре «из» него (первый LLM-узел — clarify, входящее ребро — resolve_access,
+    # который сам LLM не зовёт)
+    nodes: dict[str, Callable[[State], dict[str, Any]]] = {
+        **STUB_NODES,
+        **(node_overrides or {}),
+    }
+    for name, node_fn in nodes.items():
         route = CONDITIONAL_ROUTES[name]
         if caps is not None:
             route = make_guarded_route(route, caps, LLM_NODES)

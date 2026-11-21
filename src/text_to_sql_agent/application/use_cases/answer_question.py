@@ -51,12 +51,17 @@ class AnswerQuestion:
         self._runner = runner
         self._llm = llm
 
-    def run(self, question: str) -> FSMResult:
-        """Прогнать вопрос через FSM: reset бюджета → invoke → исход."""
+    def run(self, question: str, *, user_id: str = "") -> FSMResult:
+        """Прогнать вопрос через FSM: reset бюджета → invoke → исход.
+
+        ``user_id`` — verified identity (ruling R4 ARCH-GATE S05): точка входа
+        проверяет токен через `AuthProvider.verify` ДО прогона; пусто — узел
+        resolve_access fail-closed → rejected (прогон не начинается без identity).
+        """
         # Обязательство S03: прогон начинает запрос с нуля — аккумулятор прошлого
         # прогона ложно уменьшил бы остаток для эскалаций M1 (ruling Q7 S09)
         self._llm.reset_request_budget()
-        state: AgentState = initial_state(question)
+        state: AgentState = initial_state(question, user_id)
         try:
             final = self._runner.run(state)
         except BudgetExceededError as exc:

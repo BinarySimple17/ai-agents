@@ -14,9 +14,9 @@ LLM/БД не трогает (содержательное наполнение 
 заглушка работает и в happy-path, и в тестах веток без второй реализации.
 
 Правда заглушек (не выдавать за содержательное поведение):
-- resolve_access: identity приходит проверенной (S00: аутентификация вне скоупа,
-  DevTokenAuth — S05), права — пустой scope, graph_version — 0 (снапшот не
-  загружен, ADR-006 §4.3); синк графа/прав подменяет S05/S07.
+- resolve_access: identity приходит проверенной (S00: аутентификация вне скоупа),
+  права — пустой scope, graph_version — 0 (снапшот не загружен, ADR-006 §4.3);
+  наполнение — S05 (resolve_access_node + ResolveAccessService), пин снапшота — S07.
 - clarify: вопрос однозначен, допущения фиксирует код ([] — решение вехи V3,
   hw-plan §4); interrupt()/checkpointer — S08.
 - plan_joins: JoinPlan не строится (пути графа — S09, подключение — S10);
@@ -288,14 +288,17 @@ STUB_NODES: dict[str, Any] = {
 }
 
 
-def initial_state(question: str) -> "AgentState":
+def initial_state(question: str, user_id: str = "") -> "AgentState":
     """Стартовый state прогона: контракт стыка 1, дефолты нейтральны.
 
+    ``user_id`` — verified identity (ruling R4 ARCH-GATE S05: AuthProvider.verify
+    в точке входа ДО прогона; пусто — узел resolve_access fail-closed → rejected).
     Флаги усечения — False (неполное не выдаётся за полное — S15 выставит);
     route_flags/retry_count/visited_nodes — нейтральные кодовые дефолты.
     """
     return {
         "question": question,
+        "user_id": user_id,
         "rewritten_question": None,
         "assumptions": [],
         "permissions": {},

@@ -178,6 +178,14 @@ class Settings(BaseSettings):
     agent_trace_password: SecretStr
     registry_writer_password: SecretStr
 
+    # --- Dev-аутентификация (S05, ruling R4 ARCH-GATE; ADR-005:114-117) ---
+    # Токены демо-пользователей "user_id:token,user_id:token" (сидированные
+    # u_analyst/u_logist/u_hr — миграция 0003); секрет — в .env, не в коде.
+    # Production — OIDCAuth за тем же портом (вне скоупа MVP). Пусто —
+    # DevTokenAuth отклоняет любой токен (fail-closed); CLI --fsm требует
+    # --token (сырой --user verify не проходит).
+    agent_dev_tokens: str = ""
+
     # --- Трейс (FR-11): JSONL вне git; дефолт — канонный путь наблюдаемости ---
     trace_jsonl_path: Path = Path(".harness/traces/trace.jsonl")
 
@@ -196,6 +204,28 @@ class Settings(BaseSettings):
         password = quote(self.agent_planner_password.get_secret_value(), safe="")
         netloc = f"agent_planner:{password}@{parts.netloc.rpartition('@')[2]}"
         return urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
+
+    @property
+    def dev_token_map(self) -> dict[str, str]:
+        """``AGENT_DEV_TOKENS`` "user_id:token,…" → {user_id: token} (fail-fast на мусоре).
+
+        Мусорная запись (нет ':', пустые части) и дубликат user_id — ValueError:
+        конфигурация аутентификации не прощает опечаток — молча пропущенная пара
+        означала бы fail-closed-отказ в рантайме там, где нужна демонстрация
+        (fail-fast на старте процесса).
+        """
+        tokens: dict[str, str] = {}
+        raw = self.agent_dev_tokens.strip()
+        if not raw:
+            return {}
+        for entry in raw.split(","):
+            user_id, sep, token = entry.strip().partition(":")
+            if not sep or not user_id or not token:
+                raise ValueError("AGENT_DEV_TOKENS: ожидается 'user_id:token' — обе части непусты")
+            if user_id in tokens:
+                raise ValueError(f"AGENT_DEV_TOKENS: дубликат user_id '{user_id}'")
+            tokens[user_id] = token
+        return tokens
 
 
 def load_settings() -> Settings:
