@@ -172,13 +172,40 @@ uv run pytest src/tests/unit/test_graph.py src/tests/integration/test_resolve_ac
 ## Гейты субагентов (заполняется по факту, до закрытия сессии)
 
 - ARCH-GATE: ✅ verdict violations → rulings R1–R6 закрыты до кода (canon-check architect 2026-11-21, план S05_session.md: гранты 0002 достаточны — R1; порт `PermissionStore` + S00-строка — R2; ОБА счётчика settings_version + тест revoke — R3; identity-проводка verify→state — R4; CSV/'\*' на границе — R5; rejected/пустая карта/graph_version=0 — R6)
-- REVIEW-GATE: [✅ <Ready to merge? вердикт> + <BASE7>..<HEAD7> | N/A — <причина>]
+- REVIEW-GATE: [pending — диспетчеризация code-reviewer оборвана дневным лимитом API-ключа (75,18/75,00 ₽, субагент не завершил вердикт); решение владельца 2026-11-21 — пауза до 2026-11-22. Повторить: BASE=298e36c HEAD=1aa3aa0, вердикт → fix-волна → verify-feature]
 
 ## Отчёт по сессии (заполняется по факту)
 
 - Сделано:
-  - [Task: что реально сделано, коммиты, число тестов/ассертов, live-прогон]
+  - Старт: план дожат до rulings R1–R6 (verdict violations → закрыты ДО кода), feat-005
+    активирована, ветка `feat-005-resolve-access` от `milestone/v4`, ./init.sh зелёный.
+  - Task 1 (Auth): порт `AuthProvider` + `DevTokenAuth` (compare_digest, fail-closed —
+    пустая карта токенов отклоняет всё); `Settings.agent_dev_tokens` + `dev_token_map`
+    (fail-fast на мусоре/дубликате); проводка identity — CLI `--fsm --token`: verify ДО
+    graph.invoke (R4), сырой `--user` verify не обходит.
+  - Task 2 (права): порт `PermissionStore` + `PgPermissionStore` под agent_planner
+    (гранты 0002:80-83, новой миграции НЕТ — R1); CSV-нормализация на границе, `'*'`
+    литералом (R5); `RightsUnavailableError` — недоступность БД = отказ, не «пустые права».
+  - Task 3 (свежесть): `ResolveAccessService` — кэш per-user со сверкой ОБЕИХ версий
+    settings_version 'permissions'+'user_roles' (R3: дыра revoke закрыта); тесты — правка
+    прав И выдача/отзыв роли перечитывают права (integration, admin-канал).
+  - Task 4 (FSM): подмена заглушки через `node_overrides` в composition (граф не тронут);
+    rejected — существующее ребро по `FLAG_IDENTITY_FAILED` (R6, routing не трогаем);
+    `graph_version=0` — пин S07; FSM-тесты через собранный Container.
+  - Коммит 1aa3aa0; тесты **456 passed** (+39: unit auth/node/сервис, integration
+    test_resolve_access.py — сиды u_analyst/u_logist, bump прав/ролей, FSM done/rejected
+    без единого LLM-вызова); S00 (стык 1 user_id + строка порта) и ARCHITECTURE — тем же
+    коммитом.
+  - layer-3: `--fsm --token dev-analyst-token` → done (10 узлов); без токена/чужой токен
+    → rejected exit 1; `--token dev-logist-token` → done.
 - Отклонения от плана:
-  - [что сделали не так, как в задаче, и почему; каждое отклонение — осознанное]
+  - Юнит-файл переименован в `test_resolve_access_node.py` — коллизия import-file-mismatch
+    с integration `test_resolve_access.py` (одинаковый basename без __init__.py);
+    verification-команду фичи это не затрагивает.
+  - **Сессия не завершена** (осознанная пауза): дневной лимит API-ключа (75,18/75,00 ₽)
+    оборвал code-reviewer на середине вердикта (3,3М субагент-токенов); решение владельца
+    2026-11-21 — остановиться до завтра в чистом состоянии.
 - Перенесено в другие сессии:
-  - [ID сессии — что перенесено и почему; если в беклог — BL-NN-файл в solution/backlog/ (см. backlog/README.md)]
+  - Континуация S05 (2026-11-22): code-reviewer по 298e36c..1aa3aa0 → fix-волна при
+    находках → REVIEW-GATE ✅ → `make verify-feature F=feat-005` → merge
+    `feat-005-resolve-access` в `milestone/v4` (D-031) → End of Session + make archive.
