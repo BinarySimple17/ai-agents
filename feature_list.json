@@ -529,7 +529,7 @@
           "repair": "Read failing test (LLM/хранилище мокаются, S00 правило 7); fix flow handling and re-run."
         }
       ],
-      "evidence": "command «uv run pytest src/tests/unit/test_agent_flow.py -q» exited 0 at 2026-11-21T12:40:07+03:00 (scripts/verify-feature.sh)"
+      "evidence": "command «uv run pytest src/tests/unit/test_agent_flow.py -q» exited 0 at 2026-11-21T13:29:54+03:00 (scripts/verify-feature.sh)"
     }
   ]
 }

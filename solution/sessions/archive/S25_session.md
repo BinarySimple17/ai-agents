@@ -1,6 +1,6 @@
 # S25 — feat-020: объединённый контур ДЗ-03 (retrieval + тул run_sql + стриминг)
 
-Этап: веха V2, ДЗ-03 (усиливающая фича — директива владельца) | Владелец: агент | Зависимости: S02, S03, S06, S13, S19, S21, S23, S24 | Оценка: 1.5 | Статус: ◐ в работе
+Этап: веха V2, ДЗ-03 (усиливающая фича — директива владельца) | Владелец: агент | Зависимости: S02, S03, S06, S13, S19, S21, S23, S24 | Оценка: 1.5 | Статус: ✅ 2026-11-21
 Фичи: feat-020 — Объединённый контур ДЗ-03: retrieval + тул run_sql + стриминг; dependencies (feat-003, feat-006, feat-013) в passing
 Роль по фиче: закрывает feat-020 — финальная сессия, через make verify-feature
 
@@ -97,12 +97,12 @@ make clean-check  # чистое состояние, гейты обеих фа�
 
 ## Критерии приёмки
 
-- [ ] feat-020 в state=passing с evidence (`make verify-feature F=feat-020`), behavior-поля соответствуют факту
-- [ ] Дефолтный прогон CLI: вопрос → стрим ходов → исполнение run_sql → финальный ответ с реальным числом на stdout (D-022); `--plain` сохраняет поведение ДЗ-2; `--retrieve` отсутствует
-- [ ] Кап ходов S13 переиспользован (без второй константы); ход text+tool_calls обработан по ruling 3; malformed-тег не доходит до пользователя как ответ
-- [ ] S00 (стык 2 + Правки) и observability §2.4 синхронизированы в своих коммитах; глоссарий проиндексирован
-- [ ] layer-3: артефакты hw-03 пересняты на новом контуре, hw-02 README синхронизирован
-- [ ] REVIEW-GATE: code-reviewer по диапазону сессии, Critical/Important закрыты; отчёт заполнен; sessions.md/progress.md обновлены; make archive выполнен
+- [x] feat-020 в state=passing с evidence (`make verify-feature F=feat-020`, пере-прогнан на HEAD 10f5b47), behavior-поля соответствуют факту
+- [x] Дефолтный прогон CLI: вопрос → стрим ходов → исполнение run_sql → финальный ответ с реальным числом на stdout (D-022; 71 чанк, «5 клиентов»); `--plain` сохраняет механику ДЗ-2 (паритет-прогон: тоже 5); `--retrieve` отсутствует
+- [x] Кап ходов S13 переиспользован (пин + поведенческий тест без переопределения); ход text+tool_calls по ruling 3 (тест, включая пересечение с Hermes-тегом); malformed-тег не доходит как ответ (возврат зеркалит экран)
+- [x] S00 (стык 2 + Правки — 022c8bc) и observability §2.4 (4133322) синхронизированы в своих коммитах; глоссарий проиндексирован (24 документа)
+- [x] layer-3: артефакты hw-03 пересняты на новом контуре (дважды — после LLM_REASONING_EFFORT и после re-review), hw-02 README синхронизирован (--plain)
+- [x] REVIEW-GATE: два ревью (основное + re-review), 0C, все Important закрыты (в т.ч. один опровергнут трейсом); отчёт заполнен; sessions.md/progress.md обновлены; make archive выполнен
 
 ## Ловушки
 
@@ -116,13 +116,24 @@ make clean-check  # чистое состояние, гейты обеих фа�
 ## Гейты субагентов (заполняется по факту, до закрытия сессии)
 
 - ARCH-GATE: ✅ compliant (canon-check architect 2026-11-21, диспетчеризация в S24-разведке; вердикт «по существу план канону соответствует»): (1) расширение StreamFinal полем tool_calls — прецедент D-021/W2 «расширение полями», отдельный чанк-тип StreamToolCallDelta отвергнут (ломает контракт генератора, дельты консумеру не нужны); (2) guard NO_TEXT_FALLBACK_REASONS — консумер-сайв conditioning, константу не менять; (3) события — переиспользование agent.* (новые значения mode/source, не имена — D-021-аналог) + синк observability §2.4; (4) кап ходов — зеркало MAX_TOOL_CALLS=3 + финал без tools (S13 Q5), бюджет на прогон через провайдера; (5) ход text+tool_calls — ruling в «Правилах» 3; (6) ADR-002 не затронут (модель выбирает тул, не узел — прецедент S13); blocker S24 (перепривязка ARCH-GATE) закрыт — S24 закрыта до старта S25; обязательные синки S00/observability/feature_list — в волнах задач
-- REVIEW-GATE: ✅ With fixes (code-reviewer 2026-11-21, диапазон 2ccfc01..4133322 — волны 1-3; 251 passed, make check exit=0): 0C/2I/12m. Important-2 закрыта фикс-волной a1c9d6f — точная OpenAI-последовательность истории второго хода (system, user, assistant(content=None, tool_calls), tool(tool_call_id)) + заморозка сообщений в фейке (per-call ассерты). Important-1 (hw-02/hw-03 README ссылаются на упразднённый --retrieve) — плановая Task 5, ОБЯЗАНА закрыться до merge/закрытия сессии (критерий 5). Minor'ы 1-10, 12 закрыты в a1c9d6f (docstrings возврата, \n-сепаратор преамбулы, тест ruling 3×4, поведенческий пин капа, стрим без финала → текст, _consume_stream без дубля + printed⟺printer∧chunks, синтез id call-stream-N, reasoning не печатается на тул-ходе, observability non-terminal degrade, RETRIEVAL_UNAVAILABLE_NOTE, flow-половина регресса C1 на новом контуре); Minor-11 (quality-document cli-строка) — End of Session шаг 7
+- REVIEW-GATE: ✅ With fixes (code-reviewer 2026-11-21, диапазон 2ccfc01..4133322 — волны 1-3; 251 passed, make check exit=0): 0C/2I/12m. Important-2 закрыта фикс-волной a1c9d6f — точная OpenAI-последовательность истории второго хода (system, user, assistant(content=None, tool_calls), tool(tool_call_id)) + заморозка сообщений в фейке (per-call ассерты). Important-1 (hw-02/hw-03 README ссылаются на упразднённый --retrieve) — плановая Task 5, ОБЯЗАНА закрыться до merge/закрытия сессии (критерий 5). Minor'ы 1-10, 12 закрыты в a1c9d6f (docstrings возврата, \n-сепаратор преамбулы, тест ruling 3×4, поведенческий пин капа, стрим без финала → текст, _consume_stream без дубля + printed⟺printer∧chunks, синтез id call-stream-N, reasoning не печатается на тул-ходе, observability non-terminal degrade, RETRIEVAL_UNAVAILABLE_NOTE, flow-половина регресса C1 на новом контуре); Minor-11 (quality-document cli-строка) — закрыт в закрывающем коммите (cli/llm строки переписаны под feat-020). Re-review (code-reviewer 2026-11-21, диапазон 4133322..fc135dc — фикс-волна + волны 4-5): «With fixes» 0C/3I/8m → fix-волна 10f5b47: I1 (README vs SQL артефакта) ОПРОВЕРГНУТ JSONL-трейсом — полный SQL содержит оба фильтра, корень был в усечении 140 символов в watcher-скрипте (лимит 500, артефакты пересняты — 71 чанк, ответ цитирует полный SQL); I2 — валидация llm_reasoning_effort (allowlist SDK, нормализация, fail-fast) с регрессами; I3 — model-card v1.4; minors 1-8 закрыты (включая ENV_NAMES +EMBEDDING_BASE_URL — пре-существующий дрейф). 259 passed, make check exit=0
 
 ## Отчёт по сессии (заполняется по факту)
 
 - Сделано:
-  - <по факту>
+  - feat-020 → passing (make verify-feature, evidence 2026-11-21 на HEAD 10f5b47; 259 passed, make check exit=0, clean-check 0/0)
+  - Wave 1 (022c8bc): порт — `StreamFinal.tool_calls` (зеркало буферного пути), адаптер-накопитель тул-дельт (склейка по index), S00-синк в коммите порта; 5 тестов
+  - Waves 2+3 (4133322): `run_agent_flow` — объединённый контур ДЗ-03 (retrieval-блок в промпт тул-контура, цикл ходов на complete_stream, agent.* mode=agent/source=agent_stream), `--plain`, упразднение `--retrieve`/`run_retrieval_flow`; observability §2.4; test_agent_flow (24 сценария), перенос флоу-семантики S19 из test_streaming
+  - Ревью 1 (2ccfc01..4133322): «With fixes» 0C/2I/12m → фикс-волна a1c9d6f — точная OpenAI-последовательность истории (I2), синтез id call-stream-N (M7), reasoning не печатается на тул-ходе (M8), _consume_stream (M6), сепаратор преамбулы (M2), тесты ruling 3×4/капа/final=None, C1 flow-регресс (M12)
+  - Wave 4 (067ccf6): справочники демо-данных в глоссарий (2 секции — countries/statuses), переиндексация до 24 документов
+  - Wave 5: ConsoleTracer-фикс (49c166f — layer-3 вскрыл латентный баг S21 «0 строк при непустых колонках», TypeError в рендере, регресс-тест); `LLM_REASONING_EFFORT` + guardrail счёта сущностей (0ecf5a1 — layer-3: reasoning qwen3.8-9b с тула́ми кладёт финал в reasoning_content, стрим = 1 фолбэк-чанк; off возвращает 71-чанковый контент-стрим, цена — небрежный SQL — компенсирована); артефакты hw-03 пересняты + hw-03/hw-02 README (fc135dc, закрыт I1 первого ревью)
+  - Re-review (4133322..fc135dc): «With fixes» 0C/3I/8m → fix-волна 10f5b47 — I1 опровергнут трейсом (полный SQL с обоими фильтрами; корень — усечение 140 символов в watcher), I2 валидация reasoning_effort + регрессы, I3 model-card v1.4, minors (ENV_NAMES +EMBEDDING_BASE_URL, стрим-ассерт, пин guardrail, де-дупликация глоссария, .env.example 5 шагов)
 - Отклонения от плана:
-  - <по факту>
+  - Волны 2+3 слиты в один коммит: упразднение run_retrieval_flow ломает существующие тесты — красный промежуточный коммит противоречил бы атомарности (AGENTS.md)
+  - Task 4: ДВЕ секции глоссария вместо одной (guard индексатора — упомянутые таблицы ⊆ объявленные; статусы живут в orders)
+  - Вне исходного плана, по находкам layer-3: Settings `LLM_REASONING_EFFORT` (владелец снял бюджет reasoning в LM Studio — не помогло; у модели только on/off; бинарный трейд-офф thinking/стрим закрыт параметром + guardrail'ом); ConsoleTracer-баг (латентный S21); guardrail счёта сущностей в SYSTEM_PROMPT
+  - Сценарий из исходного плана ДЗ-03 («Германия, октябрь») даёт честный 0 (в сиде клиенты созданы в ноябре 2026) — артефакты сняты на RF-сценарии с числом 5; вариант задокументирован в hw-03/README
+  - Пере-верификация: скрипт скипает passing — фича переведена в active и прогнана заново ради evidence на HEAD (re-review m8); «21→24» в сообщении 067ccf6 — фактически корпус 22→24 (подсчёт эры S24 был неточен; README говорит верные 24)
 - Перенесено в другие сессии:
-  - <по факту>
+  - BL-010 открыт до V4: коды справочников дублируются в SYSTEM_PROMPT сознательно (--plain живёт без retrieval)
+  - Политика «тихой усечённости» (стрим без StreamFinal) — V4/feat-015; поведение заморожено тестом (M5)
