@@ -4,12 +4,12 @@
 спецификация — `.docs/hw-03/` вне гита, план выполнения — `.docs/hw-plan.md` §3).
 Веха V2, фичи feat-006 (векторная память, сессия S06) + feat-019 (стриминг, сессия S19).
 
-## Что сдаём → где лежит
+## Что где лежит
 
 | Артефакт hw-plan §3 | Реализация |
 |---|---|
 | Источник контекста | `docs/glossary.md`, `docs/few_shot.md` (кураторские) + DDL из миграции 0001 и связи из `agent_relationships_active` → индексация `make index-knowledge` (`src/apps/index_knowledge.py`) в pgvector за портом `VectorStore` (`infrastructure/memory/pgvector_store.py`) |
-| Подключение к агенту | retrieval в промпт вызова (≈2К токенов, кап по границе документа) — `run_retrieval_flow` в `src/apps/cli.py` (контур «вопрос → retrieval → LLM → стрим», без FSM — он в V4) |
+| Подключение к агенту | retrieval в промпт вызова (≈2К токенов, кап по границе документа) — `run_retrieval_flow` в `src/apps/cli.py` (контур «вопрос → retrieval → LLM → стрим» |
 | Streaming | `LLMProvider.complete_stream` (порт + адаптер, `stream=True` + `stream_options.include_usage`) → потоковая печать дельт в CLI по мере генерации |
 | Сценарий | «Сколько новых клиентов из Германии пришло из рекламных кампаний в октябре?» — ниже, воспроизводим командой + сидами |
 | Фиксация архитектуры | ADR-003 (pgvector — истина данных), ADR-005 (фильтр прав в SQL поиска — deny-by-default), выжимка ниже |
@@ -49,7 +49,7 @@ uv run --env-file .env python -m apps.cli --retrieve --user u_logist \
 
 ## Качество ответа (retrieval-контекст работает)
 
-Модель использовала знания из векторной памяти, а не общие представления:
+Модель использовала знания из векторной памяти:
 код страны `'DE'` (глоссарий: `'Germany'`/`'RU'` ≠ кода в БД), семантика
 `campaign_id IS NOT NULL` (few-shot «заказ вне кампании»: 33 заказа с NULL
 campaign_id в демо-данных — INNER JOIN по campaigns молча отбросил бы их),
@@ -57,14 +57,13 @@ campaign_id в демо-данных — INNER JOIN по campaigns молча о
 
 TTFT (первый чанк 5.7с) — время промпт-обработки локальной модели на скромном
 железе; порог NFR-1 (≤ 3с) — SLO-цель (observability §4), замер транслируется
-в `llm.complete.ttft_ms` — основа eval-набора (FR-11), калибровка порогов —
-выпускная сессия.
+в `llm.complete.ttft_ms` — основа eval-набора (FR-11), калибровка порогов после реализации и не на dev стенде.
 
 ## Архитектура (выжимка)
 
 - **Данные знаний** — pgvector (`agent_knowledge`: embedding vector(1024), HNSW
   cosine, unique `source_ref`); четыре вида документов: DDL, связи, глоссарий,
-  few-shot; `referenced_tables[]` — права проверяются по ВСЕМ таблицам документа
+  few-shot; `referenced_tables[]` — права проверяются по всем таблицам документа
   (кросс-табличный документ скрыт целиком, ADR-005 deny-by-default).
 - **Права** — фильтр джойном с `agent_user_roles`/`agent_permissions` в самом
   SQL поиска (не пост-фильтрация); чтение — роль `agent_planner`, запись —
