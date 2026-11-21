@@ -158,6 +158,31 @@ def test_observation_empty_result_only_header() -> None:
     assert stream.getvalue() == "  ← 0 строк (усечён: нет)\n"
 
 
+def test_observation_zero_rows_with_columns_renders_header_only() -> None:
+    # Layer-3 S25: тул вернул 0 строк при непустых колонках (объединённый контур
+    # feat-020: «SELECT DISTINCT …» пришёл пустым) — прежний max(len(name), *())
+    # на пустых cells давал TypeError «'int' object is not iterable», рендер
+    # падал (RuntimeWarning, событие терялось). Соседний тест с columns=[] не
+    # ловил: ранний выход `if not columns` до расчёта ширин. Регресс: падает
+    # на до-фиксовом коде
+    tracer, stream = _tracer()
+    tracer.record(
+        Trace(
+            event="agent.observation",
+            payload={
+                "ok": True,
+                "columns": ["channel", "cnt"],
+                "rows_preview": [],
+                "row_count": 0,
+                "truncated": False,
+            },
+        )
+    )
+    # Рендер: заголовок результата + строка имён колонок без данных (информативно
+    # для оператора — он видит, какие колонки БЫЛИ у пустого результата)
+    assert stream.getvalue() == "  ← 0 строк (усечён: нет)\n    │ channel │ cnt │\n"
+
+
 def test_observation_columns_capped_not_silently() -> None:
     # Ревью S21 (Minor): кап колонок не молчит — оператор видит хвост
     tracer, stream = _tracer()

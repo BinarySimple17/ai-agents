@@ -17,6 +17,8 @@ ENV_NAMES = (
     "LLM_BASE_URL",
     "LLM_API_KEY",
     "LLM_REQUEST_TIMEOUT_S",
+    "LLM_REASONING_EFFORT",
+    "EMBEDDING_BASE_URL",
     "MODEL_CHEAP",
     "MODEL_MID",
     "MODEL_STRONG",
@@ -247,3 +249,27 @@ def test_explicit_kwargs_win_over_env(clean_env):
     overrides = {k.lower(): v for k, v in REQUIRED_ENV.items()} | {"model_mid": "mid-explicit"}
     settings = Settings(_env_file=None, **overrides)
     assert settings.model_mid == "mid-explicit"
+
+
+def test_reasoning_effort_normalized_and_allowed() -> None:
+    # Re-review S25 I2: нормализация strip().lower() — «none » из .env не даёт
+    # HTTP 400 на каждом вызове; канонический набор SDK пропускается
+    settings = Settings(**REQUIRED_ENV, _env_file=None, llm_reasoning_effort=" none ")
+    assert settings.llm_reasoning_effort == "none"
+    settings = Settings(**REQUIRED_ENV, _env_file=None, llm_reasoning_effort="HIGH")
+    assert settings.llm_reasoning_effort == "high"
+    settings = Settings(**REQUIRED_ENV, _env_file=None, llm_reasoning_effort="  ")
+    assert settings.llm_reasoning_effort == ""  # пусто — параметр не отправляется
+
+
+def test_reasoning_effort_typo_fails_fast() -> None:
+    # Опечатка падает на загрузке Settings, а не на первом запросе шлюза
+    # (HTTP 400 не ретраится — деградация с невнятной причиной)
+    with pytest.raises(ValidationError, match="канонического набора"):
+        Settings(**REQUIRED_ENV, _env_file=None, llm_reasoning_effort="non")
+
+
+def test_reasoning_effort_env_binding() -> None:
+    env = {**REQUIRED_ENV, "LLM_REASONING_EFFORT": "low"}
+    settings = Settings(_env_file=None, **env)
+    assert settings.llm_reasoning_effort == "low"

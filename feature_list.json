@@ -503,6 +503,33 @@
           "repair": "Read failing test (LLM мокается со stream=True); fix stream handling and re-run."
         }
       ]
+    },
+    {
+      "id": "feat-020",
+      "name": "Объединённый контур ДЗ-03: retrieval + тул run_sql + стриминг",
+      "description": "Директива владельца (S24, вариант B): тул-луп ДЗ-02 с retrieval-контекстом и стримингом — агент стримит дельты ходов, вызывает run_sql (тот же канал agent_ro, капы S13), интерпретирует наблюдение стримом (interpret_result-класса ответ, hw-plan §3); голый тул-луп ДЗ-2 сохранён за флагом --plain; --retrieve упразднён. Расширение порта: StreamFinal.tool_calls (canon-check 2026-11-21 — прецедент D-021 «расширение полями»).",
+      "behavior": "Дефолтный прогон CLI: вопрос → retrieval-блок в системный промпт → стриминг дельт ходов агента на stdout → tool_calls исполняются под agent_ro с капом ходов S13 → финальный ответ с реальным числом стримится; --plain — прежний тул-луп без контекста и стриминга (артефакт ДЗ-02).",
+      "verification": "uv run pytest src/tests/unit/test_agent_flow.py -q",
+      "dependencies": [
+        "feat-003",
+        "feat-006",
+        "feat-013"
+      ],
+      "state": "passing",
+      "status": "done",
+      "layers": [
+        {
+          "label": "layer-1-static",
+          "cmd": "uv run ruff check src",
+          "repair": "Fix lint issues, then re-run."
+        },
+        {
+          "label": "layer-2-runtime",
+          "cmd": "uv run pytest src/tests/unit/test_agent_flow.py -q",
+          "repair": "Read failing test (LLM/хранилище мокаются, S00 правило 7); fix flow handling and re-run."
+        }
+      ],
+      "evidence": "command «uv run pytest src/tests/unit/test_agent_flow.py -q» exited 0 at 2026-11-21T13:29:54+03:00 (scripts/verify-feature.sh)"
     }
   ]
 }

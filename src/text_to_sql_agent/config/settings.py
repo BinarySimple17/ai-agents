@@ -48,6 +48,13 @@ class Settings(BaseSettings):
     # Правило 9 (S00): потенциально зависающий LLM-вызов — только с таймаутом.
     # Таймаут — отказ узла, НЕ сбой breaker (ARCH-GATE S03 W2, ADR-007 §4.3).
     llm_request_timeout_s: float = Field(default=15.0, gt=0)
+    # Гашение reasoning-канала шлюза (S25/feat-020, layer-3): qwen3.8-9b (D-020)
+    # с тула́ми нередко не закрывает think-блок — весь ответ уходит в
+    # reasoning_content и стримится ОДНИМ фолбэк-чанком (D-021/W4 S19), что
+    # убивает потоковый вывод ДЗ-03. Значение из словаря reasoning_effort шлюза
+    # ("none"/"low"/"medium"/"high" — LM Studio принимает "none"); пусто — не
+    # отправлять вовсе (облачные шлюзы, где параметр нестандартный)
+    llm_reasoning_effort: str = ""
 
     @field_validator("llm_base_url", "embedding_base_url")
     @classmethod
@@ -93,6 +100,25 @@ class Settings(BaseSettings):
                 "llm_api_key содержит управляющие символы — не годится для заголовка Authorization"
             )
         return SecretStr(raw)
+
+    @field_validator("llm_reasoning_effort")
+    @classmethod
+    def _reasoning_effort_canonical(cls, value: str) -> str:
+        # Fail-fast, как соседние валидаторы: опечатка/хвостовой пробел в .env
+        # иначе дали бы HTTP 400 на КАЖДОМ вызове (400 не ретраится) — деградацию
+        # с невнятной причиной (ревью S25 re-review I2). Allowlist — канонический
+        # набор SDK ReasoningEffort; LM Studio дополнительно знает "on"/"off",
+        # их "off" соответствует "none" (ревью владельцем настройки шлюза)
+        normalized = value.strip().lower()
+        if not normalized:
+            return ""  # пусто — параметр не отправляется (дефолт)
+        allowed = {"none", "minimal", "low", "medium", "high", "xhigh"}
+        if normalized not in allowed:
+            raise ValueError(
+                f"llm_reasoning_effort={value!r} вне канонического набора {sorted(allowed)} "
+                "(или пусто — параметр не отправляется)"
+            )
+        return normalized
 
     # --- Роли моделей (ADR-007 §4): имя модели — только из Settings, не хардкод ---
     model_cheap: str

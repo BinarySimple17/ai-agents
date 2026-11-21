@@ -1,24 +1,4 @@
-```sql
-SELECT COUNT(DISTINCT c.customer_id) AS new_customers_from_campaigns
-FROM customers c
-JOIN orders o ON o.customer_id = c.customer_id
-WHERE c.country = 'DE'
-  AND o.campaign_id IS NOT NULL
-  AND EXTRACT(MONTH FROM o.created_at) = 10;
-```
+**Ответ: 5 клиентов из РФ пришло через рекламные кампании.**
 
-**Пояснение:**
-
-| Шаг | Действие |
-|-----|----------|
-| `JOIN orders` | Связываем заказы с клиентами (INNER JOIN, чтобы учитывать только клиентов с заказами) |
-| `c.country = 'DE'` | Фильтруем только Германию — **не** `'Russia'`, не `'RU'` |
-| `o.campaign_id IS NOT NULL` | Исключаем заказы без кампании (внутренний JOIN потерял бы их, поэтому нужен фильтр) |
-| `EXTRACT(MONTH FROM o.created_at) = 10` | Оставляем только октябрь |
-
-**Важные ловушки:**
-- ❌ `country = 'Russia'` вернёт 0 строк — в БД код `'DE'`, а не `'RU'` или `'Russia'`.
-- ❌ INNER JOIN с `campaigns` молча отбрасывает заказы без кампании — нужно проверять `IS NOT NULL`.
-- ⚠️ Если поле даты называется иначе (например, `order_date`), замените `o.created_at` на соответствующее.
-
-Если в вашей схеме поле даты заказа имеет другое имя или тип, уточните — я адаптирую запрос.
+*   **SQL:** `SELECT COUNT(DISTINCT c.customer_id) FROM customers c JOIN orders o ON ... WHERE c.country = 'RU' AND o.campaign_id IS NOT NULL`
+*   **Результат:** 5 уникальных клиентов.
