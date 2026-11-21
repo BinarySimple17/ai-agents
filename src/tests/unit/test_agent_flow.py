@@ -16,6 +16,8 @@ import json
 from types import SimpleNamespace
 from typing import Any
 
+import httpx
+import openai
 import pytest
 
 from apps import cli as cli_module
@@ -26,10 +28,13 @@ from apps.cli import (
     LLM_DEGRADED_TEMPLATE,
     MAX_TOOL_CALLS,
     RETRIEVAL_TOP_K,
+    RETRIEVAL_UNAVAILABLE_NOTE,
     run_agent_flow,
 )
 from tests.unit.fakes import UNIT_CTX, RecordingTracer
+from tests.unit.test_llm_client import _embed_client, _settings
 from tests.unit.test_retrieval_flow import _doc
+from tests.unit.test_streaming import _BreakingTransport
 from text_to_sql_agent.application.ports.llm_provider import (
     LLMProviderError,
     LLMRequestError,
@@ -44,6 +49,7 @@ from text_to_sql_agent.application.ports.sql_executor import (
 )
 from text_to_sql_agent.application.ports.vector_store import VectorStoreError
 from text_to_sql_agent.application.services.run_sql_tool import TOOL_NAME
+from text_to_sql_agent.infrastructure.llm.openai_provider import OpenAIProvider
 from text_to_sql_agent.infrastructure.observability.console_tracer import ConsoleTracer
 
 _QUERY_VECTOR = [0.1] * 1024
@@ -69,7 +75,9 @@ class FakeAgentLLM:
         return [_QUERY_VECTOR for _ in texts]
 
     def complete_stream(self, role: str, messages: list[dict], tools: Any = None):
-        self.calls.append({"messages": messages, "tools": tools})
+        # Копия истории на момент вызова (I2 ревью S25): без копии call-0 разделяет
+        # список с флоу и «видит» позднейшие ходы — per-call ассерты врут
+        self.calls.append({"messages": [dict(m) for m in messages], "tools": tools})
         index = min(len(self.calls) - 1, len(self._scripts) - 1)
         for item in self._scripts[index]:
             if isinstance(item, Exception):
@@ -153,12 +161,24 @@ def test_agent_flow_happy_path_streams_answer_with_real_number() -> None:
     assert store.calls[0]["ctx"] == UNIT_CTX
     assert store.calls[0]["top_k"] == RETRIEVAL_TOP_K
     assert store.calls[0]["vector"] == _QUERY_VECTOR
-    # Тул исполнен с ctx прогона; observation — в истории сообщений перед вторым ходом
+    # Тул исполнен с ctx прогона; история второго хода — ТОЧНАЯ OpenAI-
+    # последовательность (I2 ревью S25: any()-ассерты пропускали бы перепутанный
+    # порядок сообщений, битый tool_call_id и потерю observation)
     assert tool.calls[0]["ctx"] == UNIT_CTX
     assert tool.calls[0]["arguments"]["sql"].startswith("SELECT count(*)")
     second = llm.calls[1]["messages"]
-    assert any(m["role"] == "tool" for m in second)
-    assert any(m["role"] == "assistant" and m.get("tool_calls") for m in second)
+    assert [m["role"] for m in second] == ["system", "user", "assistant", "tool"]
+    assistant_msg = second[2]
+    assert assistant_msg["content"] is None  # тул-ход был без преамбулы
+    assert len(assistant_msg["tool_calls"]) == 1
+    assert assistant_msg["tool_calls"][0]["id"] == "call-1"
+    assert assistant_msg["tool_calls"][0]["function"]["name"] == TOOL_NAME
+    assert json.loads(assistant_msg["tool_calls"][0]["function"]["arguments"]) == {
+        "sql": "SELECT count(*) FROM customers WHERE country = 'RU'"
+    }
+    tool_msg = second[3]
+    assert tool_msg["tool_call_id"] == "call-1"  # соответствие id — контракт шлюза
+    assert '"rows": [{"count": 5}]' in tool_msg["content"]  # observation-данные в истории
     # Системный промпт: база тул-контура (S13) + retrieval-блок; tools переданы ходом
     assert llm.calls[0]["tools"] == [tool.tool_spec]
     assert "[таблица: orders] DDL" in llm.calls[0]["messages"][0]["content"]
@@ -215,6 +235,7 @@ def test_agent_flow_text_and_tool_calls_in_one_turn_keeps_preamble() -> None:
     assert answer == "5 клиентов"
     assert printed[0] == "Считаю клиентов… "  # преамбула напечатана и осталась
     assert printed[-2] == "5 клиентов"
+    assert "\n" in printed  # преамбула отделена от следующего хода (M2 ревью S25)
     assert sum(e.event == "agent.answer" for e in tracer.events) == 1  # только финальный
     assert len(llm.calls) == 2  # ретрая не было — ход исполнен
 
@@ -405,8 +426,11 @@ def test_agent_flow_embed_failure_degrades_context_not_run() -> None:
     assert store.calls == []  # поиск не вызывался
     degrade = next(e for e in tracer.events if e.event == "agent.degrade")
     assert "retrieval недоступен" in degrade.payload["reason"]
-    # Блока контекста нет — системный промпт РОВНО база тул-контура (S13)
-    assert llm.calls[0]["messages"][0]["content"] == AGENT_SYSTEM_PROMPT
+    # Блока контекста нет; базовый промпт обещает «выданный ниже» — честная
+    # заметка о недоступности вместо нарушенного обещания (M10 ревью S25)
+    system = llm.calls[0]["messages"][0]["content"]
+    assert system.startswith(AGENT_SYSTEM_PROMPT)
+    assert RETRIEVAL_UNAVAILABLE_NOTE in system
     assert not any(e.event == "agent.retrieve" for e in tracer.events)
 
 
@@ -483,6 +507,89 @@ def test_agent_flow_unknown_tool_name_not_dispatched_silently() -> None:
     assert tool.calls == []  # неизвестный тул не исполнялся
     obs = next(e for e in tracer.events if e.event == "agent.observation")
     assert obs.payload["ok"] is False and obs.payload["error_class"] == "unknown_tool"
+
+
+def test_agent_flow_tag_in_preamble_with_real_tool_calls_still_executes() -> None:
+    # Ruling 3 × 4 (M3 ревью S25): реальный tool_calls-блок главнее мусорного
+    # Hermes-тега в преамбуле — ход исполняется, agent.answer на этом ходу
+    # не эмитится; ретрай не нужен
+    llm = FakeAgentLLM(
+        [
+            [
+                StreamChunk(text_delta="<tool_call>{...} "),
+                StreamFinal(
+                    model="fake",
+                    finish_reason="tool_calls",
+                    tool_calls=[
+                        ToolCall(id="call-1", name=TOOL_NAME, arguments='{"sql": "SELECT 1"}')
+                    ],
+                ),
+            ],
+            _text_turn("5 клиентов"),
+        ]
+    )
+    tool, tracer = FakeTool(), RecordingTracer()
+    answer = run_agent_flow(
+        "вопрос", llm=llm, tool=tool, vector_store=FakeStore(), ctx=UNIT_CTX, tracer=tracer
+    )
+    assert answer == "5 клиентов"
+    assert len(tool.calls) == 1  # реальный тул исполнен, несмотря на тег в преамбуле
+    assert sum(e.event == "agent.answer" for e in tracer.events) == 1
+    assert len(llm.calls) == 2
+
+
+def test_agent_flow_default_cap_is_max_tool_calls_without_override() -> None:
+    # Дефолтный кап = MAX_TOOL_CALLS без переопределения (M4 ревью S25 — пин
+    # константы тавтологичен, поведение не проверялось): 4-й ход с тулом
+    # невозможен — после 3 тул-ходов финальный вызов без tools
+    scripts = [_tool_turn() for _ in range(3)] + [_text_turn("Ответ из Observation")]
+    llm = FakeAgentLLM(scripts)
+    answer = run_agent_flow(
+        "вопрос", llm=llm, tool=FakeTool(), vector_store=FakeStore(), ctx=UNIT_CTX
+    )
+    assert answer == "Ответ из Observation"
+    assert len(llm.calls) == 4
+    assert sum(1 for c in llm.calls if c["tools"] is not None) == 3
+    assert llm.calls[-1]["tools"] is None  # 4-й вызов — финал без тулов
+
+
+def test_agent_flow_stream_closed_without_final_returns_text() -> None:
+    # Стрим закрылся без StreamFinal — «тихая усечённость» (S19 M6, политика
+    # incomplete — V4/feat-015): накопленный текст валиден — это ответ,
+    # не деградация (M5 ревью S25 — поведение заморожено тестом)
+    llm = FakeAgentLLM([[StreamChunk(text_delta="Ответ без финала")]])
+    answer = run_agent_flow(
+        "вопрос", llm=llm, tool=FakeTool(), vector_store=FakeStore(), ctx=UNIT_CTX
+    )
+    assert answer == "Ответ без финала"
+
+
+def test_agent_flow_http_break_degrades_valid_outcome() -> None:
+    # C1 (S19) — flow-половина регресса на новом контуре (M12 ревью S25): обрыв
+    # ИТЕРАЦИИ стрима через НАСТОЯЩИЙ SDK-клиент → валидный исход (частичный
+    # текст + деградация поверх напечатанного), не traceback. Адаптерная половина
+    # — test_streaming.py::test_stream_iteration_read_error_maps_to_request_error
+    client = openai.OpenAI(
+        base_url="https://gateway.test/api/v1",
+        api_key="sk-test",
+        max_retries=0,
+        http_client=httpx.Client(transport=_BreakingTransport(httpx.ReadError("reset"))),
+    )
+    provider = OpenAIProvider(
+        _settings(), client=client, embedding_client=_embed_client([_QUERY_VECTOR])
+    )
+    printed: list[str] = []
+    answer = run_agent_flow(
+        "вопрос",
+        llm=provider,
+        tool=FakeTool(),
+        vector_store=FakeStore(),
+        ctx=UNIT_CTX,
+        printer=printed.append,
+    )
+    assert answer.startswith("часть \n")  # частичный ответ напечатан до обрыва
+    assert "стрим оборван" in answer  # деградация поверх напечатанного (Ловушки-1)
+    assert printed[0] == "часть " and printed[-1] == "\n"
 
 
 # --- wiring main → флоу: --plain и дефолт, чистота stdout (D-022) ---

@@ -269,6 +269,39 @@ def test_stream_no_tool_deltas_keeps_empty_tool_calls() -> None:
     assert final.tool_calls == []
 
 
+def test_stream_tool_call_delta_without_id_gets_synthesized() -> None:
+    # M7 (ревью S25): шлюз без id в дельтах — синтез call-stream-N (реальный id
+    # перезаписывает при появлении); пустой id в истории строгие OpenAI-
+    # совместимые шлюзы отбивают следующим ходом (HTTP 400)
+    stream = _ScriptedStream(
+        [
+            _chunk(tool_calls=[_tool_delta(0, name="run_sql", arguments='{"sql": "SELECT 1"}')]),
+            _chunk(finish_reason="tool_calls"),
+        ]
+    )
+    provider, _, _, _ = _provider([stream])
+    items = list(provider.complete_stream("cheap", _MESSAGES))
+    final = next(item for item in items if isinstance(item, StreamFinal))
+    assert final.tool_calls[0].id == "call-stream-0"
+
+
+def test_stream_reasoning_not_yielded_on_tool_turn_without_finish_reason() -> None:
+    # M8 (ревью S25): тул-ход без finish_reason — reasoning преамбулой не идёт
+    # (обещание StreamChunk: «reasoning-дельты в потоке не появляются»); guard-
+    # константа NO_TEXT_FALLBACK_REASONS не тронута — расширение условия на месте
+    stream = _ScriptedStream(
+        [
+            _chunk(reasoning="черновик размышления"),
+            _chunk(tool_calls=[_tool_delta(0, call_id="call-1", name="run_sql", arguments="{}")]),
+        ]  # finish_reason=None — шлюз не отдал
+    )
+    provider, _, _, _ = _provider([stream])
+    items = list(provider.complete_stream("cheap", _MESSAGES))
+    assert [item for item in items if isinstance(item, StreamChunk)] == []  # stdout молчит
+    final = next(item for item in items if isinstance(item, StreamFinal))
+    assert final.tool_calls and final.tool_calls[0].name == "run_sql"
+
+
 # --- (b) TTFT в событии llm.complete (NFR-1) ---
 def test_stream_ttft_recorded_in_llm_complete(tmp_path: Path) -> None:
     tracer = JsonlTracer(tmp_path / "trace.jsonl")

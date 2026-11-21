@@ -340,8 +340,13 @@ class OpenAIProvider:
                     # вызова, arguments — конкатенацией, склейка по index;
                     # в stdout не печатаются — StreamChunk остаётся текстовой
                     # дельтой (StreamToolCallDelta отвергнут canon-check)
+                    index = getattr(part, "index", 0)
                     slot = tool_call_parts.setdefault(
-                        getattr(part, "index", 0), {"id": "", "name": "", "arguments": ""}
+                        index,
+                        # Шлюз без id в дельтах (M7 ревью S25): синтез — строгие
+                        # OpenAI-совместимые шлюзы отбивают пустой id в истории
+                        # следующим ходом (HTTP 400); реальный id перезапишет
+                        {"id": f"call-stream-{index}", "name": "", "arguments": ""},
                     )
                     if getattr(part, "id", None):
                         slot["id"] = part.id
@@ -396,8 +401,16 @@ class OpenAIProvider:
 
         text_from_reasoning = False
         # Паритет с буферным complete() (ревью M2): whitespace-only content —
-        # «текста нет», reasoning-буфер становится ответом
-        if not "".join(content_parts).strip() and finish_reason not in NO_TEXT_FALLBACK_REASONS:
+        # «текста нет», reasoning-буфер становится ответом. Тул-ход без
+        # finish_reason — исключение (M8 ревью S25): reasoning преамбулой на
+        # экран не идёт, он вообще не ответ тул-хода (поле-расширение шлюза
+        # без finish_reason — не повод обещанию StreamChunk «reasoning-дельты
+        # в потоке не появляются» измениться); guard-константа не тронута
+        if (
+            not "".join(content_parts).strip()
+            and not tool_call_parts
+            and finish_reason not in NO_TEXT_FALLBACK_REASONS
+        ):
             fallback = "".join(reasoning_parts).strip()
             if fallback:
                 # Пустой content при живом reasoning — фолбэк одним чанком;

@@ -59,6 +59,7 @@ from text_to_sql_agent.application.ports.llm_provider import (
     StreamChunk,
     StreamFinal,
     ToolCall,
+    ToolSpec,
 )
 from text_to_sql_agent.application.ports.sql_executor import QueryResult, SQLExecutionError
 from text_to_sql_agent.application.ports.tracer import (
@@ -118,6 +119,12 @@ RETRIEVAL_BLOCK_HEADER = (
     "глоссарий, примеры «вопрос → SQL»):"
 )
 RETRIEVAL_EMPTY_BLOCK = "\nКонтекст знаний пуст: релевантных разрешённых документов нет."
+# Заметка при недоступности retrieval (M10 ревью S25): базовый промпт обещает
+# «контекст, выданный ниже» — без блока это обещание нарушено; честная заметка
+# удерживает малую модель от выдумывания контекста
+RETRIEVAL_UNAVAILABLE_NOTE = (
+    "\nКонтекст знаний сейчас недоступен — отвечай по демо-схеме выше и тула run_sql.\n"
+)
 
 # Тул-контур ДЗ-02 — без retrieval (соединение с FSM — веха V4), поэтому схема
 # и значения справочников — в промпте (решение S13). Коды справочников — из
@@ -385,8 +392,10 @@ def _stream_outcome(
     остаётся видимым) и финальный перевод строки (гигиена stdout CLI — прежде
     его давал print(answer)).
 
-    Возвращает текст, показанный пользователю: JSONL-трейс/проверки видят то же,
-    что и stdout. Невалидный текст (пустой/Hermes-тег) при printer=None в исход
+    Возвращает текст ИСХОДА (M1 ревью S25): успех — ответ; деградация — то, что
+    успело быть напечатанным, плюс сообщение. Печатная преамбула тул-ходов в
+    исход не входит — она уже отдана printer'у по мере генерации. Невалидный
+    текст (пустой/Hermes-тег) при printer=None в исход
     не попадает (buffered-семантика: мусор не «ответ»); ПРИ живом printer дельты
     уже напечатаны на экране до того, как битый формат распознан — стрим не может
     отозвать напечатанное (решение по находке ревью-1 I2, вариант (b): ретрейл-
@@ -430,6 +439,34 @@ def format_retrieval_block(
     return "\n" + RETRIEVAL_BLOCK_HEADER + "\n" + RETRIEVAL_SEPARATOR.join(chunks)
 
 
+def _consume_stream(
+    llm: LLMProvider,
+    messages: list[dict[str, Any]],
+    *,
+    tools: list[ToolSpec] | None,
+    printer: Callable[[str], None] | None,
+    chunks: list[str],
+) -> StreamFinal | None:
+    """Потребление стрима одного хода: дельты копятся в chunks (список вызывающего —
+    частичный текст и факт печати видны в except-ветке: printed ⟺ printer не None
+    И chunks непуст — точная эквивалентность прежнего флага), печатаются printer'у
+    по мере генерации; терминальный StreamFinal возвращается. LLMProviderError
+    проходит наружу — решение о деградации за флоу (W3): ретрай после печати
+    задублирует текст.
+
+    Общий для ходов цикла и финального вызова после капа (M6 ревью S25 — без дубля).
+    """
+    final: StreamFinal | None = None
+    for item in llm.complete_stream(DEFAULT_ROLE, messages, tools=tools):
+        if isinstance(item, StreamChunk):
+            chunks.append(item.text_delta)
+            if printer is not None:
+                printer(item.text_delta)
+        else:  # StreamFinal — терминальные метаданные вызова
+            final = item
+    return final
+
+
 def run_agent_flow(
     question: str,
     *,
@@ -453,8 +490,10 @@ def run_agent_flow(
     Недоступность retrieval — деградация контекста, не прогона: схема и
     справочники в промпте (S13), факты аген добывает тулом; если недоступен сам
     шлюз — упадёт первый ход цикла и даст деградацию по правилу 8. Ретраи пустых
-    ответов — только ДО первой напечатанной дельты (Ловушки-1). Возвращает текст,
-    показанный пользователю (printer=None — buffered-семантика для тестов).
+    ответов — только ДО первой напечатанной дельты (Ловушки-1). Возвращает текст
+    ИСХОДА: деградационные сообщения входят; печатная преамбула тул-ходов — нет
+    (она уже отдана printer'у по мере генерации; M1 ревью S25). printer=None —
+    buffered-семантика для тестов.
     """
     _emit(tracer, EVENT_AGENT_START, trace_id=ctx.trace_id, question=question, mode="agent")
     system_prompt = AGENT_SYSTEM_PROMPT
@@ -468,6 +507,8 @@ def run_agent_flow(
             trace_id=ctx.trace_id,
             reason=f"retrieval недоступен — контур продолжит без контекста: {exc}",
         )
+        # Честная заметка модели вместо обещанного «выданный ниже» (M10 ревью S25)
+        system_prompt += RETRIEVAL_UNAVAILABLE_NOTE
     else:
         _emit(
             tracer,
@@ -488,21 +529,16 @@ def run_agent_flow(
         model_calls += 1
         _emit(tracer, EVENT_AGENT_ROUND, trace_id=ctx.trace_id, call=model_calls)
         chunks: list[str] = []
-        printed = False
-        final: StreamFinal | None = None
+        final: StreamFinal | None
         try:
-            for item in llm.complete_stream(DEFAULT_ROLE, messages, tools=[tool.tool_spec]):
-                if isinstance(item, StreamChunk):
-                    chunks.append(item.text_delta)
-                    if printer is not None:
-                        printer(item.text_delta)
-                        printed = True
-                else:  # StreamFinal — терминальные метаданные вызова
-                    final = item
+            final = _consume_stream(
+                llm, messages, tools=[tool.tool_spec], printer=printer, chunks=chunks
+            )
         except LLMProviderError as exc:
             # Mid-stream сбой: ретрай задублирует напечатанное — деградация поверх
             # частичного ответа (Ловушки-1, ruling W3 ARCH-GATE S19); сбой ДО
             # первого чанка — тот же валидный исход без напечатанных дельт
+            printed = printer is not None and bool(chunks)
             _emit(
                 tracer,
                 EVENT_AGENT_DEGRADE,
@@ -515,6 +551,7 @@ def run_agent_flow(
                 printed=printed,
                 message=LLM_DEGRADED_TEMPLATE.format(error=exc),
             )
+        printed = printer is not None and bool(chunks)
         answer = "".join(chunks)
         # Conditioning консумера (S25 правило 5): tools переданы всегда, тул-финал
         # — НОРМАЛЬНЫЙ ход, а не фолбэк (guard NO_TEXT_FALLBACK_REASONS не меняется).
@@ -534,7 +571,11 @@ def run_agent_flow(
                 content, obs = _observation(call, tool, ctx)
                 messages.append(_tool_message(call, content))
                 _emit(tracer, EVENT_AGENT_OBSERVATION, trace_id=ctx.trace_id, **obs)
-            continue  # напечатанная преамбула остаётся, agent.answer не эмитится
+            if printer is not None and printed:
+                # Префамбула тул-хода отделена от следующего хода (M2 ревью S25) —
+                # иначе «Считаю клиентов… Ответ: 5» склеивается на экране
+                printer("\n")
+            continue  # преамбула остаётся на экране, agent.answer не эмитится
         if answer.strip() and not _is_malformed_tool_call(answer):
             _emit(tracer, EVENT_AGENT_ANSWER, trace_id=ctx.trace_id, source="agent_stream")
             return _stream_outcome(printer, shown=answer, printed=printed, message=None)
@@ -575,15 +616,10 @@ def run_agent_flow(
     # ответ из Observation (ruling ARCH-GATE S13 Q5); ретраев нет — как в тул-контуре
     _emit(tracer, EVENT_AGENT_CAP_EXHAUSTED, trace_id=ctx.trace_id, rounds=tool_rounds_used)
     chunks = []
-    printed = False
     try:
-        for item in llm.complete_stream(DEFAULT_ROLE, messages):
-            if isinstance(item, StreamChunk):
-                chunks.append(item.text_delta)
-                if printer is not None:
-                    printer(item.text_delta)
-                    printed = True
+        _consume_stream(llm, messages, tools=None, printer=printer, chunks=chunks)
     except LLMProviderError as exc:
+        printed = printer is not None and bool(chunks)
         _emit(
             tracer,
             EVENT_AGENT_DEGRADE,
@@ -596,6 +632,7 @@ def run_agent_flow(
             printed=printed,
             message=LLM_DEGRADED_TEMPLATE.format(error=exc),
         )
+    printed = printer is not None and bool(chunks)
     answer = "".join(chunks)
     if answer.strip() and not _is_malformed_tool_call(answer):
         _emit(tracer, EVENT_AGENT_ANSWER, trace_id=ctx.trace_id, source="final_no_tools")

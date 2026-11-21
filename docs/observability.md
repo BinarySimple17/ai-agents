@@ -140,7 +140,7 @@ best-effort — сбой приёмника не рвёт запрос). Сбо�
 | `agent.observation` | ok; columns, rows_preview (≤5 строк), row_count, truncated — либо error_class, error | результат тулa / отказ |
 | `agent.empty_retry` | left | пустой/битый ответ — повтор |
 | `agent.cap_exhausted` | rounds | кап ходов — финальный вызов без тулов |
-| `agent.degrade` | reason | деградация-исход (S00 правило 8) |
+| `agent.degrade` | reason | деградация исхода (S00 правило 8) или контекста — для retrieval non-terminal (прогон продолжается без блока знаний) |
 | `agent.answer` | source: text / final_no_tools / agent_stream | финальный ответ |
 
 S25 (feat-020): mode `agent` — объединённый контур (retrieval + тул run_sql +
