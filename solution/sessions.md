@@ -38,18 +38,18 @@
 | S01 | sessions/S01_session.md | Скелет проекта + harness-проверки | агент | S00 | feat-001 — закрывает | 1 | P0 | ✅ 2026-11-15 (закрыта harness-сессией: feat-001 → passing) |
 | S02 | [sessions/S02_session.md](sessions/S02_session.md) | Инфра: compose (postgres+pgvector, neo4j, valkey), миграции Alembic (схема v1.5 + демо-данные + роли) | агент | S01 | feat-002 — закрывает | 1.5 | P0 | ✅ 2026-11-18 (feat-002 passing; тесты 13; ARCH-GATE + REVIEW-GATE пройдены, FIX-007) |
 | S03 | sessions/S03_session.md | Конфиг + LLM-клиент шлюза (роли, backoff, breaker, бюджет) | агент | S01 | feat-003 — закрывает | 1 | P0 | ✅ 2026-11-18 (feat-003 passing; 32 unit на моках; ARCH-GATE violations→rulings: jitter/timeout≠breaker; REVIEW-GATE 1C+5I+6M → fix-волна → re-review «С оговорками») |
-| S04 | sessions/S04_session.md | State machine LangGraph: каркас графа, CLI e2e на заглушках | агент | S01, S03 | feat-004 — закрывает | 1.5 | P0 | ⬜ |
-| S05 | sessions/S05_session.md | resolve_access: права из таблиц настроек | агент | S02, S04 | feat-005 — закрывает | 1 | P0 | ⬜ |
+| S04 | [sessions/S04_session.md](sessions/S04_session.md) | State machine LangGraph: каркас графа, CLI e2e на заглушках | агент | S01, S03 | feat-004 — закрывает | 1.5 | P0 | ⬜ |
+| S05 | [sessions/S05_session.md](sessions/S05_session.md) | resolve_access: права из таблиц настроек (+порт AuthProvider/DevTokenAuth) | агент | S02, S04 | feat-005 — закрывает | 1 | P0 | ⬜ |
 | S06 | [sessions/S06_session.md](sessions/archive/S06_session.md) | Векторная память pgvector + фильтр прав (dense-only, фильтр прав по всем таблицам документа; retrieval-контур ДЗ-03) | агент | S02 | feat-006 — закрывает | 1.5 | P0 | ✅ 2026-11-20 (feat-006 passing; ARCH-GATE rulings W1 planner-DSN/W2 --user; REVIEW-GATE «Принято» после 2 fix-волн — C1 referenced_tables/0007; 197 passed) |
 | S07 | [sessions/S07_session.md](sessions/S07_session.md) | Граф связей Neo4j: снапшот реестра (active-рёбра, graph_version), k взвешенных путей + ранжирование топ-5, синк + reconciliation (ADR-006 §4.3) | агент | S02 | feat-007 — закрывает | 1.5 | P0 | ✅ 2026-11-21 (feat-007 passing; ARCH-GATE violations→rulings R1–R3; REVIEW-GATE 2 fix-волны d4b7084/99d57d4; 283 passed; BL-003 п.3 закрыт, BL-011 открыт) |
-| S08 | sessions/S08_session.md | clarify: допущения / один уточняющий вопрос | агент | S04, S03 | feat-008 — закрывает | 1 | P0 | ⬜ |
-| S09 | [sessions/S09_session.md](sessions/archive/S09_session.md) | plan_joins: JoinPlan ≤ 4 таблиц по edge_id активных рёбер; валидация плана + ретраи M1 (D-016: попытка 2 — та же модель + текст ошибки, попытка 3 — уровень вверх) | агент | S06, S07 | feat-009 — закрывает | 1.5 | P0 | ✅ 2026-11-21 (feat-009 passing; ARCH-GATE rulings Q1/Q7; REVIEW-GATE 2 fix-волны 7bb4285/62f4c3e; 329 passed; D-030, BL-003 п.2 закрыт) |
-| S10 | sessions/S10_session.md | generate_sql: наполнение скелета (build_skeleton — код, skeleton_hash) по JoinPlan; ретраи M1: попытка 2 — та же модель + текст ошибки, попытка 3 — эскалация на флагман | агент | S09 | feat-010 — закрывает | 1 | P0 | ⬜ |
-| S11 | sessions/S11_session.md | validate_sql: sqlglot AST + ACL + джойны по графу | агент | S05, S07, S10 | feat-011 — закрывает | 1.5 | P0 | ⬜ |
+| S08 | [sessions/S08_session.md](sessions/S08_session.md) | clarify: классификация однозначности, фиксация допущений; уточнение — interrupt() + checkpointer (Valkey, TTL 10 мин) | агент | S04, S03 | feat-008 — закрывает | 1 | P0 | ⬜ |
+| S09 | sessions/S09_session.md | plan_joins: JoinPlan ≤ 4 таблиц по edge_id активных рёбер; валидация плана + ретраи M1 (D-016: попытка 2 — та же модель + текст ошибки, попытка 3 — уровень вверх) | агент | S06, S07 | feat-009 — закрывает | 1.5 | P0 | ✅ 2026-11-21 (feat-009 passing; ARCH-GATE rulings Q1/Q7; REVIEW-GATE 2 fix-волны 7bb4285/62f4c3e; 329 passed; D-030, BL-003 п.2 закрыт) |
+| S10 | [sessions/S10_session.md](sessions/S10_session.md) | generate_sql: наполнение скелета (build_skeleton — код, skeleton_hash) по JoinPlan; ретраи M1: попытка 2 — та же модель + текст ошибки, попытка 3 — эскалация на флагман | агент | S09, S04 | feat-010 — закрывает | 1 | P0 | ⬜ |
+| S11 | [sessions/S11_session.md](sessions/S11_session.md) | validate_sql: sqlglot AST + ACL + джойны по графу | агент | S05, S07, S10 | feat-011 — закрывает | 1.5 | P0 | ⬜ |
 | S12 | sessions/S12_session.md | check_cost: EXPLAIN-порог T2 → async / matview / approximate / отказ с рекомендацией (не декомпозиция, ADR-004 v1.2) | агент | S11, S02 | feat-012 — закрывает | 0.5 | P1 | ⬜ |
 | S13 | sessions/S13_session.md | SQLExecutor: тул run_sql (ДЗ-02) + узел execute_sql — agent_ro, LIMIT 1000, timeout 30s | агент | S02 | feat-013 — закрывает | 1 | P0 | ✅ 2026-11-18 |
-| S14 | sessions/S14_session.md | diagnose_error + ретраи M1 (≤ 3 на узел; попытка 2 — та же модель + ошибка, попытка 3 — эскалация после проверки бюджета с резервом 0,6 ₽) | агент | S13, S04 | feat-014 — закрывает | 1 | P0 | ⬜ |
-| S15 | sessions/S15_session.md | interpret_result + degrade + incomplete-флаг | агент | S05, S14 | feat-015 — закрывает | 1 | P0 | ⬜ |
+| S14 | [sessions/S14_session.md](sessions/S14_session.md) | diagnose_error + ретраи M1 (≤ 3 на узел; попытка 2 — та же модель + ошибка, попытка 3 — эскалация после проверки бюджета с резервом 0,6 ₽) + подключение узла execute_sql (feat-013) в FSM + probe COUNT | агент | S13, S04 | feat-014 — закрывает | 1 | P0 | ⬜ |
+| S15 | [sessions/S15_session.md](sessions/S15_session.md) | interpret_result + degrade + incomplete-флаг + BudgetGuard (порт; compact_result — код) | агент | S05, S14 | feat-015 — закрывает | 1 | P0 | ⬜ |
 | S16 | sessions/S16_session.md | Кэш вопросов Valkey (точное совпадение): допущения-сверка, ключ с правами | агент | S05, S10 | feat-016 — закрывает | 1 | P1 | ⬜ |
 | S17 | sessions/S17_session.md | plan_query: декомпозиция T1 (основной путь; на стенде — заглушка), T2 → async/matview/approximate; key-set без LIMIT, кап кардинальности 50 000, флаг approximate (выпускная) | агент | S11, S12 | feat-017 — закрывает | 2 | P2 | ⬜ |
 | S18 | sessions/S18_session.md | Observability Plane live: Jaeger + Prometheus + Grafana, дашборды (ADR-010) | агент | S15 | feat-018 — закрывает | 1.5 | P1 | ⬜ |
@@ -61,6 +61,7 @@
 | S24 | [sessions/S24_session.md](sessions/archive/S24_session.md) | Сопроводительная: исправления по результатам ручного тестирования ДЗ-02/03 (цикл: находка куратора → воспроизведение → квалификация → фикс с регрессионным тестом; закрывается по исчерпании списка находок) | агент (находки — куратор) | S02, S03, S13, S06, S19, S21, S23 | — (сессия без фичи, states не меняются) | 1 | P0 | ✅ 2026-11-21 (#1а top_k 5→8, #1б антигаллюцинации, #2 коды справочников — 237 passed; REVIEW-GATE «With fixes» 0C/2I/7m закрыты; директива feat-020 → S25) |
 | S25 | [sessions/archive/S25_session.md](sessions/archive/S25_session.md) | feat-020 — объединённый контур ДЗ-03: retrieval + тул run_sql + стриминг (вариант B — стрим-тул-луп с контекстом, тул-луп ДЗ-2 за флагом --plain; директива владельца из S24; canon-check 2026-11-21) | агент | S02, S03, S06, S13, S19, S21, S23, S24 | feat-020 — закрывает | 1.5 | P0 | ✅ 2026-11-21 (259 passed; два ревью «With fixes» закрыты; layer-3: LLM_REASONING_EFFORT + guardrail, ConsoleTracer-фикс; артефакты hw-03 пересняты) |
 | S26 | [sessions/S26_session.md](sessions/archive/S26_session.md) | Гибридная память: dense+FTS (взвешенный RRF α_dense=0.9), шумовой корпус-дистрактор, нормализация U+0301, hit@5-бенч + гигиена индексации (BL-007 + BL-009; канон D-026; реранкер — условно) | агент | S06 | feat-021 — закрывает | 1.5 | P0 | ✅ 2026-11-21 (feat-021 passing; ARCH-GATE rulings N1–N4+blocker; REVIEW-GATE 2 fix-волны — C1 downgrade с регрессом; hit@5 14/14 = 14/14; 370 passed; BL-007/009 закрыты, BL-012 открыт) |
+| S27 | [sessions/S27_session.md](sessions/S27_session.md) | Интеграционная сборка вехи V4: сквозной живой прогон FSM (trace вопрос → допущения → план → SQL → валидация → ответ), сцены clarify-interrupt / retry-самокоррекции / deny «премии», артефакт hw-05/README.md (hw-plan §5) | агент | S04, S05, S08, S10, S11, S14, S15 | — (сессия без фичи, states не меняются) | 1 | P0 | ⬜ |
 
 Статусы: ⬜ не начата · ◐ в работе · ✅ завершена (+дата). Статус обновляется в этой таблице и в шапке файла сессии; при закрытии файл сессии переносится в [sessions/archive/](sessions/archive/) скриптом `make archive` (строка в таблице остаётся как история).
 Колонка «Фичи» — фичи из `feature_list.json`, с которыми работает сессия; в ячейке — роль сессии по фиче: **«закрывает»** (финальная сессия фичи, доводит до `passing` через `make verify-feature`) или **«продолжает»** (промежуточная; фича остаётся `active`). Одна фича может занимать несколько сессий — закрывает ровно одна; зависимости фич согласованы с графом зависимостей сессий. Порядок исполнения задаётся вехами V1–V6 (порядок ДЗ, FIX-003), а не нумерацией S-NN; приоритет P0 — сессии ближайшей вехи (например, S19 — P0: дедлайн ДЗ-03 07.12 раньше P0-сессий вехи V4).
@@ -83,7 +84,8 @@ V1 (ДЗ-02): S01 ✅ → S02 → S03 → S13   (S13 — тул run_sql; под�
 V2 (ДЗ-03): S06 → S19
 V3 (ДЗ-04): S07 → S09; S26 — параллельно (без clarify — допущения фиксирует код; S26 —
    retrieval-усиление BL-007/009, не блокирует S07/S09)
-V4 (ДЗ-05): S04 → S05 → S08 → S10 → S11 → S14 → S15   (FSM из готовых узлов ДЗ-02…04)
+V4 (ДЗ-05): S04 → S05 → S08 → S10 → S11 → S14 → S15 → S27   (FSM из готовых узлов
+   ДЗ-02…04; S27 — сборка артефактов hw-05, узел feat-013 встаёт в FSM в S14)
 V5 (ДЗ-06): S18
 V6 (main):  S12 → S17; S16 — независимо (после S05/S10)
 ```
@@ -91,9 +93,9 @@ V6 (main):  S12 → S17; S16 — независимо (после S05/S10)
 Полный граф зависимостей (колонка «Зависимости» таблицы выше):
 
 S02←S01 · S03←S01 · S04←S01,S03 · S05←S02,S04 · S06←S02 · S07←S02 · S08←S03,S04 ·
-S09←S06,S07 · S10←S09 · S11←S05,S07,S10 · S12←S02,S11 · S13←S02 · S14←S04,S13 ·
+S09←S06,S07 · S10←S09,S04 · S11←S05,S07,S10 · S12←S02,S11 · S13←S02 · S14←S04,S13 ·
 S15←S05,S14 · S16←S05,S10 · S17←S11,S12 · S18←S15 · S19←S03,S06 · S21←S03,S13 ·
-S26←S06
+S26←S06 · S27←S04,S05,S08,S10,S11,S14,S15
 (вне вех: S21 — консольная наблюдаемость, BL-004; S24 — ручное тестирование и фиксы поверх закрытых вех V1/V2; S25 — feat-020 усиливает артефакт V2 по директиве владельца; порядок с вехами не конфликтует)
 
 Межвеховых блокировок нет: зависимости каждой фичи/сессии лежат в её вехе или раньше
@@ -104,11 +106,11 @@ S26←S06
 | V1. Tool-контур (LLM + `run_sql`) | ДЗ-02 (`hw-02-agent-tools`) | feat-001 ✅, feat-002, feat-003, feat-013 (тул + SOP + проверка INSERT) | S01 ✅, S02, S03, S13 | 30.11.2026 | 01.12.2026 |
 | V2. RAG + стриминг | ДЗ-03 (`hw-03-context-streaming`) | feat-006, feat-019, feat-020 (объединённый контур — директива владельца из S24) | S06, S19, S25 | 07.12.2026 | 08.12.2026 |
 | V3. Гибридная память | ДЗ-04 (`hw-04-agent-memory`) | feat-007, feat-009 (допущения фиксирует код — без clarify, hw-plan §4), feat-021 (retrieval-усиление dense+FTS — решение владельца D-026 доп.2, BL-007/009) | S07, S09, S26 | 21.12.2026 | 27.12.2026 |
-| V4. State machine | ДЗ-05 (`hw-05-agent-logic`) | feat-004 (check_cost — транзитная заглушка), feat-005, feat-008, feat-010, feat-011, feat-013 (узел в FSM), feat-014, feat-015 | S04, S05, S08, S10, S11, S14, S15 (+подключение узла feat-013 в FSM) | 28.12.2026 | 12.01.2027 |
+| V4. State machine | ДЗ-05 (`hw-05-agent-logic`) | feat-004 (check_cost — транзитная заглушка), feat-005, feat-008, feat-010, feat-011, feat-013 (узел в FSM), feat-014, feat-015 | S04, S05, S08, S10, S11, S14, S15 (узел feat-013 — в S14), S27 (сборка артефактов hw-05) | 28.12.2026 | 12.01.2027 |
 | V5. Контроль качества | ДЗ-06 (`hw-06-agent-quality`) | feat-018 (live-стек ADR-010) + доводки бюджета/trace/защиты (feat-011/014/015) | S18 (+доводочные задачи) | 16.01.2027 | 17.01.2027 |
 | V6. Выпускная | `main` | feat-012 + feat-017 (декомпозиция), полный RBAC (ADR-005), feat-016 (кэш), экономика — полная матрица роутинга (ADR-007), двухслойные форматы (ADR-008, завершение), SAP (ADR-011), eval-сет | S12, S16, S17 и далее | — | — |
 
-Примечания: сессия S13 закрывает feat-013 целиком (тул + тесты) и попадает в V1 — узловое подключение к FSM выполняется в задачах V4. Веха V4 собирает FSM «из готовых узлов ДЗ-02…04» (hw-plan §5); check_cost в ней — транзитный узел-заглушка (порог T2 не активен до S12, hw-01 §3.4). Расхождение старых вех M1–M4 с ДЗ-планом устранено этой таблицей (FIX-003).
+Примечания: сессия S13 закрывает feat-013 целиком (тул + тесты) и попадает в V1 — узловое подключение к FSM выполняется в S14 (задачи вехи V4). Веха V4 собирает FSM «из готовых узлов ДЗ-02…04» (hw-plan §5); check_cost в ней — транзитный узел-заглушка (порог T2 не активен до S12, hw-01 §3.4). Батч сессий V4 оформлен (файлы S04/S05/S08/S10/S11/S14/S15 + сборочная S27; S10 deps дополнены S04 — наполнение FSM-заглушек). Расхождение старых вех M1–M4 с ДЗ-планом устранено этой таблицей (FIX-003).
 
 ## Правила параллельной работы
 
