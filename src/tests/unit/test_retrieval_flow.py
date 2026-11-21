@@ -13,6 +13,7 @@ from apps.cli import (
     DEGRADED_ANSWER,
     LLM_DEGRADED_TEMPLATE,
     RETRIEVAL_CONTEXT_MAX_CHARS,
+    RETRIEVAL_TOP_K,
     format_retrieval_block,
     run_retrieval_flow,
 )
@@ -103,12 +104,22 @@ def test_retrieval_flow_answers_with_context() -> None:
     assert answer == "42 заказа"
     # Вопрос уходит в эмбеддер, вектор + ctx + top_k — в поиск с фильтром прав
     assert store.calls[0]["ctx"] == UNIT_CTX
-    assert store.calls[0]["top_k"] == 5
+    assert store.calls[0]["top_k"] == RETRIEVAL_TOP_K
     assert store.calls[0]["vector"] == _QUERY_VECTOR
     # Retrieval-блок — в системном сообщении, вопрос — в user
     system = llm.stream_messages[0][0]["content"]
     assert "[таблица: orders] DDL" in system
     assert llm.stream_messages[0][1]["content"] == "Сколько заказов?"
+
+
+def test_retrieval_top_k_covers_multitable_chain() -> None:
+    # S24 находка #1(а): при k=5 вопросы о 3-табличной цепочке
+    # (customers+orders+campaigns) теряли DDL-звенья — для «...из Кзахстана...
+    # всего» ddl:orders был 7-м, и модель честно отказывалась («таблицы нет»).
+    # Топ-8 покрывает структуру: DDL всех таблиц цепочки + ребро + few-shot +
+    # глоссарий; контекст по-прежнему ограничен капом по символам (≈2К токенов).
+    # Регресс: падает на до-фиксовом k=5.
+    assert RETRIEVAL_TOP_K == 8
 
 
 def test_retrieval_block_caps_on_document_boundary() -> None:
