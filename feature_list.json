@@ -540,9 +540,9 @@
       "dependencies": [
         "feat-006"
       ],
-      "state": "active",
-      "status": "in-progress",
-      "evidence": "",
+      "state": "passing",
+      "status": "done",
+      "evidence": "command «make infra-up && make infra-migrate && make index-knowledge && uv run pytest src/tests/integration/test_hybrid_memory.py -q» exited 0 at 2026-11-21T18:40:00+03:00 (scripts/verify-feature.sh)",
       "layers": [
         {
           "label": "layer-1-static",
