@@ -379,7 +379,10 @@ def test_main_quiet_flag_disables_console_trace(monkeypatch) -> None:  # type: i
         )
 
     monkeypatch.setattr("apps.cli.build_container", fake_build_container)
-    assert main(["--quiet", "вопрос"]) == 0
+    # Проводка через --plain (тул-контур ДЗ-02): дефолтная ветка CLI теперь
+    # объединённый контур (feat-020, нужен vector_store в контейнере); --quiet —
+    # общий флаг обеих веток, проводка console_trace проверяется на своей
+    assert main(["--plain", "--quiet", "вопрос"]) == 0
     assert captured["console_trace"] is False
-    assert main(["вопрос"]) == 0
+    assert main(["--plain", "вопрос"]) == 0
     assert captured["console_trace"] is True

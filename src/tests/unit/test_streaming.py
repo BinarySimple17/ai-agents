@@ -1,16 +1,15 @@
-"""Юнит-тесты стриминга (feat-019, S19 Task 5) — шлюз ТОЛЬКО моками (S00 правило 7).
+"""Юнит-тесты стриминга (feat-019, S19 Task 5; тул-дельты — S25 feat-020) — шлюз
+ТОЛЬКО моками (S00 правило 7).
 
-Два уровня одного контракта:
-- адаптер `OpenAIProvider.complete_stream`: чанки собираются в полный ответ (a),
-  TTFT в событии llm.complete (b, NFR-1), mid-stream сбой без ретрая —
-  `_register_failure` + LLMRequestError (c), BudgetExceededError ДО вызова (d),
-  reasoning-дельты не ответ по guard'у finish_reason (e, D-021-аналог),
-  usage-паритет: шлюз без usage → usage_missing=true, стоимость 0 не маскируется
-  (f, finding ARCH-GATE S19); бюджет/breaker — те же guard'ы, что у complete()
-  (правило 4 плана: стрим — не обход экономики ADR-007);
-- флоу retrieval (`run_retrieval_flow`): дельты → printer по мере генерации,
-  хвост исхода — `_stream_outcome` (деградация поверх напечатанного, ретрай
-  пустых ответов только ДО первой дельты — Ловушки-1).
+Уровень адаптера `OpenAIProvider.complete_stream`: чанки собираются в полный ответ
+(a), TTFT в событии llm.complete (b, NFR-1), mid-stream сбой без ретрая —
+`_register_failure` + LLMRequestError (c), BudgetExceededError ДО вызова (d),
+reasoning-дельты не ответ по guard'у finish_reason (e, D-021-аналог), usage-паритет:
+шлюз без usage → usage_missing=true, стоимость 0 не маскируется (f, finding
+ARCH-GATE S19); тул-дельты склеиваются в StreamFinal.tool_calls (g, S25); бюджет/
+breaker — те же guard'ы, что у complete() (правило 4 плана: стрим — не обход
+экономики ADR-007). Флоу-семантика (printer, `_stream_outcome`, D-022) — в
+test_agent_flow.py (контур переехал в run_agent_flow, feat-020).
 
 Помощники мок-шлюза (_settings/_provider/_http_error) — переиспользование
 двойников test_llm_client (тот же компонент), без дубля.
@@ -26,12 +25,8 @@ import httpx
 import openai
 import pytest
 
-from apps import cli as cli_module
-from apps.cli import DEGRADED_ANSWER, LLM_DEGRADED_TEMPLATE, run_retrieval_flow
-from tests.unit.fakes import UNIT_CTX, RecordingTracer
 from tests.unit.test_llm_client import (
     _MESSAGES,
-    _embed_client,
     _http_error,
     _provider,
     _settings,
@@ -47,7 +42,6 @@ from text_to_sql_agent.application.ports.llm_provider import (
     Usage,
 )
 from text_to_sql_agent.infrastructure.llm.openai_provider import OpenAIProvider
-from text_to_sql_agent.infrastructure.observability.console_tracer import ConsoleTracer
 from text_to_sql_agent.infrastructure.observability.jsonl_tracer import JsonlTracer
 
 _GATEWAY_URL = "https://gateway.test/api/v1/chat/completions"
@@ -451,141 +445,6 @@ def test_stream_empty_stream_yields_final_without_chunks() -> None:
     assert len(finals) == 1 and finals[0].finish_reason is None
 
 
-# --- флоу retrieval: дельты → printer, хвост исхода (Ловушки-1) ---
-class _ScriptedFlowLLM:
-    """Двойник LLMProvider со скриптованным стримом (S00 правило 7); Exception в
-    сценарии бросается при итерации (как в _ScriptedStream адаптера), script не
-    расходуется — повторный вызов (empty-retry) даёт тот же сценарий."""
-
-    def __init__(self, script: list[Any]) -> None:
-        self._script = script
-        self.calls = 0
-
-    def embed(self, texts):
-        return [[0.1] * 1024 for _ in texts]
-
-    def complete_stream(self, role, messages, tools=None):
-        self.calls += 1
-        for item in self._script:
-            if isinstance(item, Exception):
-                raise item
-            yield item
-
-
-class _FakeStore:
-    def search(self, query_embedding, *, ctx, top_k):
-        return []
-
-
-def test_flow_streams_chunks_to_printer_as_generated() -> None:
-    llm = _ScriptedFlowLLM(
-        [
-            StreamChunk(text_delta="Ответ "),
-            StreamChunk(text_delta="42 заказа"),
-            StreamFinal(model="fake", finish_reason="stop"),
-        ]
-    )
-    printed: list[str] = []
-    tracer = RecordingTracer()
-    answer = run_retrieval_flow(
-        "Сколько заказов?",
-        llm=llm,
-        vector_store=_FakeStore(),
-        ctx=UNIT_CTX,
-        tracer=tracer,
-        printer=printed.append,
-    )
-    assert answer == "Ответ 42 заказа"
-    assert printed == ["Ответ ", "42 заказа", "\n"]  # дельты по мере генерации + \n
-    answer_event = next(e for e in tracer.events if e.event == "agent.answer")
-    assert answer_event.payload["source"] == "retrieval_stream"
-    # Текст ответа в консоль-трейс не попадает (Ловушка-4: рендер факта, не текста)
-    assert "42 заказа" not in answer_event.model_dump_json()
-
-
-def test_flow_mid_stream_failure_degrades_over_printed_chunks() -> None:
-    llm = _ScriptedFlowLLM(
-        [StreamChunk(text_delta="частичный "), LLMRequestError("стрим оборван шлюзом")]
-    )
-    printed: list[str] = []
-    tracer = RecordingTracer()
-    answer = run_retrieval_flow(
-        "вопрос",
-        llm=llm,
-        vector_store=_FakeStore(),
-        ctx=UNIT_CTX,
-        tracer=tracer,
-        printer=printed.append,
-    )
-    message = LLM_DEGRADED_TEMPLATE.format(error="стрим оборван шлюзом")
-    assert answer == "частичный \n" + message  # деградация поверх напечатанного
-    assert printed == ["частичный ", "\n", message, "\n"]  # без дубля дельт
-    degrade = next(e for e in tracer.events if e.event == "agent.degrade")
-    assert "оборвал" in degrade.payload["reason"]
-
-
-def test_flow_mid_stream_failure_before_first_chunk_degrades() -> None:
-    llm = _ScriptedFlowLLM([LLMRequestError("шлюз не ответил после 4 попыток")])
-    printed: list[str] = []
-    answer = run_retrieval_flow(
-        "вопрос", llm=llm, vector_store=_FakeStore(), ctx=UNIT_CTX, printer=printed.append
-    )
-    message = LLM_DEGRADED_TEMPLATE.format(error="шлюз не ответил после 4 попыток")
-    assert answer == message  # валидный исход, не traceback (S00 правило 8)
-    assert printed == [message, "\n"]  # дельт не было — только сообщение деградации
-
-
-def test_flow_empty_stream_retries_only_before_printing() -> None:
-    # Пустой стрим (ни одной дельты): empty-retry не расходует ничего напечатанного;
-    # исчерпание — деградация. calls = 1 + EMPTY_RESPONSE_RETRIES
-    llm = _ScriptedFlowLLM([StreamFinal(model="fake", finish_reason="stop")])
-    printed: list[str] = []
-    answer = run_retrieval_flow(
-        "вопрос", llm=llm, vector_store=_FakeStore(), ctx=UNIT_CTX, printer=printed.append
-    )
-    assert answer == DEGRADED_ANSWER
-    assert printed == [DEGRADED_ANSWER, "\n"]  # дельт не было — только деградационный текст
-    assert llm.calls == 3
-
-
-def test_flow_finish_reason_length_degrades_without_retry() -> None:
-    # Guard по finish_reason (e на уровне флоу): обрыв по лимиту — ретраить
-    # бессмысленно, тот же исход; printer=None — мусор в ответ не попадает
-    llm = _ScriptedFlowLLM([StreamFinal(model="fake", finish_reason="length")])
-    tracer = RecordingTracer()
-    answer = run_retrieval_flow(
-        "вопрос", llm=llm, vector_store=_FakeStore(), ctx=UNIT_CTX, tracer=tracer
-    )
-    assert answer == DEGRADED_ANSWER
-    assert llm.calls == 1  # без ретрая (в отличие от пустого ответа со stop)
-    degrade = next(e for e in tracer.events if e.event == "agent.degrade")
-    assert "finish_reason=length" in degrade.payload["reason"]
-
-
-def test_flow_malformed_tag_not_returned_as_answer_without_printer() -> None:
-    # Hermes-тег в контенте — битый формат (S13): printer=None — мусор не «ответ»
-    llm = _ScriptedFlowLLM([StreamChunk(text_delta="<tool_call>{...}</tool_call>")])
-    answer = run_retrieval_flow("вопрос", llm=llm, vector_store=_FakeStore(), ctx=UNIT_CTX)
-    assert answer == DEGRADED_ANSWER
-
-
-def test_flow_reasoning_fallback_chunk_printed_as_answer() -> None:
-    # Фолбэк-чанк адаптера (W4) флоу печатает как обычную дельту — пользователь
-    # видит ответ; llmProviderError-классов нет, исход валидный
-    llm = _ScriptedFlowLLM(
-        [
-            StreamChunk(text_delta="Ответ из reasoning"),
-            StreamFinal(model="fake", text_from_reasoning=True),
-        ]
-    )
-    printed: list[str] = []
-    answer = run_retrieval_flow(
-        "вопрос", llm=llm, vector_store=_FakeStore(), ctx=UNIT_CTX, printer=printed.append
-    )
-    assert answer == "Ответ из reasoning"
-    assert printed == ["Ответ из reasoning", "\n"]
-
-
 # --- регресс C1 (ревью S19): обрыв ИТЕРАЦИИ стрима — сырые httpx-исключения ---
 _SSE_CHUNK = json.dumps(
     {
@@ -658,29 +517,6 @@ def test_stream_mid_stream_error_traced_with_stream_flag(tmp_path: Path) -> None
     assert record["payload"]["stream"] is True
 
 
-def test_flow_http_break_degrades_valid_outcome() -> None:
-    # Тот же обрыв через НАСТОЯЩИЙ SDK-клиент в флоу retrieval: валидный исход —
-    # частичный текст + сообщение деградации, не traceback (S00 правило 8, C1)
-    client = openai.OpenAI(
-        base_url="https://gateway.test/api/v1",
-        api_key="sk-test",
-        max_retries=0,
-        http_client=httpx.Client(transport=_BreakingTransport(httpx.ReadError("reset"))),
-    )
-    provider = OpenAIProvider(
-        _settings(),
-        client=client,
-        embedding_client=_embed_client([[0.1] * 1024]),  # embed фейковый — сеть не нужна
-    )
-    printed: list[str] = []
-    answer = run_retrieval_flow(
-        "вопрос", llm=provider, vector_store=_FakeStore(), ctx=UNIT_CTX, printer=printed.append
-    )
-    assert answer.startswith("часть \n")  # частичный ответ напечатан до обрыва
-    assert "стрим оборван" in answer  # деградация поверх напечатанного (Ловушки-1)
-    assert printed[0] == "часть " and printed[-1] == "\n"
-
-
 # --- ревью I1: usage запрошен у шлюза, иначе кап бюджета в стриме инертен ---
 def test_stream_requests_usage_from_gateway() -> None:
     provider, completions, _, _ = _provider([_ScriptedStream([_chunk("x")])])
@@ -697,54 +533,6 @@ def test_stream_generator_abandoned_closes_stream_without_metadata() -> None:
     gen.close()  # GeneratorExit внутрь генератора (finally закрывает HTTP-стрим)
     assert stream.closed
     assert provider.budget_used_rub == 0.0  # вызов «не завершён» — учёта нет (M7)
-
-
-# --- ревью I2: ruling (b) — напечатанный мусор не отзывается, исход без тега ---
-def test_flow_malformed_tag_with_printer_degrades_over_printed_garbage() -> None:
-    llm = _ScriptedFlowLLM([StreamChunk(text_delta="<tool_call>{...}")])
-    printed: list[str] = []
-    tracer = RecordingTracer()
-    answer = run_retrieval_flow(
-        "вопрос",
-        llm=llm,
-        vector_store=_FakeStore(),
-        ctx=UNIT_CTX,
-        tracer=tracer,
-        printer=printed.append,
-    )
-    assert answer == "<tool_call>{...}\n" + DEGRADED_ANSWER  # мусор не «ответ» в исходе
-    assert printed == ["<tool_call>{...}", "\n", DEGRADED_ANSWER, "\n"]  # но экран уже видел
-    degrade = next(e for e in tracer.events if e.event == "agent.degrade")
-    assert "Hermes-тег" in degrade.payload["reason"]
-
-
-# --- ревью I3: wiring main → флоу, чистота stdout (D-022) — не только layer-3 ---
-def _stream_container(tracer: Any) -> SimpleNamespace:
-    llm = _ScriptedFlowLLM(
-        [StreamChunk(text_delta="Ответ 42"), StreamFinal(model="fake", finish_reason="stop")]
-    )
-    return SimpleNamespace(llm=llm, vector_store=_FakeStore(), tracer=tracer)
-
-
-def test_main_retrieve_stdout_is_answer_only_quiet(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
-    container = _stream_container(RecordingTracer())
-    monkeypatch.setattr(cli_module, "build_container", lambda **kw: container)
-    assert cli_module.main(["--retrieve", "--quiet", "Сколько заказов?"]) == 0
-    captured = capsys.readouterr()
-    assert captured.out == "Ответ 42\n"  # РОВНО ответ: без дубля print и этапов
-    assert captured.err == ""  # --quiet глушит stderr-этапы, не ответ (D-022)
-
-
-def test_main_retrieve_stages_go_to_stderr_not_stdout(
-    monkeypatch: pytest.MonkeyPatch, capsys
-) -> None:
-    container = _stream_container(ConsoleTracer())  # дефолтный stderr
-    monkeypatch.setattr(cli_module, "build_container", lambda **kw: container)
-    assert cli_module.main(["--retrieve", "Сколько заказов?"]) == 0
-    captured = capsys.readouterr()
-    assert captured.out == "Ответ 42\n"
-    assert "▶ Вопрос" in captured.err  # этапы — в stderr
-    assert "Ответ 42" not in captured.err  # текст ответа не в трейсе (Ловушка-4)
 
 
 # --- ревью-2 m1: malformed SSE-кадр (прокси вставил HTML в SSE-поток) ---
