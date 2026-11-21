@@ -3,7 +3,7 @@
 
 SHELL := /bin/bash
 
-.PHONY: setup dev check test lint e2e infra-up infra-down infra-migrate verify-feature vcr archive session-start session-end clean-check
+.PHONY: setup dev check test lint e2e infra-up infra-down infra-migrate index-knowledge sync-graph verify-feature vcr archive session-start session-end clean-check
 
 # Полная установка + верификация с чистого состояния
 # (в Makefile — через `bash init.sh`: на Windows make гоняет рецепты через
@@ -38,6 +38,11 @@ dev:
 # идемпотентно по source_ref — повторный запуск обновляет, не дублирует
 index-knowledge:
 	uv run --env-file .env python -m apps.index_knowledge
+
+# Синк графовой памяти (S07, feat-007): активные строки реестра → Neo4j (только
+# топология, ADR-003 v2.1); запускать после правки реестра и перед тестами путей
+sync-graph:
+	uv run --env-file .env python -m apps.sync_graph
 
 # --- Инфраструктура (PostgreSQL pgvector+AGE, Valkey) ---
 

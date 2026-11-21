@@ -50,7 +50,7 @@
 | Тесты | pytest (+ fixtures скипами) | LLM — моки; БД-тесты скипаются без инфры |
 | Статика | ruff (lint + format) | гейт layer-1 в `./init.sh` |
 | Инфра | docker compose | образы запинены, см. ниже |
-| Точки входа | MVP: CLI (`apps/cli.py`) + индексация знаний (`apps/index_knowledge.py`, S06) + Streamlit-демо (`apps/streamlit_app.py` — живое демо RBAC); целевой контур N1 (c4-l2 v1.8): `agent-api` — FastAPI + uvicorn (async, `POST /ask → 202 + job_id`, `GET /ask/{id}/stream` SSE) + `agent-worker` — arq (очередь — Valkey Streams) | D-005 в MVP не снимается: HTTP-контур — после базового (N1 ревью-03); Streamlit — после базового контура |
+| Точки входа | MVP: CLI (`apps/cli.py`) + индексация знаний (`apps/index_knowledge.py`, S06) + синк графа (`apps/sync_graph.py`, S07) + Streamlit-демо (`apps/streamlit_app.py` — живое демо RBAC); целевой контур N1 (c4-l2 v1.8): `agent-api` — FastAPI + uvicorn (async, `POST /ask → 202 + job_id`, `GET /ask/{id}/stream` SSE) + `agent-worker` — arq (очередь — Valkey Streams) | D-005 в MVP не снимается: HTTP-контур — после базового (N1 ревью-03); Streamlit — после базового контура |
 | Наблюдаемость (live) | OTel SDK → Jaeger + Prometheus → Grafana (ADR-010) | ДЗ-06 (S17+), не в базовом скоупе |
 | Внешний источник | SAP через AuthProvider + QuerySpec (ADR-011) | после ДЗ-06, точка роста |
 
@@ -68,7 +68,7 @@ src/
 │   │   ├── ports/             # Protocol-интерфейсы стыков (таблица ниже)
 │   │   ├── services/          # по одному классу на узел (clarify, plan_joins, ...)
 │   │   └── use_cases/         # answer_question — точка входа оркестратора
-│   ├── infrastructure/        # адаптеры портов: llm/ memory/ persistence/ cache/ observability/ guardrails/
+│   ├── infrastructure/        # адаптеры портов: llm/ memory/ persistence/ graph/ cache/ observability/ guardrails/
 │   ├── orchestration/         # LangGraph: graph.py (StateGraph) + routing.py (условные переходы) — только рёбра
 │   ├── config/                # settings.py (pydantic-settings) — единственная точка чтения env
 │   └── composition/           # container.py — единственное место сборки зависимостей
@@ -82,7 +82,7 @@ alembic.ini                    # конфиг Alembic (script_location = src/mig
 |---|---|---|
 | `LLMProvider.complete(role, messages, *, tools=None) -> LLMResponse(text, tool_calls, usage, model)` · `complete_stream(role, messages, *, tools=None) -> Iterator[StreamChunk(text_delta) | StreamFinal(usage, finish_reason, model, text_from_reasoning, tool_calls)]` (стрим ДЗ-03, S19; tool_calls в финале — S25) · `embed(texts) -> list[vector]` (эмбеддер — model-card) | `openai_provider.py` (routerai.ru / локальный LM Studio — D-020), фейк в тестах | S03 (embed — S06, стрим — S19) |
 | `VectorStore.upsert(documents, embeddings) -> int` (идемпотентно по source_ref) · `search(query_embedding, *, ctx, top_k) -> docs` (фильтр прав — джойн в SQL поиска, ADR-005) | `pgvector_store.py` (dense-only — D-026 доп. 2), фейк в тестах | S06 |
-| `SchemaGraphStore.path(a, b, allowed) -> plan\|None` | `neo4j_graph_store.py` | S07 |
+| `SchemaGraphStore.sync() -> SyncReport(nodes, edges, graph_version)` (идемпотентный ETL «активные строки реестра → рёбра графа», ADR-006 §4.3) · `graph_version() -> int` (0 = снапшот не загружен) · `find_join_paths(from_table, to_table, *, ctx, allowed_tables, k) -> list[JoinPath]` (k взвешенных путей по активным рёбрам; `allowed_tables` — из state.permissions, deny-by-default: путь через недоступную таблицу не существует; S00 контракт 3) · `path_semantics(edge_ids, *, ctx) -> list[EdgeSemantics]` (семантика из PG по rel_id — в граф не дублируется, ADR-003 v2.1/ADR-006 v1.3) | `neo4j_graph_store.py` (infrastructure/graph/), фейк в тестах | S07 |
 | `SQLExecutor.execute(QueryRequest, *, ctx: RunContext) -> QueryResult(columns, rows, row_count, truncated)` — read-only; дискриминатор `sql\|spec` (ADR-011 v1.2: ctx — trace_id/user_id/token_ref) | `postgres_executor.py` (роль `agent_ro`) | S13 |
 | `SemanticCache.get(key) / put(key, value)` | `valkey_cache.py` / `noop_cache.py` (тесты) | S16 |
 | `AuthProvider.verify(token) -> identity` (ADR-005; MVP — DevTokenAuth, прод — OIDC) | `dev_token_auth.py` / `oidc_auth.py` | S05 |

@@ -158,15 +158,15 @@
     {
       "id": "feat-007",
       "name": "Граф связей (Neo4j)",
-      "description": "Граф связей в Neo4j (ADR-003 v2.0): FK-рёбра вычитываются из каталога PostgreSQL автоматически, бизнес-рёбра (по дате, по email, иерархии) — из agent_relationships (meaning, join_type, usage_notes); синк топологии по счётчику settings_version + reconciliation-тест «строки настроек + FK каталога = рёбра графа» (ADR-006 §4). Нативный shortestPath для плана джойнов; семантика читается из настроек PG (Neo4j — только топология с rel_id).",
+      "description": "Граф связей в Neo4j (ADR-003 v2.1, ADR-006 v1.3): единственный источник рёбер — реестр agent_relationships (вьюха active; FK каталога — генератор кандидатов в очередь владельцу, НЕ ребро). Neo4j хранит только топологию (пары таблиц, rel_id, направление, weight), семантика (meaning, join_type, usage_notes) читается из PostgreSQL по rel_id — path_semantics; синк — детерминированный ETL по счётчику settings_version('relationships'), ревизия graph_version пинится на прогон, reconciliation-тест «активные строки реестра = рёбра графа» (ADR-006 §4.3). find_join_paths — k взвешенных путей по активным рёбрам (shortestPath — имя функции хранилища, не решающее правило); права — allowed_tables deny-by-default (S00 контракт 3).",
       "behavior": "Для пары таблиц узел возвращает путь по реальным рёбрам или null (пути нет — не выдумываем джойн); для каждого ребра пути возвращает семантику (join_type, meaning, usage_notes) из настроек.",
       "verification": "make infra-up && uv run pytest src/tests/integration/test_join_graph.py -q",
       "dependencies": [
         "feat-002"
       ],
-      "state": "not_started",
-      "status": "not-started",
-      "evidence": "",
+      "state": "passing",
+      "status": "done",
+      "evidence": "command «make infra-up && uv run pytest src/tests/integration/test_join_graph.py -q» exited 0 at 2026-11-21T15:58:11+03:00 (scripts/verify-feature.sh)",
       "layers": [
         {
           "label": "layer-1-static",

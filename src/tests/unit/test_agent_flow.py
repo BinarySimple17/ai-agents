@@ -596,7 +596,12 @@ def test_agent_flow_http_break_degrades_valid_outcome() -> None:
 def _agent_container(tracer: Any, scripts: list[list[Any]] | None = None) -> SimpleNamespace:
     llm = FakeAgentLLM(scripts or [_text_turn("Ответ 42")])
     return SimpleNamespace(
-        llm=llm, run_sql_tool=FakeTool(), vector_store=FakeStore(), tracer=tracer
+        llm=llm,
+        run_sql_tool=FakeTool(),
+        vector_store=FakeStore(),
+        tracer=tracer,
+        # S07: графовый драйвер в контейнере — CLI закрывает его в finally
+        graph_store=SimpleNamespace(close=lambda: None),
     )
 
 

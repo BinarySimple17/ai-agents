@@ -11,6 +11,7 @@ from text_to_sql_agent.application.ports.llm_provider import LLMProvider
 from text_to_sql_agent.application.ports.tracer import Tracer
 from text_to_sql_agent.application.services.run_sql_tool import RunSqlTool
 from text_to_sql_agent.config.settings import Settings, load_settings
+from text_to_sql_agent.infrastructure.graph.neo4j_graph_store import Neo4jGraphStore
 from text_to_sql_agent.infrastructure.llm.openai_provider import OpenAIProvider
 from text_to_sql_agent.infrastructure.memory.pgvector_store import PgVectorStore
 from text_to_sql_agent.infrastructure.observability.composite_tracer import TeeTracer
@@ -29,6 +30,7 @@ class Container:
     executor: PostgresExecutor
     run_sql_tool: RunSqlTool
     vector_store: PgVectorStore
+    graph_store: Neo4jGraphStore
 
 
 def build_container(
@@ -59,6 +61,16 @@ def build_container(
         settings.agent_planner_dsn,
         write_dsn=settings.postgres_dsn.get_secret_value() if knowledge_writer else None,
     )
+    # Графовая память (S07): Neo4j — только топология, реестр/семантика — PG.
+    # Чтение реестра — agent_planner (BL-003 п.3: GRANT SELECT на вьюху active
+    # из миграции 0002; registry_writer без SELECT не трогается, роль синка
+    # не вводится — наименьшие привилегии, один read-путь с рантаймом).
+    graph_store = Neo4jGraphStore(
+        settings.neo4j_uri,
+        settings.neo4j_user,
+        settings.neo4j_password.get_secret_value(),
+        planner_dsn=settings.agent_planner_dsn,
+    )
     return Container(
         settings=settings,
         llm=llm,
@@ -66,4 +78,5 @@ def build_container(
         executor=executor,
         run_sql_tool=run_sql_tool,
         vector_store=vector_store,
+        graph_store=graph_store,
     )

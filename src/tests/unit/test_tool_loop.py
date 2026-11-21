@@ -379,11 +379,16 @@ def test_main_quiet_flag_disables_console_trace(monkeypatch) -> None:  # type: i
     # Ревью S21 (Minor): проводка --quiet → build_container(console_trace=False)
     # держалась только живым прогоном; переворот флага при рефакторинге — тест
     captured: dict[str, bool] = {}
+    closed: list[str] = []
 
     def fake_build_container(settings=None, *, console_trace=False):  # type: ignore[no-untyped-def]
         captured["console_trace"] = console_trace
         return SimpleNamespace(
-            llm=CircuitOpenLLM(), run_sql_tool=RunSqlTool(FakeExecutor()), tracer=RecordingTracer()
+            llm=CircuitOpenLLM(),
+            run_sql_tool=RunSqlTool(FakeExecutor()),
+            tracer=RecordingTracer(),
+            # S07: CLI закрывает графовый драйвер в finally (контракт жизненного цикла)
+            graph_store=SimpleNamespace(close=lambda: closed.append("driver")),
         )
 
     monkeypatch.setattr("apps.cli.build_container", fake_build_container)
@@ -394,3 +399,4 @@ def test_main_quiet_flag_disables_console_trace(monkeypatch) -> None:  # type: i
     assert captured["console_trace"] is False
     assert main(["--plain", "вопрос"]) == 0
     assert captured["console_trace"] is True
+    assert closed == ["driver", "driver"]  # finally сработал на обоих прогонах
