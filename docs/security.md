@@ -51,7 +51,7 @@
 
 ### 2.1. Канал исполнения: сервисная роль `agent_ro` (единственный путь пользовательского SQL в БД)
 
-SQL к PostgreSQL уходит **только** через сервисный аккаунт `agent_ro` (второй канал чтения — retrieval `agent_planner` на agent_knowledge и права-таблицы, ruling W1 ARCH-GATE S06: пользовательский SQL сюда не попадает) — один на всех
+SQL к PostgreSQL уходит **только** через сервисный аккаунт `agent_ro` (второй канал чтения — retrieval `agent_planner` на agent_knowledge и права-таблицы, ruling W1 ARCH-GATE S06: пользовательский SQL сюда не попадает; с S09 тот же канал — единственная узкая запись: INSERT на `agent_edge_proposals` + USAGE на sequence, миграция 0009, ruling Q1 ARCH-GATE S09/D-030 — заявка «нет активного пути» пишется кодом узла plan_joins, append-only: UPDATE/DELETE/SELECT не выданы, `hits` считается владельцем как COUNT(*), ADR-006 §4.4) — один на всех
 пользователей; пользовательская identity в БД не ходит (она живёт в state и влияет
 на scope, не на креды). Соединение держит приложение (порт `SQLExecutor`) — единственный
 клиент data plane; креды — `.env` (дев) / Vault (прод); порты БД наружу не публикуются.

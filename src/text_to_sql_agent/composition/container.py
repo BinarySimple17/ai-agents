@@ -9,6 +9,7 @@ from dataclasses import dataclass
 
 from text_to_sql_agent.application.ports.llm_provider import LLMProvider
 from text_to_sql_agent.application.ports.tracer import Tracer
+from text_to_sql_agent.application.services.plan_joins_service import PlanJoinsService
 from text_to_sql_agent.application.services.run_sql_tool import RunSqlTool
 from text_to_sql_agent.config.settings import Settings, load_settings
 from text_to_sql_agent.infrastructure.graph.neo4j_graph_store import Neo4jGraphStore
@@ -17,6 +18,7 @@ from text_to_sql_agent.infrastructure.memory.pgvector_store import PgVectorStore
 from text_to_sql_agent.infrastructure.observability.composite_tracer import TeeTracer
 from text_to_sql_agent.infrastructure.observability.console_tracer import ConsoleTracer
 from text_to_sql_agent.infrastructure.observability.jsonl_tracer import JsonlTracer
+from text_to_sql_agent.infrastructure.persistence.edge_proposal_store import PgEdgeProposalStore
 from text_to_sql_agent.infrastructure.persistence.postgres_executor import PostgresExecutor
 
 
@@ -31,6 +33,8 @@ class Container:
     run_sql_tool: RunSqlTool
     vector_store: PgVectorStore
     graph_store: Neo4jGraphStore
+    edge_proposal_store: PgEdgeProposalStore
+    plan_joins_service: PlanJoinsService
 
 
 def build_container(
@@ -71,6 +75,20 @@ def build_container(
         settings.neo4j_password.get_secret_value(),
         planner_dsn=settings.agent_planner_dsn,
     )
+    # Очередь заявок (S09 Task 4): запись — INSERT-only под agent_planner
+    # (миграция 0009, ruling Q1 ARCH-GATE S09); append-only через отсутствие
+    # UPDATE/DELETE/SELECT-грантов.
+    edge_proposal_store = PgEdgeProposalStore(settings.agent_planner_dsn)
+    # Узел plan_joins (S09): retrieval + граф + ранжирование. Шов бюджета
+    # (ruling Q7): остаток = кап запроса − резидентный аккумулятор адаптера;
+    # FSM (V4) заменит на порт BudgetGuard.
+    plan_joins_service = PlanJoinsService(
+        llm=llm,
+        vector_store=vector_store,
+        graph_store=graph_store,
+        edge_proposals=edge_proposal_store,
+        budget_remaining_roubles=lambda: settings.budget_per_request_rub - llm.budget_used_rub,
+    )
     return Container(
         settings=settings,
         llm=llm,
@@ -79,4 +97,6 @@ def build_container(
         run_sql_tool=run_sql_tool,
         vector_store=vector_store,
         graph_store=graph_store,
+        edge_proposal_store=edge_proposal_store,
+        plan_joins_service=plan_joins_service,
     )

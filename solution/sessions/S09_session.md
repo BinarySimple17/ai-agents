@@ -1,6 +1,6 @@
 # S09 — plan_joins: гибридный поиск RAG + граф → JoinPlan (веха V3, ДЗ-04)
 
-Этап: Веха V3 (ДЗ-04: гибридный поиск — флагман артефакта) | Владелец: агент | Зависимости: S06, S07 | Оценка: 1.5 | Статус: [ ] не начата
+Этап: Веха V3 (ДЗ-04: гибридный поиск — флагман артефакта) | Владелец: агент | Зависимости: S06, S07 | Оценка: 1.5 | Статус: ◐ в работе (старт 2026-11-21)
 Фичи: feat-009 — plan_joins; зависимости feat-006 (passing) и feat-007 (закрывается S07 до старта)
 Роль по фиче: закрывает feat-009 — финальная сессия, через make verify-feature
 
@@ -42,7 +42,7 @@ JoinPlan несёт допущение в ответ (атрибуция — т�
 
 ## Предусловия
 
-- [ ] Сессия СТАРТУЕТ: статус в шапке переведён в «◐ в работе» и ARCH-GATE резолвлен ДО кода (canon-check architect ✅ либо обоснованный N/A) — старт-гейт (`guard-subagents.sh --phase start`, D-027) проверяет только стартованные (◐) сессии; «[ ] не начата» — план, гейт её скипает
+- [x] Сессия СТАРТУЕТ: статус в шапке переведён в «◐ в работе» и ARCH-GATE резолвлен ДО кода (canon-check architect ✅ либо обоснованный N/A) — старт-гейт (`guard-subagents.sh --phase start`, D-027) проверяет только стартованные (◐) сессии; «[ ] не начата» — план, гейт её скипает
 - [ ] S06 закрыта: `uv run pytest src/tests/integration/test_vector_memory.py -q` → passed (feat-006 passing)
 - [ ] S07 закрыта: `make sync-graph && uv run pytest src/tests/integration/test_join_graph.py -q` → passed (feat-007 passing)
 - [ ] `make check` зелёный (baseline репозитория)
@@ -132,11 +132,11 @@ make infra-up && make sync-graph && make index-knowledge && uv run python -m app
 
 ## Критерии приёмки
 
-- [ ] Для вопроса возвращается JoinPlan ≤ 4 таблиц по edge_id с типом и направлением джойна из ребра (behavior feat-009)
-- [ ] Невалидный план → retry по M1 (попытка 2 — та же модель + ошибка, попытка 3 — вверх), не сразу отказ; исчерпание → fail с уточняющим вопросом (behavior feat-009)
-- [ ] «Нет активного пути» → degrade + заявка agent_edge_proposals под определённой ролью (BL-003 п.2 закрыт) (behavior feat-009)
-- [ ] Демо-вопрос ДЗ-04: JoinPlan несёт допущение first-touch из usage_notes — записано в hw-04/README
-- [ ] LLM не управляет ни маршрутом, ни валидацией (инвариант hw-01 §2.1 — проверить тестом: подсунутый LLM-ом выдуманный джойн отсекается)
+- [x] Для вопроса возвращается JoinPlan ≤ 4 таблиц по edge_id с типом и направлением джойна из ребра (behavior feat-009)
+- [x] Невалидный план → retry по M1 (попытка 2 — та же модель + ошибка, попытка 3 — вверх), не сразу отказ; исчерпание → fail с уточняющим вопросом (behavior feat-009)
+- [x] «Нет активного пути» → degrade + заявка agent_edge_proposals под определённой ролью (BL-003 п.2 закрыт) (behavior feat-009)
+- [x] Демо-вопрос ДЗ-04: JoinPlan несёт допущение first-touch из usage_notes — записано в hw-04/README
+- [x] LLM не управляет ни маршрутом, ни валидацией (инвариант hw-01 §2.1 — проверить тестом: подсунутый LLM-ом выдуманный джойн отсекается)
 - [ ] Фича закрыта: `make verify-feature F=feat-009` → PASS, state=passing с evidence
 
 ## Ловушки
@@ -160,7 +160,7 @@ make infra-up && make sync-graph && make index-knowledge && uv run python -m app
 
 ## Гейты субагентов (заполняется по факту, до закрытия сессии)
 
-- ARCH-GATE: N/A — сессия не начата (план батча V3; canon-check — при старте, D-027)
+- ARCH-GATE: ✅ violations → rulings применены ДО кода (canon-check architect, 2026-11-21): **Q1=A** — заявки пишет код узла через малый порт → infrastructure-адаптер на planner-DSN (INSERT-текст не в services — S00-греп по application/); миграция 0009: GRANT INSERT ON agent_edge_proposals + GRANT USAGE ON SEQUENCE …_proposal_id_seq (serial PK без USAGE упадёт); append-only без UPDATE/DELETE, hits = COUNT(*) владельцем (без ON CONFLICT DO UPDATE); смена грани ролей + уточнение Compliance-строки ADR-006 — в DECISIONS.md; security.md §2 + er-data-model.md sync тем же коммитом. **Q7=A** — эскалация по инъекции budget_remaining_roubles(): подключена к резидентному аккумулятору адаптера (cap − budget_used_rub, reset_request_budget() на старте прогона), ESCALATION_RESERVE_ROUBLES=0.6 (ADR-007 §4.1/4.3); None — документированный fallback. **Q4** — ranking-выход LLM через tools-параметр (ADR-008 слой 2, tool-based), pydantic-валидация индексов, невалидный выход → ретрай M1; выдуманный edge_id отсекается валидатором (тест-инвариант hw-01 §2.1). **Q2** — EdgeSemantics расширяется аддитивно (left/right_columns, join_operator, mandatory_predicates, cardinality, fanout_guard) с дефолтами + тест маппинга left/right ↔ from/to (JoinEdge разворачивается против реестра). **Q3** — кандидаты строит код: таблицы retrieval-хитов ∩ права (deny-by-default, контракт 3), все пары кандидатов → find_join_paths(k), дедуп по rel_id-последовательности; кап кандидатов — именованная константа (BL-011 открыт, P3 — caller-side кап не закрывает сторонний лимит). **Q5** — валидатор чистая функция domain/ (таблицы ⊆ permissions, ключи джойна ⊆ permitted columns, ≤ 4 таблиц, связность, rel_id ⊆ снапшот); проекции — S11. **Q6** — graph_version пин в JoinPlan/результат (Ловушка-3); заявка только при чистом «нет пути», question_sample = вопрос пользователя (усечение константой); retrieval-сбой → fail без заявки (S00 правило 8). **Q8** — apps/plan_joins_demo.py (mini-прогон через Container), S00 «Точки входа» дополнить тем же коммитом; демо-пользователь u_logist (миграция 0003)
 - REVIEW-GATE: N/A — сессия не начата (ревью диапазона — по факту закрытия)
 
 ## Отчёт по сессии (заполняется по факту)

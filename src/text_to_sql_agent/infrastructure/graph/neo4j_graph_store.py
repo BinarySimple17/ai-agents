@@ -80,8 +80,13 @@ SELECT version FROM settings_version WHERE name = %s
 
 # Семантика рёбер пути — из реестра по rel_id (вьюха active: путь построен по
 # снапшоту активных рёбер, у не-active строк семантики в мире агента нет).
+# Ключи/тип джойна + mandatory_predicates/fanout_guard/temporal — аддитивное
+# расширение S09 (ruling Q2 ARCH-GATE): JoinPlan несёт тип/направление/ключи
+# джойна из ребра, skeleton-якоря — S10 (ADR-006 §4.6).
 _SEMANTICS_SQL = """
-SELECT edge_id, join_type, meaning, usage_notes, intent_tags
+SELECT edge_id, join_type, meaning, usage_notes, intent_tags,
+       left_table, left_columns, right_table, right_columns, join_operator,
+       mandatory_predicates, cardinality, fanout_guard, temporal
 FROM agent_relationships_active
 WHERE edge_id = ANY(%s)
 """
@@ -341,6 +346,15 @@ class Neo4jGraphStore:
                 meaning=row["meaning"],
                 usage_notes=row["usage_notes"],
                 intent_tags=list(row["intent_tags"] or []),
+                left_table=row["left_table"],
+                left_columns=tuple(row["left_columns"] or []),
+                right_table=row["right_table"],
+                right_columns=tuple(row["right_columns"] or []),
+                join_operator=row["join_operator"],
+                mandatory_predicates=dict(row["mandatory_predicates"] or {}),
+                cardinality=row["cardinality"],
+                fanout_guard=bool(row["fanout_guard"]),
+                temporal=row["temporal"],
             )
             for row in (by_rel_id[rel_id] for rel_id in edge_ids)
         ]
