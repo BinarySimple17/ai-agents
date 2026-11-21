@@ -50,7 +50,7 @@
 | Тесты | pytest (+ fixtures скипами) | LLM — моки; БД-тесты скипаются без инфры |
 | Статика | ruff (lint + format) | гейт layer-1 в `./init.sh` |
 | Инфра | docker compose | образы запинены, см. ниже |
-| Точки входа | MVP: CLI (`apps/cli.py`) + индексация знаний (`apps/index_knowledge.py`, S06) + синк графа (`apps/sync_graph.py`, S07) + Streamlit-демо (`apps/streamlit_app.py` — живое демо RBAC); целевой контур N1 (c4-l2 v1.8): `agent-api` — FastAPI + uvicorn (async, `POST /ask → 202 + job_id`, `GET /ask/{id}/stream` SSE) + `agent-worker` — arq (очередь — Valkey Streams) | D-005 в MVP не снимается: HTTP-контур — после базового (N1 ревью-03); Streamlit — после базового контура |
+| Точки входа | MVP: CLI (`apps/cli.py`) + индексация знаний (`apps/index_knowledge.py`, S06) + синк графа (`apps/sync_graph.py`, S07) + прогон узла plan_joins (`apps/plan_joins_demo.py`, S09 — mini-прогон через Container, не FSM) + Streamlit-демо (`apps/streamlit_app.py` — живое демо RBAC); целевой контур N1 (c4-l2 v1.8): `agent-api` — FastAPI + uvicorn (async, `POST /ask → 202 + job_id`, `GET /ask/{id}/stream` SSE) + `agent-worker` — arq (очередь — Valkey Streams) | D-005 в MVP не снимается: HTTP-контур — после базового (N1 ревью-03); Streamlit — после базового контура |
 | Наблюдаемость (live) | OTel SDK → Jaeger + Prometheus → Grafana (ADR-010) | ДЗ-06 (S17+), не в базовом скоупе |
 | Внешний источник | SAP через AuthProvider + QuerySpec (ADR-011) | после ДЗ-06, точка роста |
 

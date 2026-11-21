@@ -2,8 +2,9 @@
 
 Веха V3. Сборка README — за финальной закрывающей сессией вехи (S09/S26 —
 смотреть статусы [индекса сессий](../solution/sessions.md)); этот раздел
-написан сессией S07 (feat-007 — графовая половина памяти, связь между
-объектами). Полные исторические спецификации прошлых ДЗ — `.docs/` (вне гита,
+написан сессиями S07 (feat-007 — графовая половина памяти, «Связи между
+объектами») и S09 (feat-009 — гибридный поиск, «Гибридный поиск» и
+«Пример запроса/ответа»). Полные исторические спецификации прошлых ДЗ — `.docs/` (вне гита,
 READ ONLY); полная спецификация ДЗ-04 появится там же к сдаче.
 
 ## Связи между объектами
@@ -76,12 +77,86 @@ skip-гвард [test_join_graph_skip_guard.py](../src/tests/unit/test_join_grap
 - фильтр прав deny-by-default: u_analyst (без прав на campaigns) путь
   orders→campaigns не получает; пустой scope — пустой результат.
 
+## Гибридный поиск: retrieval + граф → JoinPlan (plan_joins)
+
+Узел plan_joins (feat-009, сессия S09) — флагман ДЗ-04: соединяет обе половины
+памяти (hw-plan §4). Нога 1 — semantic retrieval через порт `VectorStore`
+(dense; гибрид FTS/RRF из S26 подменяется реализацией под портом, интерфейс
+не меняется): находит релевантные таблицы и рёбра (RELATIONSHIP-документ,
+`source_ref = rel:{edge_id}` — подтверждение релевантности ребра вопросу).
+Нога 2 — граф: код перебирает пары кандидатов (∩ права, deny-by-default) и
+строит k взвешенных путей по снапшоту (`find_join_paths`). Модель (qwen, cheap
+— матрица ADR-007) только **ранжирует готовых кандидатов** через тул (ADR-008,
+structured output); маршрут, сборку плана и валидацию ведёт код — инвариант
+hw-01 §2.1 «LLM наполняет, код решает»: выдуманный джойн (edge_id вне снапшота)
+отсекается валидатором `domain/join_plan.py` (тест-инвариант).
+
+Ретраи M1 (D-016): попытка 2 — та же роль + текст ошибки; попытка 3 — роль
+вверх при остатке бюджета с резервом 0.6 ₽ (ADR-007 §4.3, ruling Q7 — шов
+к резидентному аккумулятору адаптера, BudgetGuard — S15/V4); исчерпание —
+честный отказ с уточняющим вопросом, НЕ выдуманный план. Равные кандидаты →
+исход «уточнение» (ADR-007: не эскалация; interrupt — V4/S08). Чистое «нет
+активного пути» → degrade + заявка владельцу в `agent_edge_proposals`
+(BL-003 п.2, D-030: INSERT-only под `agent_planner`, миграция 0009 — заявка
+пишется кодом узла, не LLM).
+
+## Пример запроса/ответа
+
+Демо-вопрос вехи (layer-3 живой прогон, 2026-11-21):
+
+```bash
+make sync-graph && make index-knowledge
+uv run --env-file .env python -m apps.plan_joins_demo "клиенты, пришедшие из рекламы"
+```
+
+Вывод (пользователь u_logist — logistics_viewer, миграция 0003):
+
+```text
+Вопрос: «клиенты, пришедшие из рекламы» (пользователь u_logist)
+Retrieval: кандидаты-таблицы ['campaigns', 'orders', 'customers', 'order_items', 'products']; рёбра с релевантностью: e_campaigns_orders, e_customers_orders
+Исход: PLAN (graph_version=41)
+Путь: campaigns ↔ orders ↔ customers
+  джойн 1: campaigns(campaign_id) = orders(campaign_id) [e_campaigns_orders, inner]
+  джойн 2: orders(customer_id) = customers(customer_id) [e_customers_orders, inner]
+Допущения (usage_notes рёбер):
+  - «пришли из рекламы» = first-touch: первый заказ клиента из ads-кампании; any-touch завышает цифру; campaign_id надёжен с 2026-03; NULL campaign_id — заказы вне кампаний, INNER JOIN их молча теряет (ADR-006 §4.7)
+  - customers.created_at — критерий «новый клиент» (по created_at)
+```
+
+То, чего нет у готовых Text-to-SQL: план несёт **допущение атрибуции**
+(first-touch из `usage_notes` ребра реестра) — оно войдёт в ответ
+пользователю (раскрытие — interpret_result, feat-015), а `mandatory_predicates`
+рёбер — skeleton-якоря для build_skeleton (S10). graph_version плана = пину
+снапшота (Ловушка-3: сверка версий снапшота графовой ноги и плана).
+
+Инварианты, проверенные тестами ([test_plan_joins.py](../src/tests/unit/test_plan_joins.py)
+— 26 unit на фейках портов, [test_plan_joins_db.py](../src/tests/integration/test_plan_joins_db.py)
+— 4 integration по грантам заявок):
+
+- JoinPlan ≤ 4 таблиц по rel_id, связность, тип/направление/ключи джойна —
+  из ребра реестра (направление обхода может разворачивать left/right —
+  ключи всегда следуют своей таблице);
+- подсунутый выдуманный джойн отсекается валидатором (edge_id вне активного
+  снапшота); таблицы вне прав и ключи джойна вне ACL колонок — «ребро
+  недоступно целиком» (deny-by-default, S00 контракт 3);
+- ретраи M1: попытка 2 — та же модель + текст ошибки, попытка 3 — роль вверх
+  при остатке бюджета с резервом 0.6 ₽, иначе честный отказ; исчерпание —
+  fail с уточняющим вопросом;
+- «нет активного пути» → заявка в agent_edge_proposals под agent_planner
+  (INSERT-only); retrieval/синк-сбой → fail БЕЗ заявки (заявка — только от
+  факта отсутствия пути по живому снапшоту);
+- грантовая дисциплина: planner не может UPDATE/SELECT/DELETE очередь;
+  agent_ro (канал исполнения) не может INSERT — заявка не пользовательский SQL.
+
 ## Как воспроизвести
 
 ```bash
 make sync-graph                                             # снапшот → Neo4j
 uv run --env-file .env python -c "..."                      # find_join_paths + path_semantics
-uv run pytest src/tests/integration/test_join_graph.py -q   # верификация фичи
+uv run pytest src/tests/integration/test_join_graph.py -q   # верификация feat-007
+make index-knowledge                                        # корпус знаний (S06)
+uv run --env-file .env python -m apps.plan_joins_demo "клиенты, пришедшие из рекламы"
+uv run pytest src/tests/unit/test_plan_joins.py -q          # верификация feat-009 (фича)
 ```
 
 Вывод `path_semantics` снимается скриптом из раздела выше (контекст

@@ -28,7 +28,7 @@ LLM пути не строит: `find_join_paths` — детерминирова
 DTO стыка — pydantic и живут здесь (прецедент: `vector_store.py`).
 """
 
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -66,7 +66,15 @@ class JoinPath(BaseModel):
 
 
 class EdgeSemantics(BaseModel):
-    """Семантика ребра из реестра (строка `agent_relationships`) — по rel_id."""
+    """Семантика ребра из реестра (строка `agent_relationships`) — по rel_id.
+
+    Ключевые поля (left/right_table/columns, join_operator, mandatory_predicates,
+    cardinality, fanout_guard, temporal) — аддитивное расширение S09 (ruling Q2
+    ARCH-GATE): JoinPlan несёт тип/направление/ключи джойна из ребра (Task 1),
+    mandatory_predicates — skeleton-якоря S10, fanout_guard — инвариант
+    plan_joins/validate_sql (ADR-006 §4.6). Значения с дефолтами — чтение
+    порта не ломает потребителей S07.
+    """
 
     model_config = ConfigDict(frozen=True)
 
@@ -75,6 +83,16 @@ class EdgeSemantics(BaseModel):
     meaning: str = Field(min_length=1)  # что связь значит бизнесу
     usage_notes: str | None = None  # ловушки; входят в ответ как допущения (feat-015)
     intent_tags: list[str] = Field(default_factory=list)  # выбор между параллельными рёбрами
+    # --- С09 (ruling Q2): ключи/тип джойна и skeleton-якоря из того же ребра ---
+    left_table: str = ""
+    left_columns: tuple[str, ...] = ()
+    right_table: str = ""
+    right_columns: tuple[str, ...] = ()
+    join_operator: str = "="
+    mandatory_predicates: dict[str, Any] = Field(default_factory=dict)  # skeleton-якоря S10
+    cardinality: str = ""  # 1:1 | 1:n | n:1 | n:m
+    fanout_guard: bool = False  # агрегация поверх ребра требует предагрегации (ADR-004)
+    temporal: dict[str, Any] | None = None  # «на дату заказа» vs «на сегодня»
 
 
 class SyncReport(BaseModel):

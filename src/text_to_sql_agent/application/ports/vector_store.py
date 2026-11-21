@@ -30,6 +30,12 @@ from text_to_sql_agent.domain.entities import RunContext
 # документе фиксирует, каким эмбеддером он построен.
 EMBEDDING_DIM = 1024
 
+# Префикс source_ref у RELATIONSHIP-документов индексатора (knowledge_sources):
+# «rel:{edge_id}» — единственный маппинг «документ поиска → ребро реестра»;
+# узел plan_joins читает им retrieval-подтверждение рёбер (ревью M2: константа
+# в порту — источник истины для индексатора и потребителя, дубль дрейфует молча)
+RELATIONSHIP_SOURCE_REF_PREFIX = "rel:"
+
 
 class DocKind(StrEnum):
     """Тип документа знаний — ровно 4 из feat-006 (ADR-003 §4; hw-plan §3)."""

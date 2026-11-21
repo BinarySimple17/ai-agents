@@ -62,3 +62,13 @@ def test_knowledge_writer_container_has_write_dsn(tmp_path) -> None:
         container.vector_store._write_dsn  # noqa: SLF001 — инвариант ruling W1
         == settings.postgres_dsn.get_secret_value()
     )
+
+
+def test_plan_joins_budget_shlew_wired_to_adapter(tmp_path) -> None:
+    # Шов бюджета узла plan_joins (ruling Q7 ARCH-GATE S09): остаток =
+    # кап запроса − резидентный аккумулятор адаптера; на сборке аккумулятор 0
+    container = build_container(_settings(tmp_path))
+    assert type(container.plan_joins_service).__name__ == "PlanJoinsService"
+    assert container.plan_joins_service._budget_remaining_roubles is not None  # noqa: SLF001
+    assert container.plan_joins_service._budget_remaining_roubles() == pytest.approx(2.0)  # noqa: SLF001
+    assert container.edge_proposal_store is not None  # очередь заявок собрана (миграция 0009)
