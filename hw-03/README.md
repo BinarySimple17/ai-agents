@@ -33,10 +33,6 @@ uv run --env-file .env python -m apps.cli --user u_logist \
   "Сколько клиентов из РФ пришло из рекламных кампаний всего?"
 ```
 
-Голый тул-контур ДЗ-02 (без retrieval и стриминга) — за флагом `--plain`;
-флаг `--retrieve` упразднён вместе с контуром «retrieval без исполнения» —
-его роль взял дефолт (директива владельца, S24/S25).
-
 Шлюз локальный, LM Studio (D-020, прогон бесплатный): модель `qwen3.8-9b`,
 эмбеддер `text-embedding-bge-m3` (1024). Для потокового вывода в `.env` задан
 `LLM_REASONING_EFFORT=none` — reasoning-модель с тула́ми кладёт финальный ответ
@@ -82,7 +78,7 @@ Reasoning-канал: с гашением thinking модель стримит �
 одним фолбэк-чанком из `reasoning_content` — see `LLM_REASONING_EFFORT` в
 [.env.example](../.env.example).
 
-## Архитектура (выжимка)
+## Архитектура
 
 - Знания лежат в pgvector, таблица `agent_knowledge`: вектор 1024, HNSW по
   cosine, уникальный `source_ref`, четыре вида документов (DDL, связи,
