@@ -11,10 +11,14 @@
 
 ## [термин: выручка] — таблицы orders, order_items, products
 
-Выручка — сумма `orders.total` по заказам: `SUM(o.total)`. `total` заказа —
-сумма его позиций (`order_items.quantity * order_items.unit_price`), а не
-отдельное поле прайса. Считать выручку по `products.price` нельзя — цена
-позиции фиксируется в `order_items.unit_price` на момент продажи.
+Выручка — сумма `orders.total` по заказам в статусе `'paid'` ИЛИ `'shipped'`:
+`SUM(o.total) WHERE o.status IN ('paid', 'shipped')`. Определение владельца
+(2026-11-21): paid → shipped — стадии исполнения заказа, отгруженный заказ
+уже прошёл оплату; «денег нет» только у `'cancelled'` — эти заказы выручкой
+не считаются, и фильтр «брутто» по всем статусам тоже неверен. `total`
+заказа — сумма его позиций (`order_items.quantity * order_items.unit_price`),
+а не отдельное поле прайса. Считать выручку по `products.price` нельзя —
+цена позиции фиксируется в `order_items.unit_price` на момент продажи.
 
 ## [термин: заказ вне кампании] — таблицы orders, campaigns
 
