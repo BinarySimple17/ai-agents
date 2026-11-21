@@ -530,6 +530,36 @@
         }
       ],
       "evidence": "command «uv run pytest src/tests/unit/test_agent_flow.py -q» exited 0 at 2026-11-21T13:29:54+03:00 (scripts/verify-feature.sh)"
+    },
+    {
+      "id": "feat-021",
+      "name": "Гибридная память: dense+FTS (взвешенный RRF) + гигиена индексации",
+      "description": "Усиление retrieval вехи V3 (BL-007 + BL-009, канон D-026 с дополнениями): ключевая нога Postgres FTS (generated-колонка content_tsv to_tsvector('russian') STORED + GIN), слияние взвешенным RRF score = α_dense/(RRF_K+rank_dense) + (1−α_dense)/(RRF_K+rank_fts), α_dense=0.9, кап глубины ноги; фильтр прав джойном в ОБЕИХ ногах ДО слияния (NFR-4). Шумовой корпус ~300 дистракторов (генератор stdlib, фиксированный сид, дистрактор делит признак с целью, doc_kind='noise': участвует в ранжировании, не попадает в промпт). Нормализация текста U+0301/ё→е общим хелпером на upsert и запрос. Гигиена (BL-009): SoT списка бизнес-таблиц — каталог agent_data_sources; транзакционное удаление устаревших source_ref; смена эмбеддера — полная переиндексация (model_version). Метрика hit@5 (10–20 русских вопросов) — baseline dense-only vs гибрид. Реранкер — вне базового скоупа (кандидат при недостаточном baseline, D-026).",
+      "behavior": "Гибридный поиск возвращает только документы разрешённых таблиц в обеих ногах (точный текстовый матч по недоступной таблице не возвращается — ACL-leak=0); hit@5 гибрида не ниже dense-only на замерном корпусе; дистракторы ранжируются вместе с реальными документами, но ни один не попадает в сборку промпта; после индексации в памяти нет устаревших source_ref (переиндексация после удаления источника чистит память транзакционно).",
+      "verification": "make infra-up && make infra-migrate && make index-knowledge && uv run pytest src/tests/integration/test_hybrid_memory.py -q",
+      "dependencies": [
+        "feat-006"
+      ],
+      "state": "not_started",
+      "status": "not-started",
+      "evidence": "",
+      "layers": [
+        {
+          "label": "layer-1-static",
+          "cmd": "uv run ruff check src",
+          "repair": "Fix lint issues in normalizer/FTS/RRF code, then re-run."
+        },
+        {
+          "label": "layer-2-runtime",
+          "cmd": "make infra-up && make infra-migrate && make index-knowledge && uv run pytest src/tests/integration/test_hybrid_memory.py -q",
+          "repair": "Check docker compose up; fix FTS-нога/RRF/фильтр прав/гигиену индексации and re-run."
+        },
+        {
+          "label": "layer-3-e2e",
+          "cmd": "make bench-retrieval — hit@5 dense-only vs гибрид на 10–20 русских вопросах, отчёт в сессию/model-card",
+          "repair": "Разобрать промахи (нормализация/веса RRF/глубина ноги), поправить константы по канону D-026 и re-run."
+        }
+      ]
     }
   ]
 }
