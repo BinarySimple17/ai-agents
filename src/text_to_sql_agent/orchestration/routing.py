@@ -1,11 +1,12 @@
 """Условные рёбра FSM — маршрут назначает только код (hw-01 §2.1, ADR-002).
 
 Маршрут читает исключительно ``route_flags``/``retry_count``/``budget_used``/
-``deadline_at`` — кодовые поля state (карта владения — ``AgentState``): LLM-текст
+``deadline_at``/``error`` — кодовые поля state (карта владения — ``AgentState``;
+``error`` пишет только код, успешный execute_sql обязан его очищать): LLM-текст
 попадает только в содержательные поля и физически не может сменить ребро
-(инвариант, проверяемый тестом). Ребра повторяют state-agent v1.4; источники
-``overflow``/``short_circuit`` — по hw-01 §3.5.4 (шаговый цикл execute_step;
-в диаграмме v1.4 входящие ребра не нарисованы — FIX-008).
+(инвариант, проверяемый тестом). Ребра повторяют state-agent v1.5; источники
+``overflow``/``short_circuit`` и ребро probe — по hw-01 §3.5.4 (шаговый цикл
+execute_step; в диаграмме v1.4 входящие ребра не нарисованы — FIX-008).
 
 Политика ретраев M1 (D-016, ADR-007 §4.1): инкремент ``retry_count`` — кодом
 ребра ретрая (гейт-узлы graph.py), fuse ≤ 3 — здесь; эскалацию tier'ом назначает
@@ -37,6 +38,7 @@ FLAG_STEP_DONE = "step_done"  # execute_sql: шаг декомпозиции г�
 FLAG_STEPS_PENDING = "steps_pending"  # merge_results: есть ещё шаги → generate_step_sql
 FLAG_STEP_EMPTY_KEYSET = "step_empty_keyset"  # execute_sql: 0 ключей → short_circuit
 FLAG_STEP_KEYSET_OVERFLOW = "step_keyset_overflow"  # execute_sql: key-set > капа → overflow
+FLAG_PROBE_LOST_JOIN = "probe_lost_join"  # probe (S14): 0 строк — потерянный джойн → diagnose
 FLAG_RETRY_GENERATE_SQL = "retry_generate_sql"  # diagnose: попытка 2/3 генератора (M1)
 FLAG_RETRY_GENERATE_STEP_SQL = "retry_generate_step_sql"  # diagnose: ретрай шага (D-019)
 FLAG_RETRY_TARGET = "retry_target"  # гейт: чей счётчик ретраев активен
@@ -219,7 +221,7 @@ def route_check_cost(state: State) -> str:
 def route_execute_sql(state: State) -> str:
     """execute_sql → шаговый цикл | probe-решение | diagnose_error.
 
-    Приоритет причин (state-agent v1.4): SQL-ошибка → diagnose_error; шаговый
+    Приоритет причин (state-agent v1.5): SQL-ошибка → diagnose_error; шаговый
     цикл: пустой key-set → short_circuit («данных нет», hw-01 §3.5.4 правило 2),
     key-set > капа 50 000 → overflow (молча обрезать нельзя); шаг готов →
     merge_results; 0 строк одиночного запроса → probe-решение (COUNT-проба —
@@ -234,9 +236,12 @@ def route_execute_sql(state: State) -> str:
         return "terminal_overflow"
     if flags.get(FLAG_STEP_DONE):
         return "merge_results"
-    # Одиночный запрос: успех ИЛИ 0 строк — обе ветки → compact_result. probe
-    # (COUNT) — ребро, не узел (state-agent); каркас: проба не выполняется,
-    # «реально пусто» — валидный пустой ответ (S00-8); COUNT-пробу подключает S14
+    # 0 строк одиночного запроса: probe (COUNT) — ребро, не узел (state-agent).
+    # Обе ветки probe заложены в каркасе (Ловушка-1): COUNT-проба выполняется S14
+    # и ставит probe_lost_join при подозрении на потерянный джойн → diagnose_error;
+    # каркас (проба не выполняется) — «реально пусто» — валидный пустой ответ (S00-8)
+    if flags.get(FLAG_PROBE_LOST_JOIN):
+        return "diagnose_error"
     return "compact_result"
 
 
@@ -323,14 +328,19 @@ CONDITIONAL_ROUTES: dict[str, Callable[[State], str]] = {
     "degrade": route_degrade,
 }
 
-# Узлы, вызывающие LLM (гвард глобальных капов — на входящих ребрах этих узлов)
+# Узлы, вызывающие LLM (гвард глобальных капов — на входящих рёбрах этих узлов,
+# включая ребро через гейт ретрая): clarify/plan_joins/plan_query — «средняя/
+# reasoning» (hw-01 §3.5.4), generate_sql/generate_step_sql — генераторы,
+# diagnose_error — разбор (S14), interpret_result/degrade — объяснение/отказ (S15)
 LLM_NODES: frozenset[str] = frozenset(
     {
         "clarify",
         "plan_joins",
+        "plan_query",
         "generate_sql",
         "generate_step_sql",
         "diagnose_error",
         "interpret_result",
+        "degrade",
     }
 )

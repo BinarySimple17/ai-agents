@@ -142,6 +142,7 @@ best-effort — сбой приёмника не рвёт запрос). Сбо�
 | `agent.cap_exhausted` | rounds | кап ходов — финальный вызов без тулов |
 | `agent.degrade` | reason | деградация исхода (S00 правило 8) или контекста — для retrieval non-terminal (прогон продолжается без блока знаний) |
 | `agent.answer` | source: text / final_no_tools / agent_stream | финальный ответ |
+| `graph.node` | node | FSM (S04/feat-004): содержательный узел вошёл — трейс-спан узла (ADR-002 §2), порядок сцены читается из trace 1:1; константа — порт Tracer (EVENT_GRAPH_NODE) |
 
 S25 (feat-020): mode `agent` — объединённый контур (retrieval + тул run_sql +
 стрим ходов), `tool_loop` — голый тул-контур ДЗ-02 за флагом `--plain`;

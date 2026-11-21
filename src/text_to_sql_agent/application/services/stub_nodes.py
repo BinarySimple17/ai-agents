@@ -59,6 +59,20 @@ def _update(state: State, **fields: Any) -> dict[str, Any]:
     return dict(fields)
 
 
+def _bump_llm_calls(state: State) -> dict[str, Any]:
+    """Имитация расхода LLM-вызова: инкремент budget_used.llm_calls (учёт прогона).
+
+    Заглушки узлов из LLM_NODES «платят» по вызову за вход (карта владения
+    AgentState: «учёт узлов с LLM; заглушки имитируют») — глобальный гвард капов
+    (routing.llm_guard) работает end-to-end уже в каркасе: цикл ретраев
+    упирается в ≤ 8 вызовов, а не только в пер-узловый fuse. Содержательные
+    сервисы (S05+) заменят имитацию учётом фактического usage провайдера.
+    """
+    budget = dict(state.get("budget_used") or {})
+    budget["llm_calls"] = (budget.get("llm_calls") or 0) + 1
+    return {"budget_used": budget}
+
+
 def resolve_access_stub(state: State) -> dict[str, Any]:
     """Узел resolve_access (S05): identity проверена, права + graph_version в state."""
     flags = _with_flags(
@@ -87,6 +101,7 @@ def clarify_stub(state: State) -> dict[str, Any]:
         rewritten_question=None,  # stub: переформулировка не требуется
         assumptions=[],  # допущения фиксирует код (решение вехи V3, hw-plan §4)
         route_flags=_with_flags(state, {"clarification_needed": False}),
+        **_bump_llm_calls(state),
     )
 
 
@@ -107,6 +122,7 @@ def plan_joins_stub(state: State) -> dict[str, Any]:
                 "t1_decompose": False,  # порог T1 не активен до feat-017
             },
         ),
+        **_bump_llm_calls(state),
     )
 
 
@@ -125,17 +141,21 @@ def plan_query_stub(state: State) -> dict[str, Any]:
     План невалиден → откат к одиночному SQL — канонное ребро plan_query →
     generate_sql; T1-декомпозиция на стенде — заглушка (hw-plan §4).
     """
-    return _update(state, route_flags=_with_flags(state, {"query_plan_valid": False}))
+    return _update(
+        state, route_flags=_with_flags(state, {"query_plan_valid": False}), **_bump_llm_calls(state)
+    )
 
 
 def generate_sql_stub(state: State) -> dict[str, Any]:
     """Узел generate_sql (S10): наполнение скелета LLM, здесь — транзит."""
-    return _update(state, sql=None)  # stub: SQL не генерируется (S10)
+    return _update(state, sql=None, **_bump_llm_calls(state))  # stub: SQL не генерируется (S10)
 
 
 def generate_step_sql_stub(state: State) -> dict[str, Any]:
     """Узел generate_step_sql (S14): SQL шага декомпозиции, здесь — транзит (D-019)."""
-    return _update(state, sql=None)  # stub: SQL шага не генерируется (S14)
+    return _update(
+        state, sql=None, **_bump_llm_calls(state)
+    )  # stub: SQL шага не генерируется (S14)
 
 
 def validate_sql_stub(state: State) -> dict[str, Any]:
@@ -181,7 +201,8 @@ def execute_sql_stub(state: State) -> dict[str, Any]:
     """Узел execute_sql (feat-013 есть, подключение — S14): SQL не исполняется.
 
     Пустой результат — валидный исход (S00-8): stub отдаёт честное «0 строк»,
-    probe-решение (COUNT — S14) на ребре трактуется «реально пусто».
+    probe-решение (COUNT — S14) на ребре трактуется «реально пусто» (ветка
+    probe_lost_join → diagnose_error заложена ребром, активирует S14).
     Флаги шагового цикла — зона S14/S17, заглушка их не пишет (инъекция теста
     симулирует код шагового контура: short_circuit/overflow/steps_pending).
     """
@@ -224,6 +245,7 @@ def diagnose_error_stub(state: State) -> dict[str, Any]:
                 "retry_generate_step_sql": False,  # ретрай шага, не всего плана
             },
         ),
+        **_bump_llm_calls(state),
     )
 
 
@@ -233,20 +255,20 @@ def interpret_result_stub(state: State) -> dict[str, Any]:
     В каркасе терминал done получает state как есть — содержательный ответ
     (текст + SQL + meaning рёбер + допущения + флаги + стоимость) собирает S15.
     """
-    return _update(state)
+    return _update(state, **_bump_llm_calls(state))
 
 
 def degrade_stub(state: State) -> dict[str, Any]:
     """Узел degrade (S15): отказ/доступный вариант бизнес-понятиями, схема скрыта.
 
     ADR-005: «вне прав» — сигнал безопасности, retry не оправдан; код фиксирует,
-    чего не хватает, LLM формулирует отказ (S9). В каркасе — транзит в терминал.
+    чего не хватает, LLM формулирует отказ (S15). В каркасе — транзит в терминал.
     """
-    return _update(state)
+    return _update(state, **_bump_llm_calls(state))
 
 
 STUB_NODES: dict[str, Any] = {
-    # Состав 15 узлов hw-01 §2.1 / state-agent v1.4 — единственный реестр каркаса;
+    # Состав 15 узлов hw-01 §2.1 / state-agent v1.5 — единственный реестр каркаса;
     # имена ключей графа = имена узлов канона (тест состава смотрит сюда)
     "resolve_access": resolve_access_stub,
     "clarify": clarify_stub,

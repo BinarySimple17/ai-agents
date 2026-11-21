@@ -26,7 +26,7 @@ from text_to_sql_agent.orchestration.runner import RECURSION_LIMIT_ERROR_CLASS, 
 QUESTION = "Сколько заказов у клиентов из РФ?"
 CAPS = FSMGuardCaps(max_llm_calls=8, budget_rub=2.0)
 
-# Канонный happy path (state-agent v1.4, T1 выключен — порог feat-017):
+# Канонный happy path (state-agent v1.5, T1 выключен — порог feat-017):
 # plan_query/generate_step_sql/diagnose_error/merge_results/degrade — ветки
 # (достижимость доказывают отдельные тесты), не узлы основного пути
 HAPPY_PATH = [
@@ -83,7 +83,7 @@ class TestComposition:
         assert {f"terminal_{outcome}" for outcome in TERMINAL_OUTCOMES} <= node_names
 
     def test_all_nine_terminal_outcomes_reachable(self) -> None:
-        # Каждая ветка — своим кодовым флагом (state-agent v1.4; источники
+        # Каждая ветка — своим кодовым флагом (state-agent v1.5; источники
         # overflow/short_circuit — шаговый цикл execute_sql, hw-01 §3.5.4/FIX-008)
         branch_flags: dict[str, dict[str, Any]] = {
             "done": {},
@@ -213,6 +213,74 @@ class TestGlobalCaps:
     def test_under_caps_run_completes(self) -> None:
         final = _invoke(budget_used={"llm_calls": 2, "rub": 0.4})
         assert final["outcome"] == "done"
+
+    def test_stubs_pay_llm_call_on_entry(self) -> None:
+        # Ревью I1(a): учёт живой — вход в LLM-узел инкрементирует счётчик
+        # (заглушки имитируют, карта владения budget_used); happy path из
+        # 4 LLM-узлов = 4 вызова, под капом
+        final = _invoke()
+        assert final["budget_used"]["llm_calls"] == 4
+
+    def test_retry_edge_is_guarded_by_caps(self) -> None:
+        # Ревью I1(b), регрессия: ребро ГЕЙТА ретрая — тоже вход в LLM-узел.
+        # Счётчик подобран так, чтобы кап исчерпался на первом входе plan_joins:
+        # clarify платит 7-й, plan_joins (невалидный план) — 8-й; гейт обязан
+        # завернуть прогон в budget_stop, а не впустить 2-ю попытку.
+        # До фикса: гейт вёл в plan_joins безусловно — fuse отрабатывал «fail».
+        final = _invoke(
+            {"plan_joins_invalid": True},
+            budget_used={"llm_calls": 6, "rub": 0.0},
+        )
+        assert final["outcome"] == "budget_stop"
+        assert final["visited_nodes"].count("plan_joins") == 1
+
+
+class TestProbeBranch:
+    def test_zero_rows_with_lost_join_flag_goes_to_diagnose(self) -> None:
+        # Ревью I2, регрессия: ветка probe «подозрение на потерянный джойн»
+        # заложена ребром в каркасе (Ловушка-1); активирует COUNT-проба S14.
+        # 0 строк + probe_lost_join → diagnose_error → (заглушка без ретрая) degrade
+        final = _invoke({"probe_lost_join": True})
+        assert final["outcome"] == "degrade"
+        nodes = final["visited_nodes"]
+        assert nodes.index("execute_sql") < nodes.index("diagnose_error") < nodes.index("degrade")
+
+    def test_zero_rows_without_flag_is_valid_empty_answer(self) -> None:
+        # Каркас: проба не выполняется — «реально пусто» (S00-8), не ошибка
+        final = _invoke()
+        assert final["outcome"] == "done"
+        assert "diagnose_error" not in final["visited_nodes"]
+
+
+class TestBinderTransitionFlags:
+    def test_reentry_clears_transition_flags_for_partial_nodes(self) -> None:
+        # Ревью I3, регрессия: гашение одноразовых флагов обязано доходить до
+        # state даже когда узел вернул частичное обновление БЕЗ route_flags
+        # (S05+ реализации с частичными апдейтами) — иначе стейл-флаг вернёт
+        # шаговый цикл в маршрут и прогон упрётся в recursion_limit
+        from text_to_sql_agent.orchestration.graph import _content_binder
+
+        binder = _content_binder("execute_sql", lambda state: {}, tracer=None)
+        state: dict[str, Any] = {
+            "visited_nodes": ["execute_sql"],  # ре-вход
+            "route_flags": {"step_done": True, "steps_pending": True, "acl_denied": False},
+        }
+        updates = binder(state)
+        assert "step_done" not in updates["route_flags"]
+        assert "steps_pending" not in updates["route_flags"]
+        assert updates["route_flags"]["acl_denied"] is False  # решенческие не тронуты
+
+    def test_first_entry_keeps_injected_flags(self) -> None:
+        # Первый вход — инъекция теста (симуляция кодового решения) выживает
+        from text_to_sql_agent.orchestration.graph import _content_binder
+
+        binder = _content_binder("execute_sql", lambda state: {}, tracer=None)
+        state: dict[str, Any] = {
+            "visited_nodes": [],  # первый вход
+            "route_flags": {"step_empty_keyset": True},
+        }
+        updates = binder(state)
+        assert updates["route_flags"]["step_empty_keyset"] is True
 
 
 class TestRunner:

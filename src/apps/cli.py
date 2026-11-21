@@ -728,10 +728,12 @@ def _run_fsm(container: Container, question: str) -> int:
     Каркас ДЗ-05: узлы — заглушки-транзиты (S00-8: сбой шлюза/БД — валидный
     исход, не traceback); содержательное наполнение — последующие сессии вехи
     V4. Порядок обхода — из state.visited_nodes (обвязка graph.py, ruling R3),
-    исход — различимый payload FSMResult.outcome (state-agent v1.4).
+    исход — различимый payload FSMResult.outcome (state-agent v1.5).
     """
     result = container.answer_question.run(question)
-    print("Маршрут: " + " → ".join(result.visited_nodes))
+    # ASCII-стрелка: при перенаправлении stdout в файл ru-Windows (cp1251)
+    # « → » дал бы UnicodeEncodeError (ревью S04 M3)
+    print("Маршрут: " + " -> ".join(result.visited_nodes))
     print("Исход: " + result.outcome)
     error = result.state.get("error")
     if error:

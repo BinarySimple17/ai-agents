@@ -8,6 +8,7 @@ LangGraph — ADR-002 §5), наружу — валидный fail-исход в
 """
 
 import time
+from collections.abc import Mapping
 from typing import Any
 
 from langgraph.errors import GraphRecursionError
@@ -36,7 +37,7 @@ class LangGraphRunner:
         self._deadline_s = deadline_s
         self._recursion_limit = recursion_limit
 
-    def run(self, state: dict[str, Any]) -> dict[str, Any]:
+    def run(self, state: Mapping[str, Any]) -> dict[str, Any]:
         """Один прогон графа; GraphRecursionError → fail-исход, не исключение."""
         started = dict(state)
         # Дедлайн — monotonic-метка в state: гвард капов (routing.llm_guard)

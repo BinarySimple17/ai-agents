@@ -43,7 +43,7 @@ class RunContext(BaseModel):
         return value
 
 
-# --- Терминальные исходы FSM (state-agent v1.4; S00 стык 1) ---
+# --- Терминальные исходы FSM (state-agent v1.5; S00 стык 1) ---
 # Все — валидные done-состояния протокола, не исключения (ADR-002 §4: «исчерпание
 # любого уровня — отказ с уточняющим вопросом, не исключение наверх»). done —
 # полный ответ после interpret_result; degrade — отказ/доступный вариант по правам
@@ -104,9 +104,12 @@ class AgentState(TypedDict, total=False):
     validation        validate_sql
     rows/row_count    execute_sql / merge_results (слияние шагов)
     compact           compact_result
-    error             diagnose_error / узлы, поймавшие сбой
+    error             diagnose_error / узлы, поймавшие сбой; кодовое поле — читается
+                      ребром execute_sql (SQL-ошибка → diagnose_error, routing),
+                      успешный execute_sql ОБЯЗАН очищать его (ревью S04 M2)
     retry_count       код-обвязка (гейт ребра ретрая; см. политику ниже)
-    budget_used       код-обвязка (учёт узлов с LLM; заглушки имитируют)
+    budget_used       код-обвязка (учёт узлов с LLM; заглушки имитируют — каждый
+                      вход в LLM-узел «платит» вызовом, гвард капов живой)
     route_flags       ТОЛЬКО код (S00 стык 1): каждый флаг — своего узла/ребра
     truncated         execute_sql (LIMIT 1001+пост-срез, S13)
     approximate       check_cost (T2 → approximate/matview, S12)

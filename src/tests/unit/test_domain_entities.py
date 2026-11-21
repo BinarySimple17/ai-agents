@@ -77,7 +77,7 @@ def test_agent_state_is_stdlib_typed_dict() -> None:
 
 
 def test_terminal_outcomes_match_fsm_canon() -> None:
-    # 9 терминальных исходов state-agent v1.4 — различимый payload (ADR-002 §4)
+    # 9 терминальных исходов state-agent v1.5 — различимый payload (ADR-002 §4)
     assert TERMINAL_OUTCOMES == (
         "done",
         "degrade",

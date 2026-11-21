@@ -20,6 +20,7 @@ EVENT_AGENT_CAP_EXHAUSTED = "agent.cap_exhausted"  # кап ходов — фи�
 EVENT_AGENT_DEGRADE = "agent.degrade"  # деградация-исход (reason)
 EVENT_AGENT_ANSWER = "agent.answer"  # финальный ответ (source)
 EVENT_AGENT_RETRIEVE = "agent.retrieve"  # retrieval контура ДЗ-03 (docs, source_refs)
+EVENT_GRAPH_NODE = "graph.node"  # FSM: содержательный узел вошёл (node; S04, ADR-002 §2)
 
 # BL-004 (требование владельца): результат тулa показывается строками данных,
 # хоть обрезанными; единый контракт эмиссии (apps.cli) и рендера (ConsoleTracer)

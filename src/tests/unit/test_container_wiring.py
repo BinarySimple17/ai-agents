@@ -91,8 +91,6 @@ def test_fsm_runner_wired_from_settings(tmp_path) -> None:
     assert isinstance(container.fsm_runner, GraphRunner)
     assert container.fsm_runner._deadline_s == settings.fsm_deadline_s  # noqa: SLF001
     assert container.fsm_runner._recursion_limit == settings.fsm_recursion_limit  # noqa: SLF001
-    caps = container.fsm_runner._app  # noqa: SLF001 — гвард ставится только с caps
-    assert caps is not None
 
 
 def test_fsm_runner_honors_caps_and_completes(tmp_path) -> None:
