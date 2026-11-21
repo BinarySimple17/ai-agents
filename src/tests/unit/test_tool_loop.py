@@ -355,6 +355,18 @@ def test_task6_rows_last_and_prompt_semantics() -> None:
     assert "row_count/shown_rows" in SYSTEM_PROMPT
 
 
+def test_system_prompt_carries_dictionary_codes() -> None:
+    # S24 находка #2: модель тул-контура угадывала литерал страны ('Russia')
+    # при сиде 'RU' (миграция 0003) — уверенный «0 клиентов из РФ» при реальных 5.
+    # Тул-контур без retrieval (V4), схема и справочники — в промпте; регресс
+    # на караул от отката: коды обоих справочников + негативный литерал +
+    # самопроверка нулей перед ответом
+    assert "country = 'RU'/'KZ'/'DE'/'BY'" in SYSTEM_PROMPT
+    assert "status = 'paid'/'shipped'/'cancelled'" in SYSTEM_PROMPT
+    assert "«Россия»/«Russia»" in SYSTEM_PROMPT  # негативные примеры в промпте
+    assert "SELECT DISTINCT" in SYSTEM_PROMPT
+
+
 def test_main_quiet_flag_disables_console_trace(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     # Ревью S21 (Minor): проводка --quiet → build_container(console_trace=False)
     # держалась только живым прогоном; переворот флага при рефакторинге — тест

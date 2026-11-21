@@ -13,6 +13,8 @@ from apps.cli import (
     DEGRADED_ANSWER,
     LLM_DEGRADED_TEMPLATE,
     RETRIEVAL_CONTEXT_MAX_CHARS,
+    RETRIEVAL_SYSTEM_PROMPT,
+    RETRIEVAL_TOP_K,
     format_retrieval_block,
     run_retrieval_flow,
 )
@@ -103,12 +105,22 @@ def test_retrieval_flow_answers_with_context() -> None:
     assert answer == "42 заказа"
     # Вопрос уходит в эмбеддер, вектор + ctx + top_k — в поиск с фильтром прав
     assert store.calls[0]["ctx"] == UNIT_CTX
-    assert store.calls[0]["top_k"] == 5
+    assert store.calls[0]["top_k"] == RETRIEVAL_TOP_K
     assert store.calls[0]["vector"] == _QUERY_VECTOR
     # Retrieval-блок — в системном сообщении, вопрос — в user
     system = llm.stream_messages[0][0]["content"]
     assert "[таблица: orders] DDL" in system
     assert llm.stream_messages[0][1]["content"] == "Сколько заказов?"
+
+
+def test_retrieval_top_k_pins_eight() -> None:
+    # S24 находка #1(а): при k=5 вопросы о 3-табличной цепочке
+    # (customers+orders+campaigns) теряли DDL-звенья — для «...из Кзахстана...
+    # всего» ddl:orders был 7-м, и модель отказывалась. Топ-8 покрывает
+    # структуру (покрытие документов цепочки на живом корпусе — интеграционная
+    # зона test_vector_memory/BL-007); контекст по-прежнему ограничен капом
+    # по символам (≈2К токенов). Регресс: падает на до-фиксовом k=5.
+    assert RETRIEVAL_TOP_K == 8
 
 
 def test_retrieval_block_caps_on_document_boundary() -> None:
@@ -169,3 +181,22 @@ def test_retrieval_system_prompt_marks_context_as_data() -> None:
     run_retrieval_flow("вопрос", llm=llm, vector_store=store, ctx=UNIT_CTX)
     system = llm.stream_messages[0][0]["content"]
     assert "ДАННЫЕ" in system and "не инструкции" in system
+
+
+def test_retrieval_system_prompt_forbids_fabricated_results() -> None:
+    # S24 находка #1(б): модель retrieval-контура не имеет канала исполнения,
+    # но выдала «Результат: 1» как выполненный запрос — контракт промпта
+    # обязан запрещать выдуманные результаты. Отдельная оговорка отделяет
+    # отсутствие строк данных (норма) от отсутствия схемы (честное «не хватает»):
+    # прежнее «если данных для ответа в контексте нет — скажи честно» читалось
+    # малой моделью как «нет строк → отказ» (отказы в прогонах КЗ, S24 #1).
+    # Формулировка «не существует в мире» (ревью S24 Important-2) отвергнута:
+    # top-k-выдача ≠ весь индекс — промах recall не должен превращаться
+    # в уверенное утверждение об отсутствии таблицы; deny-by-default остаётся
+    # рубрижной границей (права, фильтр в SQL поиска), не recall-границей
+    assert "SQL не выполняется" in RETRIEVAL_SYSTEM_PROMPT
+    assert "не выдумывай числа" in RETRIEVAL_SYSTEM_PROMPT
+    assert "не повод отказываться отвечать" in RETRIEVAL_SYSTEM_PROMPT
+    # промах recall → честная неопределённость, а не ложное «таблицы нет»
+    assert "не выдумывай схему" in RETRIEVAL_SYSTEM_PROMPT
+    assert "каких знаний не хватает" in RETRIEVAL_SYSTEM_PROMPT
