@@ -114,8 +114,10 @@ def _render_observation(payload: dict[str, Any]) -> str:
         return header
     names = [_cell(column) for column in columns]
     cells = [[_cell(row.get(column)) for column in columns] for row in rows]
-    # ширина = максимум по колонке; ячейки и имена уже ≤ _CELL_MAX_CHARS, капа не нужно
-    widths = [max(len(name), *(len(row[i]) for row in cells)) for i, name in enumerate(names)]
+    # ширина = максимум по колонке; ячейки и имена уже ≤ _CELL_MAX_CHARS, капа не нужно.
+    # max СПИСКОМ, не распаковкой (layer-3 S25: 0 строк при непустых колонках —
+    # тул вернул пустой результат; max(один int) = TypeError «int not iterable»)
+    widths = [max([len(name), *(len(row[i]) for row in cells)]) for i, name in enumerate(names)]
     lines = [
         header,
         "    │ "
