@@ -3,7 +3,7 @@
 
 SHELL := /bin/bash
 
-.PHONY: setup dev check test lint e2e infra-up infra-down infra-migrate index-knowledge sync-graph verify-feature vcr archive session-start session-end clean-check
+.PHONY: setup dev check test lint e2e infra-up infra-down infra-migrate index-knowledge sync-graph bench-retrieval verify-feature vcr archive session-start session-end clean-check
 
 # Полная установка + верификация с чистого состояния
 # (в Makefile — через `bash init.sh`: на Windows make гоняет рецепты через
@@ -43,6 +43,12 @@ index-knowledge:
 # топология, ADR-003 v2.1); запускать после правки реестра и перед тестами путей
 sync-graph:
 	uv run --env-file .env python -m apps.sync_graph
+
+# Бенч retrieval (S26, feat-021): hit@5 dense-only vs гибрид на фиксированных
+# русских вопросах; инвариант D-026 «гибрид ≥ dense» — код 1 при обратном
+# (ручная Layer-3 операция: реальный эмбеддер шлюза, тестами не вызывается)
+bench-retrieval:
+	uv run --env-file .env python -m apps.bench_retrieval
 
 # --- Инфраструктура (PostgreSQL pgvector+AGE, Valkey) ---
 

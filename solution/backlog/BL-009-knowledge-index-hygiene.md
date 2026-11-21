@@ -2,6 +2,7 @@
 
 **Источник:** REVIEW-GATE S06 (2026-11-20), Minor M1/M3.
 **Приоритет:** P2. **Веха:** V3 «Гибридная память» (BL-007) — вместе с пересборкой корпуса.
+**Статус:** закрыт (2026-11-21, S26 — feat-021).
 
 ## M1 — SoT списка бизнес-таблиц
 `BUSINESS_TABLES` дублируется: `knowledge_sources.py`, `test_infra_schema.py`,
@@ -21,3 +22,18 @@ SYSTEM_PROMPT cli.py, сиды. Новая бизнес-таблица молч�
 
 ## Не в этом беклоге
 Гибрид dense+FTS/RRF, шумовой корпус, hit@5, реранкер — BL-007 (V3).
+
+## Закрытие (заполняется при закрытии)
+
+**Закрыт 2026-11-21 (S26, feat-021):**
+- **M1 (SoT бизнес-таблиц):** `business_tables_from_catalog(dsn)` — индексатор читает
+  список из каталога `agent_data_sources` (ADR-011); сборщики `knowledge_sources`
+  параметризованы (константа BUSINESS_TABLES удалена), `test_infra_schema` сверяет
+  каталог с CREATE TABLE миграции 0001 (тест `test_catalog_matches_schema_migration`),
+  SYSTEM_PROMPT cli.py сверяется генерацией (unit-тест).
+- **M3 (устаревшие source_ref / смена эмбеддера):** `upsert()` — replace-семантика
+  полной коллекции (upsert всех + DELETE устаревших source_ref её неймспейсов в той же
+  транзакции — ruling N1 ARCH-GATE S26; неймспейс = префикс source_ref до ':' — живой
+  корпус и сиды тестов в одной таблице не затирают друг друга); смена эмбеддера —
+  фильтр поиска по `model_version` (expected_model_version контейнера) до полной
+  переиндексации — решение исполнителя, отражено в model-card §1.
