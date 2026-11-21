@@ -43,6 +43,7 @@ from text_to_sql_agent.application.ports.llm_provider import (
     LLMRequestError,
     StreamChunk,
     StreamFinal,
+    ToolCall,
     Usage,
 )
 from text_to_sql_agent.infrastructure.llm.openai_provider import OpenAIProvider
@@ -80,17 +81,36 @@ def _chunk(
     content: str | None = None,
     reasoning: str | None = None,
     finish_reason: str | None = None,
+    tool_calls: list[Any] | None = None,
 ) -> Any:
-    """Обычный чанк стрима: delta с content/reasoning_content + (опц.) finish_reason."""
+    """Обычный чанк стрима: delta с content/reasoning_content/tool_calls + (опц.) finish_reason."""
     return SimpleNamespace(
         model="cheap-1",
         usage=None,
         choices=[
             SimpleNamespace(
-                delta=SimpleNamespace(content=content, reasoning_content=reasoning),
+                delta=SimpleNamespace(
+                    content=content, reasoning_content=reasoning, tool_calls=tool_calls
+                ),
                 finish_reason=finish_reason,
             )
         ],
+    )
+
+
+def _tool_delta(
+    index: int,
+    *,
+    call_id: str | None = None,
+    name: str | None = None,
+    arguments: str | None = None,
+) -> Any:
+    """Дельта тул-вызова (форма OpenAI-стрима): id/name — на первой дельте
+    вызова, arguments дозревает конкатенацией по последующим; склейка по index."""
+    return SimpleNamespace(
+        index=index,
+        id=call_id,
+        function=SimpleNamespace(name=name, arguments=arguments or ""),
     )
 
 
@@ -147,6 +167,112 @@ def test_stream_request_without_tools_omits_tools_param() -> None:
     provider, completions, _, _ = _provider([_ScriptedStream([_chunk("x")])])
     list(provider.complete_stream("cheap", _MESSAGES))
     assert "tools" not in completions.kwargs[0]
+
+
+# --- (g) тул-дельты стрима: накопление в StreamFinal.tool_calls (S25 feat-020) ---
+def test_stream_tool_call_deltas_assemble_into_final() -> None:
+    # Зеркало буферного пути: дельты тула склеиваются в полный ToolCall к
+    # финалу (id/name на первой, arguments конкатенацией); в stdout тул-дельты
+    # не печатаются — StreamChunk остаётся текстовой дельтой
+    stream = _ScriptedStream(
+        [
+            _chunk(tool_calls=[_tool_delta(0, call_id="call-1", name="run_sql", arguments='{"sq')]),
+            _chunk(tool_calls=[_tool_delta(0, arguments='l": "SELECT 1"}')]),
+            _chunk(finish_reason="tool_calls"),
+            _usage_chunk(),
+        ]
+    )
+    provider, _, _, _ = _provider([stream])
+    items = list(provider.complete_stream("cheap", _MESSAGES))
+    assert [item for item in items if isinstance(item, StreamChunk)] == []  # stdout молчит
+    final = next(item for item in items if isinstance(item, StreamFinal))
+    assert final.finish_reason == "tool_calls"
+    assert final.tool_calls == [
+        ToolCall(id="call-1", name="run_sql", arguments='{"sql": "SELECT 1"}')
+    ]
+
+
+def test_stream_two_tool_calls_assembled_in_index_order() -> None:
+    # Несколько тул-вызовов в одном ходе: склейка по index, порядок в списке —
+    # по index (порядок запроса), интерливинг дельт не ломает сборку
+    stream = _ScriptedStream(
+        [
+            _chunk(tool_calls=[_tool_delta(0, call_id="call-a", name="run_sql", arguments="{")]),
+            _chunk(tool_calls=[_tool_delta(1, call_id="call-b", name="run_sql", arguments="{}")]),
+            _chunk(tool_calls=[_tool_delta(0, arguments='"sql": "SELECT 1"}')]),
+            _chunk(finish_reason="tool_calls"),
+        ]
+    )
+    provider, _, _, _ = _provider([stream])
+    items = list(provider.complete_stream("cheap", _MESSAGES))
+    final = next(item for item in items if isinstance(item, StreamFinal))
+    assert [call.id for call in final.tool_calls] == ["call-a", "call-b"]
+    assert final.tool_calls[0].arguments == '{"sql": "SELECT 1"}'
+    assert final.tool_calls[1].arguments == "{}"
+
+
+def test_stream_text_and_tool_calls_in_one_turn() -> None:
+    # Ход «преамбула + тул-вызов» (ruling 3 S25): легальный поток OpenAI —
+    # текст идёт дельтами (консумер печатает как преамбулу), тул-вызов собран
+    # в финале; консумер сам решает исполнение (адаптер ничего не отбрасывает)
+    sql_delta = _tool_delta(0, call_id="call-1", name="run_sql", arguments='{"sql": "SELECT 1"}')
+    stream = _ScriptedStream(
+        [
+            _chunk("Считаю клиентов…"),
+            _chunk(tool_calls=[sql_delta]),
+            _chunk(finish_reason="tool_calls"),
+        ]
+    )
+    provider, _, _, _ = _provider([stream])
+    items = list(provider.complete_stream("cheap", _MESSAGES))
+    chunks = [item for item in items if isinstance(item, StreamChunk)]
+    assert "".join(c.text_delta for c in chunks) == "Считаю клиентов…"
+    final = next(item for item in items if isinstance(item, StreamFinal))
+    assert final.tool_calls and final.tool_calls[0].name == "run_sql"
+
+
+def test_stream_real_sdk_tool_call_delta_survives_to_final() -> None:
+    # M3-прецедент reasoning-фолбэка, повторённый для тул-дельт: настоящий
+    # SDK-чанк — апгрейд SDK не должен молча отключить накопление
+    stream = _ScriptedStream(
+        [
+            _sdk_chunk(
+                {
+                    "tool_calls": [
+                        {
+                            "index": 0,
+                            "id": "call-sdk",
+                            "type": "function",
+                            "function": {"name": "run_sql", "arguments": '{"sql": "SELECT'},
+                        }
+                    ]
+                }
+            ),
+            _sdk_chunk(
+                {
+                    "tool_calls": [
+                        {"index": 0, "type": "function", "function": {"arguments": ' 1"}'}}
+                    ]
+                },
+                "tool_calls",
+            ),
+        ]
+    )
+    provider, _, _, _ = _provider([stream])
+    items = list(provider.complete_stream("cheap", _MESSAGES))
+    final = next(item for item in items if isinstance(item, StreamFinal))
+    assert final.tool_calls == [
+        ToolCall(id="call-sdk", name="run_sql", arguments='{"sql": "SELECT 1"}')
+    ]
+
+
+def test_stream_no_tool_deltas_keeps_empty_tool_calls() -> None:
+    # Текстовый ход без тулов: поле не копит мусора — пустой список по умолчанию
+    stream = _ScriptedStream([_chunk("Ответ"), _chunk(finish_reason="stop"), _usage_chunk()])
+    provider, _, _, _ = _provider([stream])
+    items = list(provider.complete_stream("cheap", _MESSAGES))
+    final = next(item for item in items if isinstance(item, StreamFinal))
+    assert final.tool_calls == []
 
 
 # --- (b) TTFT в событии llm.complete (NFR-1) ---

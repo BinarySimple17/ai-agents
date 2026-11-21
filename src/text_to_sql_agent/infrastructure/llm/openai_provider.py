@@ -38,7 +38,9 @@ usage недоступен до ответа, поэтому один вызов
 терминального чанка шлюза (шлют не все — `usage_missing=true`, стоимость 0 не
 маскируется, finding ARCH-GATE S19). Reasoning-дельты буферизуются, наружу —
 фолбэком одним чанком по guard'у `NO_TEXT_FALLBACK_REASONS` из порта (D-021-
-аналог, ruling W4 ARCH-GATE S19).
+аналог, ruling W4 ARCH-GATE S19). Tool_calls-дельты накапливаются в полные
+`ToolCall` и выходят списком в `StreamFinal.tool_calls` (S25 feat-020 —
+зеркало буферного пути); в stdout они не печатаются.
 """
 
 import json
@@ -292,7 +294,10 @@ class OpenAIProvider:
     ) -> Iterator[StreamChunk | StreamFinal]:
         """Итерация стрима шлюза (S19): контент-дельты наружу, reasoning — буфер
         с фолбэком одним куском по guard'у finish_reason (D-021-аналог, ruling
-        W4 ARCH-GATE S19 — константа из порта). Mid-stream сбой — ретрая нет:
+        W4 ARCH-GATE S19 — константа из порта). Тул-дельты накапливаются в
+        полные `ToolCall` (склейка по index) и выходят списком в `StreamFinal.
+        tool_calls` — зеркало буферного `complete()` (S25 feat-020), в stdout
+        не печатаются. Mid-stream сбой — ретрая нет:
         `_register_failure` (breaker считает обрыв стрима сбоем шлюза) +
         `LLMRequestError`. usage — из терминального чанка шлюза, если он его
         шлёт; отсутствие фиксируется `usage_missing=true` в llm.complete
@@ -307,6 +312,7 @@ class OpenAIProvider:
         ttft_ms: int | None = None  # NFR-1: время до первого чанка
         content_parts: list[str] = []
         reasoning_parts: list[str] = []
+        tool_call_parts: dict[int, dict[str, str]] = {}  # index → {id, name, arguments}
         finish_reason: str | None = None
         raw_usage: Any = None
         actual_model = ""
@@ -329,6 +335,22 @@ class OpenAIProvider:
                 reasoning = getattr(delta, "reasoning_content", None) or ""
                 if reasoning:
                     reasoning_parts.append(reasoning)  # буфер: в stdout не печатается
+                for part in getattr(delta, "tool_calls", None) or []:
+                    # Дельты тула (S25 feat-020): id/name — на первой дельте
+                    # вызова, arguments — конкатенацией, склейка по index;
+                    # в stdout не печатаются — StreamChunk остаётся текстовой
+                    # дельтой (StreamToolCallDelta отвергнут canon-check)
+                    slot = tool_call_parts.setdefault(
+                        getattr(part, "index", 0), {"id": "", "name": "", "arguments": ""}
+                    )
+                    if getattr(part, "id", None):
+                        slot["id"] = part.id
+                    fn = getattr(part, "function", None)
+                    if fn is not None:
+                        if getattr(fn, "name", None):
+                            slot["name"] = fn.name
+                        if getattr(fn, "arguments", None):
+                            slot["arguments"] += fn.arguments
                 if getattr(choices[0], "finish_reason", None):
                     finish_reason = choices[0].finish_reason
         except (httpx.TimeoutException, openai.APITimeoutError) as exc:
@@ -398,11 +420,16 @@ class OpenAIProvider:
             stream=True,
             ttft_ms=ttft_ms,
         )
+        tool_calls = [
+            ToolCall(id=slot["id"], name=slot["name"], arguments=slot["arguments"])
+            for _, slot in sorted(tool_call_parts.items())
+        ]
         yield StreamFinal(
             usage=usage,
             finish_reason=finish_reason,
             model=actual_model or model,
             text_from_reasoning=text_from_reasoning,
+            tool_calls=tool_calls,
         )
 
     def embed(self, texts: Sequence[str]) -> list[Embedding]:

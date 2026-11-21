@@ -24,8 +24,12 @@ ToolSpec = Mapping[str, Any]
 # finish_reason, при которых reasoning_content не может считаться ответом (D-021):
 # length — текст оборван по лимиту токенов (частичный CoT); content_filter —
 # контент заблокирован политикой шлюза (фолбэк не должен обходить блокировку);
-# tool_calls/function_call — заявлен tool-ход, а тулов нет (несогласованный
-# шлюз): reasoning такого хода не финальный ответ, путь — ретрай/деградация.
+# tool_calls/function_call — ход заявляет tool-вызов: текста в нём нет в любом
+# случае. При переданных тулах tool_calls-финал — НОРМАЛЬНЫЙ ход (тул исполняет
+# консумер, S25 feat-020 — объединённый контур), а не фолбэк; при tools=None —
+# несогласованный шлюз (тул не запрашивался): путь — ретрай/деградация.
+# Различение — консумер-сайв (tools переданы И tool_calls непусты), сам guard
+# не меняется: reasoning тул-хода ответом не становится в обоих случаях.
 # Строго "stop" не требуется — часть шлюзов поле не отдаёт (ревью S03 Important-1).
 # Константа живёт в порту с S19: guard общий для буферного complete() и стрима
 # (ruling W4 ARCH-GATE S19 — единый источник, без дубля в адаптере).
@@ -83,6 +87,10 @@ class StreamFinal(BaseModel):
     finish_reason: str | None = None
     model: str
     text_from_reasoning: bool = False  # чанки стрима пришли из think-поля (фолбэк)
+    # Тул-вызовы хода, собранные адаптером из дельт стрима (S25 feat-020) —
+    # зеркало LLMResponse.tool_calls буферного пути: склейка по index, id/name —
+    # на первой дельте вызова, arguments конкатенируются. Пуст — ход без тулов.
+    tool_calls: list[ToolCall] = Field(default_factory=list)
 
 
 class LLMProviderError(Exception):
@@ -126,7 +134,8 @@ class LLMProvider(Protocol):
 
         Контракт (ruling W2/W3 ARCH-GATE S19): генератор `StreamChunk`-дельт,
         терминальный элемент — ровно один `StreamFinal` (usage/finish_reason/
-        model). Гарантии `complete()` — те же: бюджет/breaker guard'ы ДО вызова,
+        model; tool_calls — S25: тул-дельты склеиваются адаптером к финалу).
+        Гарантии `complete()` — те же: бюджет/breaker guard'ы ДО вызова,
         backoff-политика ДО первого чанка; после первого чанка ретраев нет —
         частично напечатанный ответ ретраем не чинится, сбой → `LLMRequestError`
         (деградацию решает вызывающий, S00 правило 8). Деградация провайдера —
