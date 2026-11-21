@@ -42,7 +42,7 @@ from typing import Any
 
 import psycopg
 from neo4j import GraphDatabase
-from neo4j.exceptions import Neo4jError
+from neo4j.exceptions import DriverError, Neo4jError
 from psycopg.rows import dict_row
 
 from text_to_sql_agent.application.ports.schema_graph_store import (
@@ -60,8 +60,6 @@ _ERROR_MESSAGE_MAX_CHARS = 300  # сообщения стыка — не про�
 # База данных Neo4j (композит: community-дефолт compose NEO4J_AUTH без NEO4J_DB —
 # БД 'neo4j'); повторяющийся литерал вынесен (AGENTS.md, магические литералы).
 NEO4J_DATABASE = "neo4j"
-
-_ERROR_MESSAGE_MAX_CHARS = 300  # сообщения стыка — не простыня psycopg/neo4j-хинтов
 
 # Путь длиннее 3 хопов (> 4 таблиц) не может попасть в JoinPlan (лимит feat-009
 # «не более 4 таблиц», hw-01 §4.2) — искать глубже бессмысленно и дороже.
@@ -185,7 +183,10 @@ class Neo4jGraphStore:
         )
         try:
             self._load_snapshot(tables, edges, graph_version)
-        except (Neo4jError, OSError) as exc:
+        except (Neo4jError, DriverError, OSError) as exc:
+            # DriverError — НЕ наследник Neo4jError (neo4j 6.x: оба → GqlError;
+            # ServiceUnavailable/SessionExpired — DriverError) — ревью S07-2:
+            # без него «Neo4j не поднят» уходил бы сырым SDK-эксепшеном
             raise SchemaGraphError(
                 f"загрузка снапшота в Neo4j не удалась: {_shorten(str(exc))}"
             ) from exc
@@ -246,7 +247,7 @@ class Neo4jGraphStore:
             "FOR (t:Table) REQUIRE t.name IS UNIQUE",
             database_=NEO4J_DATABASE,
         )
-        with self._driver.session() as session:
+        with self._driver.session(database=NEO4J_DATABASE) as session:
             session.execute_write(_reload)
 
     # --- Ревизия снапшота ---
@@ -257,7 +258,7 @@ class Neo4jGraphStore:
                 "MATCH (m:GraphMeta) RETURN m.graph_version AS gv LIMIT 1",
                 database_=NEO4J_DATABASE,
             )
-        except (Neo4jError, OSError) as exc:
+        except (Neo4jError, DriverError, OSError) as exc:
             raise SchemaGraphError(f"Neo4j недоступен: {_shorten(str(exc))}") from exc
         return int(records[0]["gv"]) if records else 0
 
@@ -301,7 +302,7 @@ class Neo4jGraphStore:
                 allowed=list(allowed_tables),
                 database_=NEO4J_DATABASE,
             )
-        except (Neo4jError, OSError) as exc:
+        except (Neo4jError, DriverError, OSError) as exc:
             raise SchemaGraphError(f"поиск путей в Neo4j не удался: {_shorten(str(exc))}") from exc
         paths: list[JoinPath] = []
         for record in records:

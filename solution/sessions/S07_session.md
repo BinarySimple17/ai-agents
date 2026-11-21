@@ -42,10 +42,10 @@ retrieval-усиления (S26), БЕЗ FSM-узлов (V4), БЕЗ правк�
 ## Предусловия
 
 - [x] Сессия СТАРТУЕТ: статус в шапке переведён в «◐ в работе» и ARCH-GATE резолвлен ДО кода (canon-check architect ✅ либо обоснованный N/A) — старт-гейт (`guard-subagents.sh --phase start`, D-027) проверяет только стартованные (◐) сессии; «[ ] не начата» — план, гейт её скипает
-- [ ] S02 закрыта: `make infra-up && docker compose ps neo4j` → Neo4j healthy; `uv run pytest src/tests/integration/test_infra_schema.py -q` → passed
-- [ ] `make check` зелёный (baseline репозитория)
-- [ ] feat-002 в state=passing, feat-007 активирована в state=active до старта работ (verify-feature требует active — Ловушки-2)
-- [ ] Bolt отвечает с паролем из .env: `uv run python -c "<пинг драйвера из тестов>"` → подключение ок (хост 127.0.0.1, не localhost — D-020)
+- [x] S02 закрыта: `make infra-up && docker compose ps neo4j` → Neo4j healthy; `uv run pytest src/tests/integration/test_infra_schema.py -q` → passed (проверено в составе make check 2026-11-21)
+- [x] `make check` зелёный (baseline репозитория) — EXIT=0, 259 passed на старте
+- [x] feat-002 в state=passing, feat-007 активирована в state=active до старта работ (verify-feature требует active — Ловушки-2)
+- [x] Bolt отвечает с паролем из .env: `uv run python -c "<пинг драйвера из тестов>"` → «bolt ok» (хост 127.0.0.1, не localhost — D-020)
 
 ## Задачи
 
@@ -158,12 +158,12 @@ grep -c "shortestPath\|graph" hw-04/README.md   # раздел существу�
 
 ## Критерии приёмки
 
-- [ ] Для пары таблиц возвращается путь по реальным рёбрам или null — джойн не выдумывается (behavior feat-007)
-- [ ] Для каждого ребра пути возвращается семантика (join_type, meaning, usage_notes) из настроек (behavior feat-007)
-- [ ] Reconciliation green: активные строки реестра = рёбра графа (ruling R1); graph_version инкрементируется правкой настроек
-- [ ] Фильтр прав: пути через недоступные таблицы не возвращаются (deny-by-default)
-- [ ] BL-003 п.3 решён (роль/DSN чтения реестра; GRANT миграцией) — отражён в отчёте
-- [ ] Раздел hw-04 «Связи между объектами» написан
+- [x] Для пары таблиц возвращается путь по реальным рёбрам или null — джойн не выдумывается (behavior feat-007)
+- [x] Для каждого ребра пути возвращается семантика (join_type, meaning, usage_notes) из настроек (behavior feat-007)
+- [x] Reconciliation green: активные строки реестра = рёбра графа (ruling R1); graph_version инкрементируется правкой настроек
+- [x] Фильтр прав: пути через недоступные таблицы не возвращаются (deny-by-default)
+- [x] BL-003 п.3 решён (роль/DSN чтения реестра; GRANT миграцией) — отражён в отчёте
+- [x] Раздел hw-04 «Связи между объектами» написан
 - [ ] Фича закрыта: `make verify-feature F=feat-007` → PASS, state=passing с evidence
 
 ## Ловушки
@@ -192,8 +192,20 @@ grep -c "shortestPath\|graph" hw-04/README.md   # раздел существу�
 ## Отчёт по сессии (заполняется по факту)
 
 - Сделано:
-  - [Task: что реально сделано, коммиты, число тестов/ассертов, live-прогон]
+  - **Task 1 (b1769a8)**: порт `SchemaGraphStore` — Protocol + DTO JoinEdge/JoinPath/EdgeSemantics/SyncReport, `SchemaGraphError`; фильтр прав — `allowed_tables` deny-by-default (S00 контракт 3). Синк S00 тем же коммитом (R3: строка порта, точки входа, infrastructure/graph/).
+  - **Task 2 (b1769a8)**: адаптер `infrastructure/graph/neo4j_graph_store.py` — синк полной перезагрузкой (почему без диффа — докстринг), `graph_version` из счётчика 'relationships', `find_join_paths` 1..3 хопов (JoinPlan ≤ 4 таблиц), ранжирование -weight/hops/rel_id детерминированное, `path_semantics` fail-closed на дрейф; `apps/sync_graph.py` + `make sync-graph`; Container под agent_planner (BL-003 п.3). Live: sync идемпотентен (7 вершин/5 рёбер), путь customers→campaigns weight 2.2, deny-by-default, семантика по rel_id.
+  - **Task 3 (57bd02c)**: миграция 008 — e_campaigns_orders version 1→2, usage_notes first-touch (ADR-006 §4.7) + прежняя ловушка NULL campaign_id; счётчик 2→3, повторный sync → graph_version=3; er-data-model → v1.8 тем же коммитом.
+  - **Task 4 (3e50ea6)**: BL-003 п.3 решён — чтение реестра синка под agent_planner (GRANT 0002: вьюха active + settings_version), registry_writer без SELECT не тронут, отдельная роль синка не вводится; инструмент владельца — отдельная роль/DSN будущей миграцией. Запись в BL-003 (закрытие п.3).
+  - **Task 5 (7d02ff9 + fix-волны d4b7084, fix-2)**: integration test_join_graph.py 12 тестов (a–f) + unit test_join_paths_ranking.py (ранжирование/направления/weight) + регрессионный test_join_graph_skip_guard.py (subprocess без Docker → skip, не ERROR) + test_neo4j_graph_store_errors.py (fake-driver на ServiceUnavailable — регресс re-review M5, падает на до-фиксовом except). **283 passed** (259 → 283), ruff чисто.
+  - **Task 6 (3e43c86)**: hw-04/README.md — раздел «Связи между объектами»: вывод синка, path_semantics демо-пары с first-touch, инварианты; сборка README вехи — за закрывающей сессией (S09/S26).
+  - **ARCH-GATE**: canon-check архитектора — verdict violations → rulings R1–R3 применены ДО кода (blocker: FK-второй-источник в формулировке Task 2/5d плана — синхронизировано до реализации).
+  - **REVIEW-GATE**: ревью 1 «With fixes» 1C/3I/11M → fix-волна d4b7084 (C1 — availability-фикстуры + subprocess-регресс; I2 незакоммиченный _build_path; I3 description feat-007 по канону; I4 weight-валидация + 2 unit; minors M1–M12) → re-review «With fixes» (C1/I2–I4/minors закрыты; НОВЫЙ Important M5-регресс: except (Neo4jError, OSError) пропускает DriverError/ServiceUnavailable — в neo4j 6.4.1 DriverError вне Neo4jError) → fix-волна-2: except (Neo4jError, DriverError, OSError) + fake-driver регресс (3 теста падают на до-фиксе, зелёные после) + session(database=) + дубль константы снят.
 - Отклонения от плана:
-  - [что сделали не так, как в задаче, и почему; каждое отклонение — осознанное]
+  - **Источник рёбер синка**: план Task 2/5(d) говорил «active-рёбра + FK каталога» — canon-check (R1, blocker) постановил: ТОЛЬКО вьюха agent_relationships_active (ADR-006 v1.3 — реестр единственный SoT, FK — генератор кандидатов). Формулировки плана синхронизированы до кода.
+  - **Сигнатура find_join_paths**: в плане `(from, to, *, ctx, k)` — реализовано `(from, to, *, ctx, allowed_tables, k)`: права передаются явно (канонная строка порта S00 `path(a, b, allowed)` + контракт 3 «state.permissions — единственный источник для подграфа»); граф не ходит в настройки прав сам, RBAC-снапшот пинится как resolve_access его отдал.
+  - **K путей**: реализовано var-length MATCH (1..3) + Python-ранжирование, не allShortestPaths/shortestPath — ADR-006 «мультиграф, кратчайший не годится», ADR-003 v2.1 «shortestPath — имя функции, не решающее правило»; граница квантификатора — параметр не поддерживается (CypherSyntaxError, живая проверка) — инлайн именованной константы.
+  - **Task 4**: новая миграция GRANT не потребовалась — гранты agent_planner уже из 0002 (план допускал «GRANT — новой миграцией» при необходимости).
+  - **Neo4j-особенности**: constraint IF NOT EXISTS — отдельной транзакцией до execute_write (ForbiddenDueToTransactionType: schema+write в одной запрещены); изоляция — set_isolation_level (psycopg 3: connect/transaction() уровень не принимают).
 - Перенесено в другие сессии:
-  - [ID сессии — что перенесено и почему; если в беклог — BL-NN-файл]
+  - BL-011 (P3): лимит кандидатов энумерации k путей — масштабирование find_join_paths при росте реестра (Set aside ревью; demo-масштаб приемлем, триггер — наполнение реестра S09/S10).
+  - Пин graph_version в state — resolve_access (S05/V4); трейсинг ctx — S8/S17; ранжирование моделью + intent_tags/temporal-фильтр — S09 (plan_joins); сборка README hw-04 — закрывающая сессия вехи (S09/S26).
