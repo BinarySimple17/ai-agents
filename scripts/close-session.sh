@@ -188,7 +188,11 @@ if [ "$DIRTY_OUT" -gt 0 ]; then
   echo "       закоммить их ДО close-session (End of Session: код коммитится в волне фичи, не в ритуале закрытия)" >&2
   exit 1
 fi
-echo "  [PASS] рабочее дерево: вне allowlist — только MSG-файл"
+if [ -n "$MSG" ]; then
+  echo "  [PASS] рабочее дерево: вне allowlist — только MSG-файл"
+else
+  echo "  [PASS] рабочее дерево: вне allowlist изменений нет"
+fi
 
 DATE="$(date +%F)"
 SUMMARY="$(printf '%s' "$SUMMARY" | tr '\n' ' ' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
