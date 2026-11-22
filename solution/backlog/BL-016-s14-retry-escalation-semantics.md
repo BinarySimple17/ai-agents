@@ -1,9 +1,8 @@
 # BL-016 — Семантика FSM-ретрая генератора: эскалация attempt 3 при generation-fail на retry-визите
 
-**Приоритет:** P2 → **ЗАКРЫТ S14 (2026-11-22, ruling R3 ARCH-GATE)** — решён ребром
-`generate_sql → retry_generate_sql` (см. «Решение» ниже); перенос в archive — `make archive`
+**Приоритет:** P2 → **ЗАКРЫТ (2026-11-22: S14 ruling R3 ARCH-GATE — ребро `generate_sql → retry_generate_sql`; остаток «передано S15» выполнен — учёт попыток R6 зафиксирован в docstring порта BudgetGuard)**; перенос в archive — `make archive`
 **Источник:** re-review-2 S10 (Minor-5, 2026-11-22), заметка в set aside
-**Зона:** S14 (diagnose_error + retry-цикл)
+**Зона:** S14 (diagnose_error + retry-цикл) → S15 (остаток — BudgetGuard)
 
 ## Контекст
 
@@ -38,7 +37,10 @@ FLAG_GENERATE_SQL_FAILED → degrade (R2 сохраняется в своей з
 ролей (1/2/3); первый визит — внутренний цикл ≤ 3 вызовов, FSM-ретрай-визит —
 одна попытка (гейт считает визиты, fuse ≤ 3); потолок генератора — 5 LLM-вызовов
 на прогон, абсолютный рубеж — llm_guard ≤ 8. Канонизировано в docstring
-m1_policy.py и разделе «Ретраи» state-agent v1.8. Передано S15/BudgetGuard.
+m1_policy.py и разделе «Ретраи» state-agent v1.8. Передано S15/BudgetGuard —
+**выполнено S15 (feat-015, 2026-11-22): семантика учёта R6 зафиксирована в
+docstring порта `application/ports/budget_guard.py` («guard считает РАСХОД
+₽/вызовы, не попытки»); остаток закрыт, запись закрывается целиком.**
 
 ## Смежное (set aside re-review-2)
 
