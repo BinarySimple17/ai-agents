@@ -16,7 +16,8 @@
 | [model-card.md](model-card.md) | Карточка моделей (HF-формат): тарифы, ограничения, эскалация | При смене модели/цены; калибровке роутинга |
 | [RISKS.md](RISKS.md) | Регистр рисков с митигациями и ранними индикаторами | Начало фичи (какие риски затрагиваем); вехи |
 | [PRODUCT.md](PRODUCT.md) | Продукт: что, зачем, для кого, non-goals (сводка; полные требования — prd.md) | При неясных требованиях |
-| [quality-document.md](quality-document.md) | Оценка модулей A/B/C/D по 4 измерениям | В конце сессии (End of Session, шаг 5) |
+| [quality-document.md](quality-document.md) | Оценка модулей A/B/C/D по 4 измерениям | В конце сессии (End of Session) |
+| [AGENT-OPERATIONS.md](AGENT-OPERATIONS.md) | Полный операционный объём ритуалов: граф веток вех, чеклист End of Session, скрипты `make new-session`/`close-session` | При ветвлении вех и закрытии сессий |
 
 > HTTP-поверхности с контрактом у проекта нет: интерфейсы — CLI и Streamlit-демо
 > (c4-l2; openapi-контракт не ведётся — [DECISIONS.md](../DECISIONS.md) D-005).

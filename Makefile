@@ -3,7 +3,7 @@
 
 SHELL := /bin/bash
 
-.PHONY: setup dev check test lint e2e infra-up infra-down infra-migrate index-knowledge sync-graph bench-retrieval verify-feature vcr archive session-start session-end clean-check
+.PHONY: setup dev check test lint e2e infra-up infra-down infra-migrate index-knowledge sync-graph bench-retrieval verify-feature vcr archive new-session close-session session-start session-end clean-check
 
 # Полная установка + верификация с чистого состояния
 # (в Makefile — через `bash init.sh`: на Windows make гоняет рецепты через
@@ -80,9 +80,19 @@ vcr:
 archive:
 	bash scripts/archive.sh
 
+# Механическая часть планирования сессии: копия шаблона + строка реестра;
+# нарратив (предусловия/задачи/ловушки) — за агентом (AGENTS.md Startup шаг 4)
+new-session:
+	bash scripts/new-session.sh S="$(S)" TITLE="$(TITLE)" F="$(F)" ROLE="$(ROLE)" $(FLAGS)
+
+# Механический хвост End of Session: гейты/отчёт/фичи → статус ✅ → реестр →
+# «Текущее состояние» → archive → clean-state → commit -F MSG (docs/AGENT-OPERATIONS.md)
+close-session:
+	bash scripts/close-session.sh S="$(S)" MSG="$(MSG)" SUMMARY="$(SUMMARY)" $(FLAGS)
+
 # Ритуалы начала/конца сессии (см. AGENTS.md: Startup Workflow / End of Session)
 session-start:
-	@echo "Clock-in: 1) pwd  2) прочитать AGENTS.md  3) создать/проверить файл сессии (из TEMPLATE_session.md) и перевести шапку стартуемой сессии в «◐ в работе» — старт-гейт кусает только её (D-027)  4) прочитать progress.md  5) выбрать ОДНУ фичу из feature_list.json  6) запустить make check"
+	@echo "Clock-in: 1) pwd  2) прочитать AGENTS.md  3) создать файл сессии: make new-session S=<ID> TITLE=\"...\" F=<feat-XXX> (механика; нарратив — за агентом) и перевести шапку стартуемой сессии в «◐ в работе» — старт-гейт кусает только её (D-027)  4) прочитать progress.md  5) выбрать ОДНУ фичу из feature_list.json  6) запустить make check"
 	bash scripts/guard-subagents.sh --phase start
 
 session-end:
