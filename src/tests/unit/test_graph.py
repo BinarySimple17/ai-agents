@@ -368,15 +368,28 @@ def _rights_passing_node(state: dict[str, Any]) -> dict[str, Any]:
     return {"permissions": {"orders": ["*"]}, "graph_version": 0}
 
 
+class _RecordingTracer:
+    """Фейковый Tracer: копит записи для проверок (прецедент test_clarify)."""
+
+    def __init__(self) -> None:
+        self.records: list[Any] = []
+
+    def record(self, trace: Any) -> None:
+        self.records.append(trace)
+
+
 class TestInterruptFlow:
     """interrupt()/checkpointer (Task 2 S08, rulings R2/R3/R6): пауза -> resume
     ТОГО ЖЕ прогона; TTL истёк -> clarification-терминал; misuse — fail, не
     traceback. Checkpointer в unit — MemorySaver; живой Valkey — integration."""
 
-    def _runner(self, result: ClarifyResult) -> tuple[Any, _ScriptedClarifyService]:
+    def _runner(
+        self, result: ClarifyResult, tracer: Any | None = None
+    ) -> tuple[Any, _ScriptedClarifyService]:
         service = _ScriptedClarifyService(result)
         return (
             build_fsm_runner(
+                tracer=tracer,
                 caps=CAPS,
                 checkpointer=MemorySaver(),
                 deadline_s=90.0,
@@ -401,14 +414,22 @@ class TestInterruptFlow:
     def test_resume_same_thread_continues_same_run(self) -> None:
         # Ловушка 2 S08: resume по тому же thread_id — ТОТ ЖЕ прогон (допущение
         # user_answer в state, прогон доходит до done, не новый invocation)
+        tracer = _RecordingTracer()
         runner, service = self._runner(
-            ClarifyResult(outcome=ClarifyOutcome.CLARIFY, question="За какой период?")
+            ClarifyResult(outcome=ClarifyOutcome.CLARIFY, question="За какой период?"),
+            tracer=tracer,
         )
         paused = runner.run(initial_state(QUESTION, user_id="u_analyst"), thread_id="t-same")
         assert paused["interrupted"] is True
         final = runner.resume("за 2026 год", thread_id="t-same")
         assert final["outcome"] == "done"
         assert final["interrupted"] is False
+        # Событие фактической паузы — ровно одно на прогон (зона раннера;
+        # тот же tracer несёт и graph.node-спаны биндера)
+        pauses = [e for e in tracer.records if e.event == "clarify.interrupt"]
+        assert len(pauses) == 1
+        assert pauses[0].payload["question"] == "За какой период?"
+        assert pauses[0].payload["thread_id"] == "t-same"
         answers = [a for a in final["assumptions"] if a.source == "user_answer"]
         assert [a.text for a in answers] == ["за 2026 год"]
         # Классификация выполнялась РОВНО ОДИН раз (visit 1) — ruling R6:

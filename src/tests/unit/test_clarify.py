@@ -27,7 +27,6 @@ from text_to_sql_agent.application.ports.llm_provider import (
     Usage,
 )
 from text_to_sql_agent.application.ports.tracer import (
-    EVENT_CLARIFY_INTERRUPT,
     EVENT_CLARIFY_UNAVAILABLE,
     EVENT_CLARIFY_VERDICT,
 )
@@ -468,16 +467,15 @@ class TestClarifyNode:
         assert updated["error"]["class"] == "identity_missing"
         assert service.called == 0
 
-    def test_tracer_records_verdict_and_interrupt_events(self) -> None:
+    def test_tracer_records_verdict_event_not_interrupt(self) -> None:
+        # clarify.verdict — зона узла; clarify.interrupt — зона раннера (resume-
+        # визит ре-исполняет узел с начала: узел не отличает паузу от продолжения)
         tracer = _RecordingTracer()
-        ambiguous = self._scripted_service(
+        service = self._scripted_service(
             self._service_result(ClarifyOutcome.CLARIFY, question="Уточните", llm_calls=1)
         )
-        node = make_clarify_node(ambiguous, _RecordingGate("ответ"), tracer=tracer)
+        node = make_clarify_node(service, _RecordingGate("ответ"), tracer=tracer)
         node({"question": "Заказы", "user_id": "u_analyst", "trace_id": "t-1"})
-        # visit 2 тем же узлом: вопрос в state → interrupt
-        ambiguous_result = ambiguous
-        assert ambiguous_result.called == 1
         node(
             {
                 "user_id": "u_analyst",
@@ -485,8 +483,9 @@ class TestClarifyNode:
                 "route_flags": {CLARIFICATION_NEEDED_FLAG: True},
             }
         )
+        assert service.called == 1
         events = [t.event for t in tracer.records]
-        assert events == [EVENT_CLARIFY_VERDICT, EVENT_CLARIFY_INTERRUPT]
+        assert events == [EVENT_CLARIFY_VERDICT]
 
     def test_node_works_without_tracer(self) -> None:
         service = self._scripted_service(self._service_result(ClarifyOutcome.FAIL, error="сбой"))

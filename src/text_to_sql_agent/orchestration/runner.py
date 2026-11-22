@@ -25,6 +25,8 @@ from uuid import uuid4
 from langgraph.errors import GraphInterrupt, GraphRecursionError
 from langgraph.types import Command
 
+from text_to_sql_agent.application.ports.tracer import EVENT_CLARIFY_INTERRUPT
+from text_to_sql_agent.domain.entities import Trace
 from text_to_sql_agent.orchestration.graph import build_fsm_app
 from text_to_sql_agent.orchestration.routing import FSMGuardCaps
 
@@ -56,7 +58,12 @@ CLARIFY_SESSION_EXPIRED_MESSAGE = (
 
 
 class LangGraphRunner:
-    """Реализация порта GraphRunner: invoke с recursion_limit + дедлайном прогона."""
+    """Реализация порта GraphRunner: invoke с recursion_limit + дедлайн прогона.
+
+    ``tracer`` — событие фактической паузы (``clarify.interrupt``) пишет раннер,
+    не узел: resume-визит ре-исполняет узел с начала, узел не отличает паузу от
+    продолжения — одно событие на фактическую приостановку (живой прогон S08).
+    """
 
     def __init__(
         self,
@@ -64,10 +71,12 @@ class LangGraphRunner:
         *,
         deadline_s: float,
         recursion_limit: int,
+        tracer: Any | None = None,
     ) -> None:
         self._app = app
         self._deadline_s = deadline_s
         self._recursion_limit = recursion_limit
+        self._tracer = tracer
 
     def _config(self, thread_id: str) -> dict[str, Any]:
         return {
@@ -75,19 +84,29 @@ class LangGraphRunner:
             "configurable": {"thread_id": thread_id},
         }
 
-    @staticmethod
-    def _as_result(final: Mapping[str, Any]) -> dict[str, Any]:
+    def _as_result(self, final: Mapping[str, Any], *, thread_id: str) -> dict[str, Any]:
         """Результат invoke → state: interrupt-маркер переводится в ``interrupted``.
 
         Движковый ключ ``__interrupt__`` наружу не идёт (ruling R3): вопрос уже
-        в state (узел записал его до паузы) — CLI печатает и ждёт ответ.
+        в state (узел записал его до паузы) — CLI печатает и ждёт ответ. Факт
+        паузы — событие clarify.interrupt (один на фактическую приостановку).
         """
-        if _INTERRUPT_KEY in final:
-            payload = dict(final)
-            payload.pop(_INTERRUPT_KEY, None)
-            payload["interrupted"] = True
-            return payload
-        return dict(final)
+        if _INTERRUPT_KEY not in final:
+            return dict(final)
+        payload = dict(final)
+        payload.pop(_INTERRUPT_KEY, None)
+        payload["interrupted"] = True
+        if self._tracer is not None:
+            self._tracer.record(
+                Trace(
+                    event=EVENT_CLARIFY_INTERRUPT,
+                    payload={
+                        "thread_id": thread_id,
+                        "question": final.get("clarify_question"),
+                    },
+                )
+            )
+        return payload
 
     @staticmethod
     def _recursion_fail(state: Mapping[str, Any]) -> dict[str, Any]:
@@ -131,7 +150,7 @@ class LangGraphRunner:
             # НЕВОЗМОЖНО (resume требует сессию). Маркер interrupted с
             # непродолжаемой паузой — обман протокола: fail, не пауза
             return self._interrupt_no_checkpoint_fail(started)
-        return self._as_result(final)
+        return self._as_result(final, thread_id=tid)
 
     def _interrupt_no_checkpoint_fail(self, state: Mapping[str, Any]) -> dict[str, Any]:
         return {
@@ -216,7 +235,7 @@ class LangGraphRunner:
                     "message": RESUME_NO_INTERRUPT_MESSAGE + f" ({exc})",
                 },
             }
-        return self._as_result(final)
+        return self._as_result(final, thread_id=thread_id)
 
 
 def build_fsm_runner(
@@ -237,4 +256,6 @@ def build_fsm_runner(
     app = build_fsm_app(
         tracer=tracer, caps=caps, checkpointer=checkpointer, node_overrides=node_overrides
     )
-    return LangGraphRunner(app, deadline_s=deadline_s, recursion_limit=recursion_limit)
+    return LangGraphRunner(
+        app, deadline_s=deadline_s, recursion_limit=recursion_limit, tracer=tracer
+    )

@@ -17,7 +17,10 @@ ARCH-GATE S08):
 
 Каждый вход в классификацию учитывает фактический расход LLM в
 ``budget_used.llm_calls`` (гвард капов — routing.llm_guard); ₽-аккумулятор —
-резидент адаптера, в state — BudgetGuard (S15, как в каркасе S04).
+резидент адаптера, в state — BudgetGuard (S15, как в каркасе S04). Событие
+фактической паузы (``clarify.interrupt``) — зона раннера: resume-визит
+ре-исполняет узел с начала (механика interrupt), узел не отличает паузу от
+продолжения и не пишет его.
 """
 
 from typing import Any
@@ -25,7 +28,6 @@ from uuid import uuid4
 
 from text_to_sql_agent.application.ports.interrupt_gate import InterruptGate
 from text_to_sql_agent.application.ports.tracer import (
-    EVENT_CLARIFY_INTERRUPT,
     EVENT_CLARIFY_UNAVAILABLE,
     EVENT_CLARIFY_VERDICT,
     Tracer,
@@ -66,14 +68,9 @@ def make_clarify_node(
         pending_question = state.get("clarify_question")
 
         # --- interrupt-ветка (visit 2/resume): вопрос ждёт ответа — без LLM ---
+        # Событие паузы (clarify.interrupt) пишет раннер: resume-визит
+        # ре-исполняет узел с начала и не отличает паузу от продолжения
         if pending_question:
-            if tracer is not None:
-                tracer.record(
-                    Trace(
-                        event=EVENT_CLARIFY_INTERRUPT,
-                        payload={"user_id": user_id, "question": pending_question},
-                    )
-                )
             answer = gate.ask(pending_question).strip()
             if not answer:
                 # fail-closed (S00-8): пустой ответ — честный отказ, не продолжение
