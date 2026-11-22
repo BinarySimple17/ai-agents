@@ -18,6 +18,32 @@ class Trace(BaseModel):
     payload: dict[str, Any] = Field(default_factory=dict)
 
 
+class Assumption(BaseModel):
+    """Допущение прогонa (ruling R5 ARCH-GATE S08): структура фиксирована,
+    содержимое — короткий текст.
+
+    «Структурированный список, не свободная проза» (Ловушка 4 S08): их сверяет
+    кэш (S16 — ключ кэша с assumptions) и раскрывает interpret_result (S15).
+    ``source`` — провенанс: ``classifier`` — допущение вердикта классификатора
+    (закрытый набор схемы тула, валидирует код), ``user_answer`` — ответ
+    пользователя на уточняющий вопрос (interrupt/resume — свободный текст по
+    природе, структура даёт машиночитаемость).
+    """
+
+    model_config = {"frozen": True}
+
+    source: Literal["classifier", "user_answer"]
+    text: str
+
+    @field_validator("text")
+    @classmethod
+    def _text_non_empty(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Assumption.text обязано быть непустым (fail-closed)")
+        return value
+
+
 class RunContext(BaseModel):
     """Контекст исполнения запроса (ADR-011 §4.2 v1.2; ruling ARCH-GATE S13 Q1).
 
@@ -98,7 +124,12 @@ class AgentState(TypedDict, total=False):
                       verify не обходит); resolve_access читает, fail-closed на
                       пустом
     rewritten_question  clarify
-    assumptions       clarify
+    assumptions       clarify (list[Assumption] — ruling R5 ARCH-GATE S08)
+    clarify_question  вопрос пользователю, ожидающий ответа (interrupt-механика,
+                      ruling R1/R2 ARCH-GATE S08): clarify пишет вопрос вердикта
+                      классификатора, plan_joins — вопрос равных кандидатов (S10);
+                      читают clarify (interrupt) и ребро routing (само-ребро
+                      clarify → clarify)
     permissions       resolve_access
     graph_version     resolve_access (0 = снапшот не загружен — ADR-006 §4.3)
     join_plan         plan_joins
@@ -123,7 +154,13 @@ class AgentState(TypedDict, total=False):
     visited_nodes     обвязка graph.py (порядок обхода содержательных узлов —
                       для трейса и печати CLI; гейты/терминалы не пишут)
     outcome           терминальный маркер graph.py (различимый payload исхода)
-    deadline_at       оркестратор-раннер (monotonic-дедлайн прогона, кап 90 s)
+    deadline_at       оркестратор-раннер (monotonic-дедлайн прогона, кап 90 s;
+                      при resume перевзводится раннером — ruling R6 ARCH-GATE S08)
+    trace_id          оркестратор-раннер (uuid прогона — сквозная корреляция
+                      RunContext/трейса, ADR-010; ставится на старте прогона)
+    interrupted       оркестратор-раннер (маркер приостановки GraphInterrupt:
+                      прогон не завершён — ожидает resume, ruling R3 ARCH-GATE
+                      S08; False = исходный маркер)
     ================  ==========================================================
 
     ``retry_count`` — один int: счётчик ретраев УЗЛА, который сейчас ретраится
@@ -146,7 +183,8 @@ class AgentState(TypedDict, total=False):
     question: str
     user_id: str  # verified identity (R4 S05) — точка входа, узел resolve_access читает
     rewritten_question: str | None
-    assumptions: list[str]
+    assumptions: list[Assumption]  # ruling R5 ARCH-GATE S08: VO с провенансом
+    clarify_question: str | None  # вопрос пользователю — interrupt-механика (S08, R1/R2)
     permissions: dict[str, Any]  # {tables: {table: [columns]}} — scope (стык 3)
     graph_version: int | None  # пин снапшота реестра на прогон (ADR-006 §4.3)
     join_plan: dict[str, Any] | None
@@ -168,3 +206,5 @@ class AgentState(TypedDict, total=False):
     visited_nodes: list[str]
     outcome: TerminalOutcome | None
     deadline_at: float | None  # time.monotonic() дедлайн прогона (кап 90 s)
+    trace_id: str | None  # uuid прогона (корреляция RunContext/трейса — ADR-010)
+    interrupted: bool  # прогон приостановлен GraphInterrupt — ждёт resume (R3 S08)

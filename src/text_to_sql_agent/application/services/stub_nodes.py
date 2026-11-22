@@ -294,13 +294,17 @@ def initial_state(question: str, user_id: str = "") -> "AgentState":
     ``user_id`` — verified identity (ruling R4 ARCH-GATE S05: AuthProvider.verify
     в точке входа ДО прогона; пусто — узел resolve_access fail-closed → rejected).
     Флаги усечения — False (неполное не выдаётся за полное — S15 выставит);
-    route_flags/retry_count/visited_nodes — нейтральные кодовые дефолты.
+    route_flags/retry_count/visited_nodes — нейтральные кодовые дефолты;
+    clarify_question/interrupted/trace_id — interrupt-механика и корреляция
+    прогона (rulings R1–R3 ARCH-GATE S08: trace_id/interrupted ставит раннер,
+    clarify_question — узел clarify при неоднозначном вердикте).
     """
     return {
         "question": question,
         "user_id": user_id,
         "rewritten_question": None,
         "assumptions": [],
+        "clarify_question": None,
         "permissions": {},
         "graph_version": None,
         "join_plan": None,
@@ -321,4 +325,6 @@ def initial_state(question: str, user_id: str = "") -> "AgentState":
         "visited_nodes": [],
         "outcome": None,
         "deadline_at": None,
+        "trace_id": None,
+        "interrupted": False,
     }

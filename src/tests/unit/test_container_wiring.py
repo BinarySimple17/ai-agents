@@ -7,6 +7,7 @@ build_container строит реальные компоненты, но ни о
 """
 
 import pytest
+from langgraph.checkpoint.memory import MemorySaver
 from pydantic import SecretStr
 
 from text_to_sql_agent.application.ports.auth_provider import AuthenticationError
@@ -17,6 +18,12 @@ from text_to_sql_agent.config.settings import Settings
 
 _DOC = KnowledgeDocument(doc_kind=DocKind.DDL, content="x", model_version="m", source_ref="s")
 _VEC = [0.01] * 1024
+
+
+def _mem_ckpt() -> MemorySaver:
+    # Юнит-контур без инфры (S00 правило 7): сессии interrupt — MemorySaver;
+    # живой Valkey — integration (test_clarify_resume)
+    return MemorySaver()
 
 
 def _settings(tmp_path) -> Settings:
@@ -51,7 +58,7 @@ def _settings(tmp_path) -> Settings:
 
 def test_default_container_cannot_write_knowledge(tmp_path) -> None:
     # Runtime-контур (CLI/FSM) не держит сервисный DSN записи в память знаний
-    container = build_container(_settings(tmp_path))
+    container = build_container(_settings(tmp_path), checkpointer=_mem_ckpt())
     with pytest.raises(RuntimeError, match="write_dsn"):
         container.vector_store.upsert([_DOC], [_VEC])
 
@@ -59,7 +66,7 @@ def test_default_container_cannot_write_knowledge(tmp_path) -> None:
 def test_knowledge_writer_container_has_write_dsn(tmp_path) -> None:
     # Офлайн-индексатор собирает контейнер с write-каналом (make index-knowledge)
     settings = _settings(tmp_path)
-    container = build_container(settings, knowledge_writer=True)
+    container = build_container(settings, knowledge_writer=True, checkpointer=_mem_ckpt())
     assert (
         container.vector_store._write_dsn  # noqa: SLF001 — инвариант ruling W1
         == settings.postgres_dsn.get_secret_value()
@@ -69,7 +76,7 @@ def test_knowledge_writer_container_has_write_dsn(tmp_path) -> None:
 def test_plan_joins_budget_shlew_wired_to_adapter(tmp_path) -> None:
     # Шов бюджета узла plan_joins (ruling Q7 ARCH-GATE S09): остаток =
     # кап запроса − резидентный аккумулятор адаптера; на сборке аккумулятор 0
-    container = build_container(_settings(tmp_path))
+    container = build_container(_settings(tmp_path), checkpointer=_mem_ckpt())
     assert type(container.plan_joins_service).__name__ == "PlanJoinsService"
     assert container.plan_joins_service._budget_remaining_roubles is not None  # noqa: SLF001
     assert container.plan_joins_service._budget_remaining_roubles() == pytest.approx(2.0)  # noqa: SLF001
@@ -108,7 +115,7 @@ def test_fsm_runner_wired_from_settings(tmp_path) -> None:
     from text_to_sql_agent.application.ports.graph_runner import GraphRunner
 
     settings = _settings(tmp_path)
-    container = build_container(settings)
+    container = build_container(settings, checkpointer=_mem_ckpt())
     assert isinstance(container.fsm_runner, GraphRunner)
     assert container.fsm_runner._deadline_s == settings.fsm_deadline_s  # noqa: SLF001
     assert container.fsm_runner._recursion_limit == settings.fsm_recursion_limit  # noqa: SLF001
@@ -118,10 +125,25 @@ def test_fsm_runner_honors_caps_and_completes(tmp_path) -> None:
     # Гвард глобальных капов — из Settings (≤ 8 вызовов / ≤ 2 ₽), не моделью:
     # исчерпанный счётчик вызовов → budget_stop ДО первого LLM-узла.
     # user_id обязателен (S05): узел resolve_access fail-closed на пустой
-    # identity → rejected сработал бы раньше гварда (решение ребра первично)
+    # identity → rejected сработал бы раньше гварда (решение ребра первично).
+    # clarify — скриптовый сервис (S00 правило 7: реальный узел зовёт LLM,
+    # в юните — только инъекция через composition)
+    from text_to_sql_agent.application.services.clarify_service import (
+        ClarifyOutcome,
+        ClarifyResult,
+    )
     from text_to_sql_agent.application.services.stub_nodes import initial_state
 
-    container = build_container(_settings(tmp_path), permission_store=_FakePermissionStore())
+    class _ScriptedClarify:
+        def clarify(self, question: str, *, ctx: object, permissions: object) -> ClarifyResult:
+            return ClarifyResult(outcome=ClarifyOutcome.UNAMBIGUOUS)
+
+    container = build_container(
+        _settings(tmp_path),
+        permission_store=_FakePermissionStore(),
+        checkpointer=_mem_ckpt(),
+        clarify_service=_ScriptedClarify(),  # type: ignore[arg-type]
+    )
     state = initial_state("Сколько заказов?", user_id="u_analyst")
     state["budget_used"] = {"llm_calls": container.settings.fsm_max_llm_calls, "rub": 0.0}
     assert container.fsm_runner.run(state)["outcome"] == "budget_stop"
@@ -138,7 +160,9 @@ def test_fsm_rejects_unknown_user_without_llm_calls(tmp_path) -> None:
     from text_to_sql_agent.application.services.stub_nodes import initial_state
 
     container = build_container(
-        _settings(tmp_path), permission_store=_FakePermissionStore(known=False)
+        _settings(tmp_path),
+        permission_store=_FakePermissionStore(known=False),
+        checkpointer=_mem_ckpt(),
     )
     result = container.fsm_runner.run(initial_state("Сколько заказов?", user_id="ghost"))
     assert result["outcome"] == "rejected"
@@ -149,6 +173,6 @@ def test_fsm_rejects_unknown_user_without_llm_calls(tmp_path) -> None:
 def test_auth_provider_fail_closed_without_tokens(tmp_path) -> None:
     # AGENT_DEV_TOKENS пуст → DevTokenAuth отклоняет любой токен (ruling R4:
     # дефолтного пользователя нет)
-    container = build_container(_settings(tmp_path))
+    container = build_container(_settings(tmp_path), checkpointer=_mem_ckpt())
     with pytest.raises(AuthenticationError):
         container.auth_provider.verify("anything")

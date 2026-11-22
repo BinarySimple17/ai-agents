@@ -10,20 +10,37 @@ state СИМУЛИРУЮТ кодовое решение будущих сесс
 from typing import Any
 
 import pytest
+from langgraph.checkpoint.memory import MemorySaver
 from langgraph.errors import GraphRecursionError
 
 from text_to_sql_agent.application.ports.llm_provider import BudgetExceededError, LLMRequestError
+from text_to_sql_agent.application.services.clarify_node import make_clarify_node
+from text_to_sql_agent.application.services.clarify_service import (
+    ClarifyOutcome,
+    ClarifyResult,
+)
 from text_to_sql_agent.application.services.stub_nodes import initial_state
 from text_to_sql_agent.application.use_cases.answer_question import AnswerQuestion, FSMResult
-from text_to_sql_agent.domain.entities import TERMINAL_OUTCOMES
+from text_to_sql_agent.domain.entities import TERMINAL_OUTCOMES, Assumption
 from text_to_sql_agent.orchestration.graph import RETRY_GATES, build_fsm_app
+from text_to_sql_agent.orchestration.interrupt_gate import LangGraphInterruptGate
 from text_to_sql_agent.orchestration.routing import (
+    FLAG_CLARIFICATION_NEEDED,
+    FLAG_PLAN_JOINS_CLARIFY,
+    FLAG_PLAN_JOINS_INVALID,
     LLM_NODES,
     MAX_NODE_RETRIES,
+    TRANSITION_FLAGS,
     FSMGuardCaps,
     attempts_used,
+    route_clarify,
+    route_plan_joins,
 )
-from text_to_sql_agent.orchestration.runner import RECURSION_LIMIT_ERROR_CLASS, LangGraphRunner
+from text_to_sql_agent.orchestration.runner import (
+    RECURSION_LIMIT_ERROR_CLASS,
+    LangGraphRunner,
+    build_fsm_runner,
+)
 
 QUESTION = "Сколько заказов у клиентов из РФ?"
 CAPS = FSMGuardCaps(max_llm_calls=8, budget_rub=2.0)
@@ -299,6 +316,160 @@ class TestBinderTransitionFlags:
         assert updates["route_flags"]["step_empty_keyset"] is True
 
 
+class TestClarifyRouting:
+    """Ветвление после clarify (S08/feat-008, rulings R1-R3): вопрос в state —
+    само-ребро interrupt-механики; флаг без вопроса — честный отказ; иначе —
+    план_joins. Ребро plan_joins -> clarify — равные кандидаты (FIX-009/R1)."""
+
+    def test_pending_question_loops_back_into_clarify(self) -> None:
+        assert route_clarify({"clarify_question": "Уточните период"}) == "clarify"
+
+    def test_flag_without_question_is_honest_clarification_terminal(self) -> None:
+        # Узел не смог сформулировать вопрос (LLM-сбой) — валидный исход (S00-8)
+        state = {"route_flags": {FLAG_CLARIFICATION_NEEDED: True}, "clarify_question": None}
+        assert route_clarify(state) == "terminal_clarification"
+
+    def test_neither_question_nor_flag_goes_to_plan_joins(self) -> None:
+        assert route_clarify({"route_flags": {}}) == "plan_joins"
+        assert route_clarify({"route_flags": {FLAG_CLARIFICATION_NEEDED: False}}) == "plan_joins"
+
+    def test_plan_joins_clarify_flag_routes_back_to_clarify(self) -> None:
+        # Равные кандидаты пути (S10 активирует) — повторный вход clarify
+        state = {"route_flags": {FLAG_PLAN_JOINS_CLARIFY: True, FLAG_PLAN_JOINS_INVALID: True}}
+        assert route_plan_joins(state) == "clarify"
+
+    def test_plan_joins_exhausted_still_wins_over_clarify(self) -> None:
+        state = {
+            "route_flags": {FLAG_PLAN_JOINS_CLARIFY: True, "plan_joins_exhausted": True},
+            "retry_count": 0,
+        }
+        assert route_plan_joins(state) == "terminal_fail"
+
+    def test_plan_joins_clarify_flag_is_one_shot_transition(self) -> None:
+        # Одноразовый переход (биндером гасится на ре-входе) — иначе после resume
+        # clarify стейл-True уводил бы прогон в clarify повторно
+        assert FLAG_PLAN_JOINS_CLARIFY in TRANSITION_FLAGS
+
+
+class _ScriptedClarifyService:
+    """Скриптовый clarify-сервис: один вердикт на прогон (LLM — мок, S00-7)."""
+
+    def __init__(self, result: ClarifyResult) -> None:
+        self._result = result
+        self.called = 0
+
+    def clarify(self, question: str, *, ctx: Any, permissions: Any) -> ClarifyResult:
+        self.called += 1
+        return self._result
+
+
+def _rights_passing_node(state: dict[str, Any]) -> dict[str, Any]:
+    # Минимальная подмена resolve_access: права в state, identity-флаг не ставится
+    return {"permissions": {"orders": ["*"]}, "graph_version": 0}
+
+
+class TestInterruptFlow:
+    """interrupt()/checkpointer (Task 2 S08, rulings R2/R3/R6): пауза -> resume
+    ТОГО ЖЕ прогона; TTL истёк -> clarification-терминал; misuse — fail, не
+    traceback. Checkpointer в unit — MemorySaver; живой Valkey — integration."""
+
+    def _runner(self, result: ClarifyResult) -> tuple[Any, _ScriptedClarifyService]:
+        service = _ScriptedClarifyService(result)
+        return (
+            build_fsm_runner(
+                caps=CAPS,
+                checkpointer=MemorySaver(),
+                deadline_s=90.0,
+                recursion_limit=50,
+                node_overrides={
+                    "resolve_access": _rights_passing_node,
+                    "clarify": make_clarify_node(service, LangGraphInterruptGate()),
+                },
+            ),
+            service,
+        )
+
+    def test_ambiguous_question_pauses_graph_with_marker(self) -> None:
+        runner, _ = self._runner(
+            ClarifyResult(outcome=ClarifyOutcome.CLARIFY, question="За какой период?")
+        )
+        final = runner.run(initial_state(QUESTION, user_id="u_analyst"), thread_id="t-int")
+        assert final["interrupted"] is True
+        assert final.get("outcome") is None  # не терминал — пауза (ruling R3)
+        assert final["clarify_question"] == "За какой период?"
+
+    def test_resume_same_thread_continues_same_run(self) -> None:
+        # Ловушка 2 S08: resume по тому же thread_id — ТОТ ЖЕ прогон (допущение
+        # user_answer в state, прогон доходит до done, не новый invocation)
+        runner, service = self._runner(
+            ClarifyResult(outcome=ClarifyOutcome.CLARIFY, question="За какой период?")
+        )
+        paused = runner.run(initial_state(QUESTION, user_id="u_analyst"), thread_id="t-same")
+        assert paused["interrupted"] is True
+        final = runner.resume("за 2026 год", thread_id="t-same")
+        assert final["outcome"] == "done"
+        assert final["interrupted"] is False
+        answers = [a for a in final["assumptions"] if a.source == "user_answer"]
+        assert [a.text for a in answers] == ["за 2026 год"]
+        # Классификация выполнялась РОВНО ОДИН раз (visit 1) — ruling R6:
+        # повторный LLM-вызов на resume недопустим
+        assert service.called == 1
+        assert final["visited_nodes"].count("clarify") == 2  # классификация + interrupt
+
+    def test_expired_session_synthesizes_clarification_terminal(self) -> None:
+        # TTL истёк (ruling R3): валидный clarification-исход, не исключение;
+        # state восстановить неоткуда — payload из question
+        runner, _ = self._runner(ClarifyResult(outcome=ClarifyOutcome.CLARIFY, question="Уточните"))
+        runner.run(initial_state(QUESTION, user_id="u_analyst"), thread_id="t-exp")
+        runner._app.checkpointer.delete_thread("t-exp")  # имитация истёкшего TTL
+        final = runner.resume("ответ", thread_id="t-exp", question=QUESTION)
+        assert final["outcome"] == "clarification"
+        assert final["interrupted"] is False
+        assert final["error"]["class"] == "clarify_session_expired"
+        assert final["question"] == QUESTION
+
+    def test_resume_without_interrupt_is_fail_not_crash(self) -> None:
+        # Resume по завершённому прогону — дефект протокола вызова; граница
+        # движка: fail-payload, не ValueError наружу
+        runner, _ = self._runner(ClarifyResult(outcome=ClarifyOutcome.UNAMBIGUOUS))
+        runner.run(initial_state(QUESTION, user_id="u_analyst"), thread_id="t-done")
+        final = runner.resume("ответ", thread_id="t-done")
+        assert final["outcome"] == "fail"
+        assert final["error"]["class"] == "resume_without_interrupt"
+
+    def test_interrupt_without_checkpointer_is_fail_not_traceback(self) -> None:
+        # Ловушка 1 S08: interrupt без checkpointer = GraphInterrupt наружу —
+        # раннер переводит в честный fail (misuse сборки)
+        service = _ScriptedClarifyService(
+            ClarifyResult(outcome=ClarifyOutcome.CLARIFY, question="Уточните")
+        )
+        runner = build_fsm_runner(
+            caps=CAPS,
+            checkpointer=None,  # сессии нет
+            deadline_s=90.0,
+            recursion_limit=50,
+            node_overrides={
+                "resolve_access": _rights_passing_node,
+                "clarify": make_clarify_node(service, LangGraphInterruptGate()),
+            },
+        )
+        final = runner.run(initial_state(QUESTION, user_id="u_analyst"))
+        assert final["outcome"] == "fail"
+        assert final["error"]["class"] == "interrupt_without_checkpointer"
+
+    def test_unambiguous_question_never_pauses(self) -> None:
+        runner, _ = self._runner(
+            ClarifyResult(
+                outcome=ClarifyOutcome.UNAMBIGUOUS,
+                assumptions=[Assumption(source="classifier", text="период — 2026")],
+            )
+        )
+        final = runner.run(initial_state(QUESTION, user_id="u_analyst"), thread_id="t-ok")
+        assert final["outcome"] == "done"
+        assert final["interrupted"] is False
+        assert [a.text for a in final["assumptions"]] == ["период — 2026"]
+
+
 class TestRunner:
     def test_recursion_limit_becomes_fail_outcome(self) -> None:
         # Второй предохранитель (ADR-002 §4): GraphRecursionError на границе
@@ -342,14 +513,18 @@ class _StubLLM:
 
 
 class _StubRunner:
-    """Двойник GraphRunner: возвращает заданный state или бросает."""
+    """Двойник GraphRunner: возвращает заданный state или бросает.
+
+    Сигнатура с ``thread_id`` — расширение порта ruling R3 ARCH-GATE S08
+    (interrupt-сессия; каркасные тесты его не передают).
+    """
 
     def __init__(self, outcome_state: dict[str, Any] | None = None, error: Exception | None = None):
         self.seen: list[dict[str, Any]] = []
         self.outcome_state = outcome_state
         self.error = error
 
-    def run(self, state: dict[str, Any]) -> dict[str, Any]:
+    def run(self, state: dict[str, Any], *, thread_id: str | None = None) -> dict[str, Any]:
         self.seen.append(dict(state))
         if self.error is not None:
             raise self.error

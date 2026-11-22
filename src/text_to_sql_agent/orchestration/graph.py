@@ -117,15 +117,20 @@ def build_fsm_app(
     *,
     tracer: Tracer | None = None,
     caps: FSMGuardCaps | None = None,
+    checkpointer: Any | None = None,
     node_overrides: Mapping[str, Callable[[State], dict[str, Any]]] | None = None,
 ) -> Any:
     """Собрать компилированный граф FSM (15 узлов канона + glue рёбер).
 
     ``caps`` — глобальные капы прогона; None — гвард капов не ставится
-    (тесты маршрутов без Settings). ``node_overrides`` — подмена заглушек
-    содержательными узлами (S05+: resolve_access и далее; сборка подмен —
-    только composition, граф не правится — биндер принимает любую функцию).
-    Сборка — только через composition (S00).
+    (тесты маршрутов без Settings). ``checkpointer`` — сессия interrupt-механики
+    (BaseCheckpointSaver: Valkey в composition, MemorySaver в юнит-тестах;
+    ruling R2 ARCH-GATE S08); None — граф без сессий (узлы без interrupt —
+    каркасные тесты; clarify-узел с interrupt БЕЗ checkpointer — misuse,
+    раннер переводит в fail, Ловушка 1 S08). ``node_overrides`` — подмена
+    заглушек содержательными узлами (S05+: resolve_access и далее; сборка
+    подмен — только composition, граф не правится — биндер принимает любую
+    функцию). Сборка — только через composition (S00).
     """
     graph: StateGraph = StateGraph(AgentState)
 
@@ -166,7 +171,7 @@ def build_fsm_app(
         graph.add_edge(terminal_name, END)
 
     graph.add_edge(START, "resolve_access")
-    return graph.compile()
+    return graph.compile(checkpointer=checkpointer)
 
 
 # Fuse пер-узла: MAX_NODE_RETRIES (routing.py) проверяют условные рёбра

@@ -91,6 +91,10 @@ EMPTY_RESPONSE_RETRIES = 2  # пустой/битый ответ ходы кап
 OBSERVATION_MAX_ROWS = 20  # компактный Observation в контексте модели; полный компакт — V4
 DEV_USER_ID = "cli-dev"  # identity вне скоупа MVP (DevTokenAuth — S05); CLI — dev-контур
 DEFAULT_ROLE = "mid"  # роль генерирующего узла по матрице (hw-01 §4.2, ADR-007)
+# Кап раундов уточнения в CLI interrupt-цикле (S08): классификатор даёт РОВНО
+# ОДИН вопрос за визит; повторные паузы возможны только через равных кандидатов
+# планера (S10) — кап = per-node предохранителю ≤3 (S00 стык 1)
+_FSM_CLARIFY_ROUNDS = 3
 # Наблюдение S13 (layer-3): reasoning-модель при temp 0 иногда печатает вызов тулa
 # Hermes-тегами в content вместо поля tool_calls (нередко после `</think>`-хвоста
 # reasoning). Парсинг тегов сознательно не делается — это роль шлюза; текст с тегом
@@ -727,16 +731,23 @@ def main(argv: list[str] | None = None) -> int:
         # Графовый драйвер создаётся при сборке контейнера (bolt, пул сокетов) —
         # CLI пока не использует пути (plan_joins — S09/V4), закрываем аккуратно
         container.graph_store.close()
+        # Checkpointer (S08): пул redis-соединений сессий interrupt; фейк в
+        # тестах может не иметь ни поля, ни close() — гигиена по наличию
+        checkpointer_close = getattr(getattr(container, "checkpointer", None), "close", None)
+        if callable(checkpointer_close):
+            checkpointer_close()
 
 
 def _run_fsm(container: Container, question: str, *, token: str) -> int:
-    """FSM-прогон (S04/S05): verify токена → порядок обхода узлов + исход.
+    """FSM-прогон (S04/S05/S08): verify токена → порядок обхода узлов + исход.
 
     Identity — только из проверенного токена (ADR-005, ruling R4 ARCH-GATE S05):
     AuthProvider.verify ДО graph.invoke, verified user_id кладётся в state;
     отказ аутентификации — вежливый отказ без LLM-вызова и деталей конфигурации
     (S9-политика). Порядок обхода — из state.visited_nodes (ruling R3), исход —
-    различимый payload FSMResult.outcome (state-agent v1.5).
+    различимый payload FSMResult.outcome (state-agent v1.5). Уточняющий вопрос
+    (interrupt — S08/feat-008): печатается и ждёт ответ со stdin; resume тем же
+    thread_id продолжает ТОТ ЖЕ прогон (S00 стык 1, ruling R6).
     """
     try:
         user_id = container.auth_provider.verify(token)
@@ -744,11 +755,24 @@ def _run_fsm(container: Container, question: str, *, token: str) -> int:
         print("Исход: rejected")
         print("Ошибка: " + str(exc))
         return 1
-    result = container.answer_question.run(question, user_id=user_id)
+    thread_id = uuid.uuid4().hex  # сессия checkpointer'а: run и resume — один id
+    result = container.answer_question.run(question, user_id=user_id, thread_id=thread_id)
+    for _ in range(_FSM_CLARIFY_ROUNDS):
+        if not result.paused:
+            break
+        print("Уточнение: " + (result.clarify_question or "(уточняющий вопрос)"))
+        answer = input("Ответ: ")
+        result = container.answer_question.resume(answer, thread_id=thread_id, question=question)
+    else:
+        # Защита презентационного слоя (FSM сам ограничен recursion_limit):
+        # кап раундов уточнения исчерпан — честный fail, не бесконечный ввод
+        print("Исход: fail")
+        print("Ошибка: превышено число раундов уточнения (" + str(_FSM_CLARIFY_ROUNDS) + ")")
+        return 1
     # ASCII-стрелка: при перенаправлении stdout в файл ru-Windows (cp1251)
     # « → » дал бы UnicodeEncodeError (ревью S04 M3)
     print("Маршрут: " + " -> ".join(result.visited_nodes))
-    print("Исход: " + result.outcome)
+    print("Исход: " + str(result.outcome))
     error = result.state.get("error")
     if error:
         # Сообщение отказа — фиксированный текст узла (S9): деталей настройки

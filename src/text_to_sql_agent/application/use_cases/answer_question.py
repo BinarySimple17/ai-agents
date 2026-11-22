@@ -7,11 +7,18 @@ LangGraph знает только orchestration), эксплуатационны
 терминальные исходы, не traceback (S00 правило 8; ADR-007 M6 — деградацию решает
 FSM, не провайдер).
 
+Приостановка (S08/feat-008, rulings R3/R6 ARCH-GATE): уточняющий вопрос —
+``interrupt()`` + checkpointer (S00 стык 1); ``run`` возвращает FSMResult с
+``outcome=None`` (пауза, вопрос в state.clarify_question); ``resume`` с тем же
+``thread_id`` продолжает ТОТ ЖЕ прогон — reset бюджета НЕ делается (капы
+персистятся в checkpointer'е), дедлайн обработки перевзводит раннер.
+
 Движковые предохранители (per-node ≤ 3, recursion_limit, глобальные капы)
 реализованы в orchestration/routing.py + orchestration/runner.py — use case
 получает готовый исход.
 """
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -30,10 +37,24 @@ BUDGET_STOP_MESSAGE_TEMPLATE = "исчерпан бюджет прогона: {e
 
 @dataclass(frozen=True, slots=True)
 class FSMResult:
-    """Результат прогона FSM: различимый исход + финальный state (payload наружу)."""
+    """Результат прогона FSM: различимый исход + финальный state (payload наружу).
 
-    outcome: TerminalOutcome
+    ``outcome=None`` — прогон приостановлен interrupt()-ом (ruling R3 ARCH-GATE
+    S08): вопрос в state.clarify_question, продолжение — ``resume`` тем же
+    thread_id.
+    """
+
+    outcome: TerminalOutcome | None
     state: dict[str, Any]
+
+    @property
+    def paused(self) -> bool:
+        """Прогон приостановлен: ждёт ответ пользователя (interrupt-механика S08)."""
+        return self.outcome is None
+
+    @property
+    def clarify_question(self) -> str | None:
+        return self.state.get("clarify_question")
 
     @property
     def visited_nodes(self) -> list[str]:
@@ -51,25 +72,50 @@ class AnswerQuestion:
         self._runner = runner
         self._llm = llm
 
-    def run(self, question: str, *, user_id: str = "") -> FSMResult:
+    def run(self, question: str, *, user_id: str = "", thread_id: str | None = None) -> FSMResult:
         """Прогнать вопрос через FSM: reset бюджета → invoke → исход.
 
         ``user_id`` — verified identity (ruling R4 ARCH-GATE S05): точка входа
         проверяет токен через `AuthProvider.verify` ДО прогона; пусто — узел
         resolve_access fail-closed → rejected (прогон не начинается без identity).
+        ``thread_id`` — сессия checkpointer'а (interrupt/resume); None — раннер
+        генерирует сам (одноразовый прогон без продолжения).
         """
         # Обязательство S03: прогон начинает запрос с нуля — аккумулятор прошлого
         # прогона ложно уменьшил бы остаток для эскалаций M1 (ruling Q7 S09)
         self._llm.reset_request_budget()
         state: AgentState = initial_state(question, user_id)
+        return self._invoke(
+            lambda: self._runner.run(state, thread_id=thread_id), fallback_state=state
+        )
+
+    def resume(self, answer: str, *, thread_id: str, question: str | None = None) -> FSMResult:
+        """Продолжить приостановленный прогон ответом (тот же thread — тот же прогон).
+
+        БЕЗ reset_request_budget: капы бюджета персистятся в checkpointer'е
+        (ruling R6 ARCH-GATE S08 — «ответ пользователя резюмирует тот же прогон»);
+        ``question`` — для clarification-payload при истёкшем TTL сессии (R3).
+        """
+        fallback = initial_state(question or "", "")
+        return self._invoke(
+            lambda: self._runner.resume(answer, thread_id=thread_id, question=question),
+            fallback_state=fallback,
+        )
+
+    def _invoke(
+        self, call: Callable[[], dict[str, Any]], *, fallback_state: dict[str, Any]
+    ) -> FSMResult:
         try:
-            final = self._runner.run(state)
+            final = call()
         except BudgetExceededError as exc:
             # Кап бюджета сработал до вызова шлюза (S03-адаптер) — budget_stop
-            return _with_error("budget_stop", state, BUDGET_STOP_MESSAGE_TEMPLATE, exc)
+            return _with_error("budget_stop", fallback_state, BUDGET_STOP_MESSAGE_TEMPLATE, exc)
         except LLMProviderError as exc:
             # Недоступность шлюза (ретраи/breaker/таймаут) — деградация-исход
-            return _with_error("degrade", state, DEGRADE_MESSAGE_TEMPLATE, exc)
+            return _with_error("degrade", fallback_state, DEGRADE_MESSAGE_TEMPLATE, exc)
+        if final.get("interrupted"):
+            # Приостановка — не терминал: вопрос ждёт ответа (ruling R3 S08)
+            return FSMResult(outcome=None, state=final)
         outcome = final.get("outcome")
         if outcome not in TERMINAL_OUTCOMES:
             # Движок обязан вернуть терминальный payload (GraphRunner.run);

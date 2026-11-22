@@ -11,6 +11,8 @@ execute_step; в диаграмме v1.4 входящие ребра не нар
 Политика ретраев M1 (D-016, ADR-007 §4.1): инкремент ``retry_count`` — кодом
 ребра ретрая (гейт-узлы graph.py), fuse ≤ 3 — здесь; эскалацию tier'ом назначает
 код из того же счётчика (роль попытки узел берёт из state — S00 стык 2).
+Рёбра clarify (само-ребро interrupt) и plan_joins → clarify — state-agent v1.6
+(FIX-009, ruling R1 ARCH-GATE S08).
 """
 
 import time
@@ -27,6 +29,7 @@ FLAG_CLARIFICATION_NEEDED = "clarification_needed"  # clarify (S08)
 FLAG_IDENTITY_FAILED = "identity_failed"  # resolve_access (S05) → rejected
 FLAG_PLAN_JOINS_INVALID = "plan_joins_invalid"  # plan_joins: ретрай по M1
 FLAG_PLAN_JOINS_EXHAUSTED = "plan_joins_exhausted"  # plan_joins → fail
+FLAG_PLAN_JOINS_CLARIFY = "plan_joins_clarify"  # планер: равные кандидаты → clarify (S10, FIX-009)
 FLAG_T1_DECOMPOSE = "t1_decompose"  # порог T1 (feat-017) — код, не модель
 FLAG_QUERY_PLAN_VALID = "query_plan_valid"  # plan_query: False → откат к одиночному SQL
 FLAG_VALIDATE_HALLUCINATION = "validate_hallucination"  # validate_sql: галлюцинация → retry
@@ -45,7 +48,7 @@ FLAG_RETRY_TARGET = "retry_target"  # гейт: чей счётчик ретра
 
 # Одноразовые флаги перехода (шаговый цикл): описывают завершённый переход,
 # а не вердикт узла — на ре-входе в узел гасятся биндером (graph.py), иначе
-# каркас зациклился бы на стейл-флаге. Решенческие флаги (вердикты узлов)
+# каркас зациклился бы на стейл-флаге. Решенческие флаги (вердикт узла)
 # не гасятся — их узел перерешает сам при ре-входе.
 TRANSITION_FLAGS: frozenset[str] = frozenset(
     {
@@ -55,6 +58,8 @@ TRANSITION_FLAGS: frozenset[str] = frozenset(
         FLAG_STEP_KEYSET_OVERFLOW,
         FLAG_PROBE_LOST_JOIN,  # вердикт пробы (S14) — одноразовый: стейл-True
         # после ретрая уводил бы следующий прогон в diagnose_error мимо пробы
+        FLAG_PLAN_JOINS_CLARIFY,  # переход планер → clarify (S08/S10): одноразовый —
+        # иначе после resume clarify флаг уводил бы прогон в clarify повторно
     }
 )
 
@@ -128,26 +133,37 @@ def route_resolve_access(state: State) -> str:
 
 
 def route_clarify(state: State) -> str:
-    """clarify → clarification (уточняющий вопрос) | plan_joins (допущения есть).
+    """clarify → clarify (само-ребро interrupt) | clarification | plan_joins.
 
-    Уточнение — валидный исход (ADR-002); interrupt()+checkpointer — S08, в
-    каркасе — терминал clarification по флагу заглушки.
+    Приоритет причин (rulings R1–R3 ARCH-GATE S08): вопрос сформулирован
+    (вердикт классификатора ИЛИ равные кандидаты планера — S10) → само-ребро
+    clarify → clarify: ре-вход узла вызывает interrupt() — пауза до ответа
+    пользователя (checkpointer, TTL 10 мин); после resume узел пишет допущения
+    и чистит вопрос → план_joins. Флаг БЕЗ вопроса — честный отказ (узел не
+    смог сформулировать вопрос — LLM-сбой, S00-8): терминал clarification.
+    Заглушка S04 (флаг False) — план_joins.
     """
+    if state.get("clarify_question"):
+        return "clarify"  # само-ребро: interrupt-механика (visit 2) — R1/R2
     if (state.get("route_flags") or {}).get(FLAG_CLARIFICATION_NEEDED):
         return "terminal_clarification"
     return "plan_joins"
 
 
 def route_plan_joins(state: State) -> str:
-    """plan_joins → build_skeleton | plan_query (T1) | ретрай | fail.
+    """plan_joins → build_skeleton | plan_query (T1) | clarify (равные кандидаты) | ретрай | fail.
 
     Fuse «per-node ≤ 3 попыток» (S00 стык 1) срабатывает раньше флага ретрая;
-    флаг exhausted — решение узла (M1: «попытки исчерпаны»).
+    флаг exhausted — решение узла (M1: «попытки исчерпаны»). Ребро
+    plan_joins → clarify — равные кандидаты пути (hw-01 §4.2; FIX-009: ребро
+    закладывается S08 по прецеденту «ветки в каркасе», активирует S10).
     """
     flags = state.get("route_flags") or {}
     exhausted = attempts_used(state, "plan_joins") >= MAX_NODE_RETRIES
     if flags.get(FLAG_PLAN_JOINS_EXHAUSTED) or exhausted:
         return "terminal_fail"
+    if flags.get(FLAG_PLAN_JOINS_CLARIFY):
+        return "clarify"  # равные кандидаты → уточнение (interrupt, S08/S10)
     if flags.get(FLAG_PLAN_JOINS_INVALID):
         return "retry_plan_joins"  # гейт: инкремент кодом ребра → plan_joins
     if flags.get(FLAG_T1_DECOMPOSE):

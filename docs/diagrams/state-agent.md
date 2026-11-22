@@ -1,6 +1,6 @@
 # State Diagram — агент Text-to-SQL (FSM)
 
-- **Статус:** каноническая схема v1.5 (2026-11-21 — FIX-008 (canon-check S04): входящие рёбра терминалов `overflow`/`short_circuit` — шаговый цикл execute_sql по hw-01 §3.5.4 (в v1.4 терминалы были без входящих рёбер); шаговый цикл: явное ребро `merge_results → generate_step_sql` по флагу steps_pending. v1.4 — 2026-11-18: ретрай шага декомпозиции — явное ребро `diagnose_error → generate_step_sql` (ретраится упавший шаг, не весь план); T2: approximate/matview — через `compact_result → interpret_result` с флагом `approximate`, async/отказ — терминал. v1.3 — состав 15 узлов = hw-01 §2.1, M1, recursion_limit, T2 → degraded_out; v1.2 — валидация JoinPlan; v1.1 — ревизия 02)
+- **Статус:** каноническая схема v1.6 (2026-11-22 — FIX-009/ruling R1 ARCH-GATE S08: ребро `plan_joins → clarify` (равные кандидаты пути — hw-01 §4.2; в v1.5 ребро не рисовалось, канон-текст против диаграммы); clarify-механика interrupt: само-ребро `clarify → clarify` (вопрос сформулирован → пауза), `clarify → clarification` — отказ при несформулированном вопросе, TTL-истёк — clarification исходом от раннера. v1.5 — FIX-008: входящие рёбра overflow/short_circuit, цикл merge_results → generate_step_sql; v1.4 — 2026-11-18: ретрай шага декомпозиции — явное ребро `diagnose_error → generate_step_sql` (ретраится упавший шаг, не весь план); T2: approximate/matview — через `compact_result → interpret_result` с флагом `approximate`, async/отказ — терминал. v1.3 — состав 15 узлов = hw-01 §2.1, M1, recursion_limit, T2 → degraded_out; v1.2 — валидация JoinPlan; v1.1 — ревизия 02)
 - **Требования prd.md:** FR-1…FR-14; переходы контролирует код — модель не может перепрыгнуть валидацию или уйти из цикла (ADR-002)
 - **Связанные:** ADR-002 (recursion_limit — второй предохранитель), ADR-004 (ветка декомпозиции, T2-исходы), ADR-005 (degrade vs diagnose), ADR-006 (JoinPlan по `edge_id`), ADR-007 (политика ретраев M1), ADR-009 (кэш); c4-l3-agent.md (компоненты узлов), sequence-query.md (интерактивный путь целиком)
 
@@ -10,10 +10,12 @@ stateDiagram-v2
     resolve_access --> clarify: права + graph_version в state (scope)
     resolve_access --> rejected: identity не проверена — fail-closed
 
-    clarify --> clarification: неоднозначен или равные кандидаты пути → уточняющий вопрос (interrupt(), сессия в checkpointer, TTL 10 мин)
-    clarification --> [*]: ответ пользователя резюмирует тот же прогон — валидный результат
-    clarify --> plan_joins: допущения зафиксированы
+    clarify --> clarify: неоднозначный вердикт (qwen/cheap) → РОВНО ОДИН уточняющий вопрос → interrupt() (сессия в checkpointer, TTL 10 мин); ответ пользователя резюмирует тот же прогон
+    clarify --> clarification: вопрос сформулировать не удалось (сбой классификации) — честный отказ (S00-8)
+    clarification --> [*]: валидный результат (TTL сессии истёк — тот же исход синтезирует раннер, ruling R3 S08)
+    clarify --> plan_joins: допущения зафиксированы (вердикт классификатора + ответ пользователя)
 
+    plan_joins --> clarify: равные кандидаты пути → уточняющий вопрос (ребро FIX-009; активирует S10)
     plan_joins --> build_skeleton: k взвешенных путей + ранжирование топ-5 → JoinPlan (edge_id рёбер)
     plan_joins --> plan_query: T1 (≥ 4 таблиц или ≥ 3 хопов)
     plan_joins --> plan_joins: план невалиден, попытка 2 — та же модель + текст ошибки (M1)
@@ -90,9 +92,17 @@ stateDiagram-v2
   `short_circuit` («данных нет»), `overflow` (кап кардинальности), `fail` и
   `degraded_out` (уточняющий вопрос / T2-исход), `rejected` (identity),
   `budget_stop` (кап 2 ₽).
-- **Clarify — `interrupt()` + checkpointer (TTL 10 мин):** уточняющий вопрос
-  приостанавливает граф, сессия живёт в checkpointer (Valkey), ответ пользователя
-  резюмирует тот же прогон; TTL истёк — прогон завершается `clarification`-исходом.
+- **Clarify — `interrupt()` + checkpointer (TTL 10 мин, v1.6):** неоднозначный
+  вердикт классификатора (qwen/cheap) или равные кандидаты планера → РОВНО ОДИН
+  уточняющий вопрос фиксируется в state (`clarify_question`) → само-ребро
+  `clarify → clarify` → ре-вход узла вызывает `interrupt()` — пауза; сессия живёт
+  в checkpointer (Valkey, TTL 10 мин), ответ пользователя резюмирует ТОТ ЖЕ прогон
+  (тот же thread; капы персистятся, дедлайн обработки перевзводится — ruling R6
+  S08) и становится допущением `user_answer`. TTL истёк — прогон завершается
+  `clarification`-исходом (синтез раннера, ruling R3 S08), не исключением.
+  Ребро `plan_joins → clarify` — равные кандидаты пути (FIX-009; активирует S10).
+  Узел не смог сформулировать вопрос (LLM/retrieval сбой) — `clarification`-терминал
+  честным отказом (флаг без вопроса, S00-8).
 - **Контракт `budget_stop` — неполное не выдаётся за полное.** Бюджет-гuard
   проверяется до каждого LLM-вызова; в диаграмме показана плановая точка
   (`check_cost`). При срабатывании: без `interpret_result` над неполными
@@ -143,4 +153,4 @@ stateDiagram-v2
 
 ## Трассировка
 
-Ревизии: v1.5 (FIX-008: входящие рёбра overflow/short_circuit, цикл merge_results → generate_step_sql) · v1.4 (ретрай шага, T2: approximate/matview через interpret_result) · Связанные ADR: ADR-002, ADR-004, ADR-005, ADR-006, ADR-007, ADR-009 · Канон: hw-01/README.md §2, §3.1, §6
+Ревизии: v1.6 (FIX-009/R1 S08: ребро plan_joins → clarify, clarify-механика interrupt — само-ребро, TTL-истёк через раннер) · v1.5 (FIX-008: входящие рёбра overflow/short_circuit, цикл merge_results → generate_step_sql) · v1.4 (ретрай шага, T2: approximate/matview через interpret_result) · Связанные ADR: ADR-002, ADR-004, ADR-005, ADR-006, ADR-007, ADR-009 · Канон: hw-01/README.md §2, §3.1, §6

@@ -24,6 +24,14 @@ EVENT_GRAPH_NODE = "graph.node"  # FSM: содержательный узел в
 # FSM resolve_access: сбой чтения прав — деталь сбоя оператору (JSONL), не
 # пользователю (S9/ревью S05 Important-1: отказ в state — фиксированный текст)
 EVENT_RESOLVE_RIGHTS_UNAVAILABLE = "resolve.rights_unavailable"
+# FSM clarify (S08): вердикт классификатора + приостановка на уточняющем вопросе
+# (interrupt + checkpointer; оператору — сцена «вопрос ждёт ответа» и провенанс
+# допущений; payload не содержит LLM-текст вопроса целиком — он в state/CLI)
+EVENT_CLARIFY_VERDICT = "clarify.verdict"
+EVENT_CLARIFY_INTERRUPT = "clarify.interrupt"
+# FSM clarify (S08): сбой классификации (LLM/retrieval) — деталь сбоя оператору
+# (JSONL), не пользователю (S9-политика — прецедент resolve.rights_unavailable)
+EVENT_CLARIFY_UNAVAILABLE = "clarify.unavailable"
 
 # BL-004 (требование владельца): результат тулa показывается строками данных,
 # хоть обрезанными; единый контракт эмиссии (apps.cli) и рендера (ConsoleTracer)

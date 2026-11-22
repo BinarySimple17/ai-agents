@@ -147,6 +147,13 @@ class Settings(BaseSettings):
     # предел — fsm_max_llm_calls (без LLM-вызова узел не ретраится содержательно).
     fsm_recursion_limit: int = Field(default=50, gt=0)
 
+    # --- Сессия уточнения (S08/feat-008; S00 стык 1, ruling R2 ARCH-GATE) ---
+    # TTL сессии interrupt/resume в Valkey (чекпоинты clarify-прогона). Канон —
+    # 10 мин: брошенная сессия исчезает сама, ответ после истечения — валидный
+    # clarification-исход (ruling R3), не исключение. Инъекция короткого
+    # значения — integration-тесты (Ловушка 5 S08: не спать 10 минут).
+    clarify_session_ttl_s: int = Field(default=600, gt=0)
+
     # --- Цены ролей (₽/1М токенов, вход/выход; model-card; дрейф цен — R-C1) ---
     model_cheap_price_in: float = Field(ge=0)
     model_cheap_price_out: float = Field(ge=0)
