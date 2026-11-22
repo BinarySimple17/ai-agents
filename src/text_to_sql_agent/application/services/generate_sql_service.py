@@ -243,10 +243,10 @@ def _validate_fill_structure(field: str, text: str) -> None:
 
     Текст модели — НЕ доверенный: парсим поле в контексте пробного SELECT
     (диалект postgres) и отклоняем → ретрай M1: ошибки парсинга, JOIN,
-    подзапросы, UNION/INTERSECT/EXCEPT (модель не пишет структуры SQL — только
-    содержимое 4 секций). Лексический барьер (комментарии/«;»/скобки) —
-    ``domain.skeleton.validate_fill_text``, вызывается assemble_sql; здесь —
-    структурный уровень, полная валидация — S11.
+    подзапросы, UNION/INTERSECT/EXCEPT/INTO (модель не пишет структуры SQL —
+    только содержимое 4 секций; INTO — DDL-класс, re-review I-r1). Лексический
+    барьер (комментарии/«;»/скобки) — ``domain.skeleton.validate_fill_text``,
+    вызывается assemble_sql; здесь — структурный уровень, полная валидация — S11.
     """
     if not text.strip():
         return
@@ -278,8 +278,8 @@ def _validate_fill_structure(field: str, text: str) -> None:
     ]
     if nested or forbidden:
         raise ValueError(
-            f"поле {field} содержит структуру SQL (подзапрос/JOIN/UNION) — модель "
-            "наполняет только содержимое секций; FROM/JOIN/ON фиксированы скелетом"
+            f"поле {field} содержит структуру SQL (подзапрос/JOIN/UNION/INTO) — "
+            "модель наполняет только содержимое секций; FROM/JOIN/ON фиксированы скелетом"
         )
 
 
@@ -380,7 +380,7 @@ class GenerateSqlService:
         if first_visit:
             attempt_numbers = range(1, MAX_ATTEMPTS + 1)
         else:
-            attempt_numbers = range(max(start_attempt, 1), max(start_attempt, 1) + 1)
+            attempt_numbers = (max(start_attempt, 1),)  # ровно одна попытка визита
         for attempt in attempt_numbers:
             if attempt == ESCALATION_ATTEMPT and role != ROLE_UP[role]:
                 # Эскалация — только вверх и только при остатке бюджета с

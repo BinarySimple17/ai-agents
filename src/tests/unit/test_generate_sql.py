@@ -658,8 +658,8 @@ class TestGenerateSqlService:
         )
         assert visit3.outcome == GenerateSqlOutcome.SQL
         assert visit3.llm_calls == 1
-        # Суммарно по узлу: визит 1 (успех, 1) + визит 2 (1) + визит 3 (1) = 3 ≤ 3
-        assert visit2.llm_calls + visit3.llm_calls == 2  # + 1 первого визита
+        # Ревью-2 M3: первый визит не участвует в этом тесте — проверены
+        # ровно-по-одному вызовы визитов 2 и 3 (суммарный кап = M1-лесенка)
         assert [c[0] for c in llm.calls] == ["mid", "strong"]  # 2-я попытка mid, 3-я strong
 
     def test_llm_provider_error_is_honest_fail(self) -> None:
@@ -1020,6 +1020,7 @@ class TestGenerateSqlNode:
         assert seen["skeleton"].from_table == "orders"
         assert seen["start_attempt"] == 1  # попытка 1 — вне FSM-ретрая
         assert seen["last_sql"] is None
+        assert seen["last_error"] is None  # M2: затерявшийся error не сеется
 
     def test_fsm_retry_context_is_seeded_from_state(self) -> None:
         # I3 (ревью S10): FSM-ретрай (гейт S14) инкрементирует retry_count —
