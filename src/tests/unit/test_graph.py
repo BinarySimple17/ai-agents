@@ -591,6 +591,22 @@ class TestInterruptStoreFailure:
         assert final["error"]["class"] == "checkpoint_unavailable"
         assert "127.0.0.1" not in final["error"]["message"]
 
+    def test_value_error_on_resume_is_honest_engine_error(self, monkeypatch) -> None:
+        # Re-review M-r2 (Minor-8): остаточный ValueError движка — engine_error,
+        # НЕ маскируется под resume_without_interrupt (тот случай — гвард tasks)
+        runner = self._runner(MemorySaver())
+        paused = runner.run(initial_state(QUESTION, user_id="u_analyst"), thread_id="t-ve")
+        assert paused["interrupted"] is True
+
+        def broken_invoke(*args: Any, **kwargs: Any) -> Any:
+            raise ValueError("канал не принял обновление дедлайна")
+
+        monkeypatch.setattr(runner._app, "invoke", broken_invoke)
+        final = runner.resume("ответ", thread_id="t-ve", question=QUESTION)
+        assert final["outcome"] == "fail"
+        assert final["error"]["class"] == "engine_error"
+        assert "канал не принял" in final["error"]["message"]
+
 
 class TestRunner:
     def test_recursion_limit_becomes_fail_outcome(self) -> None:
@@ -707,11 +723,31 @@ class TestAnswerQuestion:
         # Ревью S08 Important-1: пауза с ненаружным thread_id — тупик (resume
         # нечем вызвать); use case генерирует id сам и ВОЗВРАЩАЕТ его
         llm = _StubLLM()
-        use_case = AnswerQuestion(runner=_StubRunner(), llm=llm)
+        paused_state = {"interrupted": True, "clarify_question": "Уточните"}
+        use_case = AnswerQuestion(runner=_StubRunner(paused_state), llm=llm)
         result = use_case.run(QUESTION)  # thread_id не передан
+        assert result.paused is True  # реальная пауза (маркер раннера в payload)
         assert result.thread_id, "FSMResult.thread_id пуст — resume нечем вызвать"
         runner = use_case._runner  # noqa: SLF001
         assert isinstance(runner, _StubRunner)
         assert runner.resumed == []  # сам resume не вызывался
-        use_case.resume("ответ", thread_id=result.thread_id)
+        resumed = use_case.resume("ответ", thread_id=result.thread_id)
         assert runner.resumed[0][1] == result.thread_id  # тот же id — тот же прогон
+        assert resumed.thread_id == result.thread_id  # инвариант поля и на resume
+
+    def test_repaused_resume_carries_same_thread_id(self) -> None:
+        # Ревью S08 re-review Minor-1: resume может снова приостановиться
+        # (ребро plan_joins → clarify, S10) — thread_id сохраняется, иначе
+        # второй раунд был бы непродолжаем
+        llm = _StubLLM()
+        runner = _StubRunner()
+        runner.resume = (  # type: ignore[method-assign]
+            lambda answer, *, thread_id, question=None: {
+                "interrupted": True,
+                "clarify_question": "Равные кандидаты: X или Y?",
+            }
+        )
+        use_case = AnswerQuestion(runner=runner, llm=llm)
+        result = use_case.resume("ответ", thread_id="t-second")
+        assert result.paused is True
+        assert result.thread_id == "t-second"

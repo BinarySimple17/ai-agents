@@ -148,8 +148,22 @@ uv run pytest src/tests/unit/test_graph.py src/tests/unit/test_clarify.py -q   #
 ## Отчёт по сессии (заполняется по факту)
 
 - Сделано:
-  - [Task: что реально сделано, коммиты, число тестов/ассертов, live-прогон]
+  - ARCH-GATE: canon-check архитектора → verdict needs-decision → rulings R1–R7 закрыты до кода (ложная посылка плана о ребре plan_joins→clarify — FIX-009; кастомный checkpointer без новой зависимости; расширение порта GraphRunner; схема допущений; капы vs interrupt; тул-механизм ADR-008).
+  - Task 1 (commit c4ab67a): ClarifyService — тул record_clarification (ADR-008 слой 2), pydantic ClarifyVerdict (РОВНО ОДИН вопрос при неоднозначности; вопрос запрещён при однозначности; допущения ≤ 5 непустые), ретраи M1/D-016 (cheap→cheap+ошибка→mid при остатке ≥ 0,6 ₽ — шов ruling Q7), retrieval-нога fail-closed, NOISE-дистракторы не в промпте.
+  - Task 2 (c4ab67a): interrupt-механика — clarify_node (visit 1 классификация / visit 2 interrupt без LLM — ruling R6), InterruptGate-порт + LangGraphInterruptGate (orchestration glue), ValkeyCheckpointer (custom BaseCheckpointSaver на redis-py — ruling R2, зеркало MemorySaver, TTL 10 мин), build_fsm_app(checkpointer=...), LangGraphRunner run/resume (R3: маркер interrupted, TTL-истёк → clarification, гварды Ловушек 1/2, граница CheckpointStoreError — I2 fix), GraphRunner порт run/resume, answer_question FSMResult.paused/thread_id/resume (I1 fix), CLI interrupt-цикл (EOF-safe — M6a), Settings.clarify_session_ttl_s, Assumption VO (R5), AgentState +3 поля (clarify_question/trace_id/interrupted), composition checkpointer + clarify-override (+инъекция clarify_service для тестов).
+  - Task 3 (c4ab67a): routing — FLAG_PLAN_JOINS_CLARIFY (одноразовый TRANSITION_FLAG) + ветка plan_joins → clarify (FIX-009), route_clarify: вопрос → само-ребро / флаг без вопроса → terminal_clarification / иначе plan_joins; диаграмма state-agent v1.6.
+  - Fix-волна (fdc65e0): I1 FSMResult.thread_id, I2 CheckpointStoreError-граница, I3 R6-регрессы (перевзвод дедлайна bite-проверен, персист капов) + 8 миноров (M4 payload+docs, M5 Any, M6a EOF, M6b пустой вопрос, M8 engine_error, M9 10 unit сейвера на фейк-redis, M10 комментарий, M11 ARCHITECTURE) + BL-015 (M7).
+  - Тесты: 461 unit + 18 integration (12 resolve_access + 6 clarify); make check EXIT=0.
+  - layer-3 live: «Статистика» → уточняющий вопрос на stdout → ответ stdin → маршрут resolve_access → clarify → clarify → plan_joins → … → done (тот же прогон, само-ребро в visited_nodes); clarify.interrupt в трейсе — одно событие на паузу {thread_id, user_id, question}; три неоднозначных сценария подряд; однозначный вопрос — прямой done без паузы.
 - Отклонения от плана:
-  - [что сделали не так, как в задаче, и почему; каждое отклонение — осознанное]
+  - Событие clarify.interrupt пишет раннер, не узел (план не оговаривал): resume-визит ре-исполняет узел с начала — узел писал бы событие дважды за раунд; одно событие на фактическую паузу — LangGraphRunner._as_result.
+  - interrupt() БЕЗ checkpointer в LangGraph 1.x не бросает исключение (invoke возвращает непродолжаемую паузу) — Ловушка 1 плана («GraphInterrupt наружу») уточнена: раннер переводит такую паузу в fail (interrupt_without_checkpointer).
+  - resume по завершённому/не-приостановленному thread: LangGraph молча начал бы НОВЫЙ прогон (Ловушка 2) — раннер гвардит через snapshot.tasks и отдаёт fail resume_without_interrupt.
+  - Port-модуль application/ports/checkpointer.py содержит только ошибку стыка (CheckpointStoreError): контракт сейвера задан LangGraph (BaseCheckpointSaver), дублировать Protocol не нужно (решение fix-волны I2).
+  - clarify_service при budget_seam=None эскалирует БЕЗ проверки (прецедент plan_joins/ruling Q7 fallback) — не отказ, как предположил черновик теста.
 - Перенесено в другие сессии:
-  - [ID сессии — что перенесено и почему; если в беклог — BL-NN-файл в solution/backlog/ (см. backlog/README.md)]
+  - S10 — FSM-подключение plan_joins (активирует ребро plan_joins → clarify; планер обязан писать clarify_question вместе с FLAG_PLAN_JOINS_CLARIFY, иначе clarify выполнит повторную классификацию — карта владения).
+  - S15 (BudgetGuard) — ₽-аккумулятор в state.budget_used.rub остаётся каркасным (учёт только llm_calls — как в каркасе S04).
+  - S16 — assumptions в ключе кэша (VO готов — сверка по {source, text}).
+  - solution/backlog/BL-015 — унификация политики эскалации M1 (дубль 0,6 ₽/ROLE_UP в plan_joins/clarify; при S10 — не откладывать).
+

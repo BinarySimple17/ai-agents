@@ -147,6 +147,7 @@ best-effort — сбой приёмника не рвёт запрос). Сбо�
 | `clarify.verdict` | user_id, outcome, assumptions | FSM (S08/feat-008): вердикт классификатора однозначности (unambiguous/clarify/fail) + число допущений — сцена «как вопрос был классифицирован»; константа — порт Tracer (EVENT_CLARIFY_VERDICT) |
 | `clarify.interrupt` | thread_id, user_id, question | FSM (S08/feat-008): прогон приостановлен уточняющим вопросом (interrupt + checkpointer Valkey TTL 10 мин) — сцена «вопрос ждёт ответа» для разбора интеракций; пишет РАННЕР (факт паузы — один на приостановку; resume-визит узла ре-исполняется); константа — порт Tracer (EVENT_CLARIFY_INTERRUPT) |
 | `clarify.unavailable` | user_id, detail | FSM (S08/feat-008): сбой классификации (LLM/retrieval) — деталь оператору в JSONL, не пользователю; отказ в state — фиксированный текст (S9 — прецедент resolve.rights_unavailable); константа — порт Tracer (EVENT_CLARIFY_UNAVAILABLE) |
+| `checkpoint.unavailable` | detail | FSM (S08/feat-008, ревью Important-2): сбой хранилища сессий (Valkey — put/get_state на пути interrupt/resume) — деталь оператору в JSONL, не пользователю (фиксированный текст в fail-payload, S9); раннер переводит в валидный fail-исход; константа — порт Tracer (EVENT_CHECKPOINT_UNAVAILABLE) |
 
 S25 (feat-020): mode `agent` — объединённый контур (retrieval + тул run_sql +
 стрим ходов), `tool_loop` — голый тул-контур ДЗ-02 за флагом `--plain`;

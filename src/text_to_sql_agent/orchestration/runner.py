@@ -265,15 +265,24 @@ class LangGraphRunner:
                 },
             }
         except ValueError as exc:
-            # Command(resume) по thread без pending interrupt (LangGraph) —
-            # дефект протокола вызова, наружу не проходит (граница движка)
+            # Ревью S08 Minor-8 (re-review M-r2): узко не сужается (текст движка —
+            # контракт без типизированного класса) — честный engine_error с
+            # деталью, НЕ выдаётся за resume_without_interrupt (тот случай ловит
+            # гвард tasks выше); деталь — операторскому трейсу
+            if self._tracer is not None:
+                self._tracer.record(
+                    Trace(
+                        event=EVENT_CHECKPOINT_UNAVAILABLE,
+                        payload={"detail": f"{type(exc).__name__}: {exc}"},
+                    )
+                )
             return {
                 **base,
                 "outcome": "fail",
                 "interrupted": False,
                 "error": {
-                    "class": RESUME_NO_INTERRUPT_CLASS,
-                    "message": RESUME_NO_INTERRUPT_MESSAGE + f" ({exc})",
+                    "class": ENGINE_ERROR_CLASS,
+                    "message": f"{type(exc).__name__}: {exc}",
                 },
             }
         return self._as_result(final, thread_id=thread_id)

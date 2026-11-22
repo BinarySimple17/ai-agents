@@ -90,8 +90,9 @@ class AnswerQuestion:
         self._llm.reset_request_budget()
         state: AgentState = initial_state(question, user_id)
         tid = thread_id or uuid4().hex
-        result = self._invoke(lambda: self._runner.run(state, thread_id=tid), fallback_state=state)
-        return FSMResult(outcome=result.outcome, state=result.state, thread_id=tid)
+        return self._invoke(
+            lambda: self._runner.run(state, thread_id=tid), fallback_state=state, thread_id=tid
+        )
 
     def resume(self, answer: str, *, thread_id: str, question: str | None = None) -> FSMResult:
         """Продолжить приостановленный прогон ответом (тот же thread — тот же прогон).
@@ -99,27 +100,37 @@ class AnswerQuestion:
         БЕЗ reset_request_budget: капы бюджета персистятся в checkpointer'е
         (ruling R6 ARCH-GATE S08 — «ответ пользователя резюмирует тот же прогон»);
         ``question`` — для clarification-payload при истёкшем TTL сессии (R3).
+        ``thread_id`` возвращается в FSMResult (инвариант поля — ревью S08
+        re-review Minor-1: повторная пауза на resume — ребро plan_joins →
+        clarify, S10 — с пустым id была бы непродолжаема).
         """
         fallback = initial_state(question or "", "")
         return self._invoke(
             lambda: self._runner.resume(answer, thread_id=thread_id, question=question),
             fallback_state=fallback,
+            thread_id=thread_id,
         )
 
     def _invoke(
-        self, call: Callable[[], dict[str, Any]], *, fallback_state: dict[str, Any]
+        self,
+        call: Callable[[], dict[str, Any]],
+        *,
+        fallback_state: dict[str, Any],
+        thread_id: str = "",
     ) -> FSMResult:
         try:
             final = call()
         except BudgetExceededError as exc:
             # Кап бюджета сработал до вызова шлюза (S03-адаптер) — budget_stop
-            return _with_error("budget_stop", fallback_state, BUDGET_STOP_MESSAGE_TEMPLATE, exc)
+            return _with_error(
+                "budget_stop", fallback_state, BUDGET_STOP_MESSAGE_TEMPLATE, exc, thread_id
+            )
         except LLMProviderError as exc:
             # Недоступность шлюза (ретраи/breaker/таймаут) — деградация-исход
-            return _with_error("degrade", fallback_state, DEGRADE_MESSAGE_TEMPLATE, exc)
+            return _with_error("degrade", fallback_state, DEGRADE_MESSAGE_TEMPLATE, exc, thread_id)
         if final.get("interrupted"):
             # Приостановка — не терминал: вопрос ждёт ответа (ruling R3 S08)
-            return FSMResult(outcome=None, state=final)
+            return FSMResult(outcome=None, state=final, thread_id=thread_id)
         outcome = final.get("outcome")
         if outcome not in TERMINAL_OUTCOMES:
             # Движок обязан вернуть терминальный payload (GraphRunner.run);
@@ -128,15 +139,20 @@ class AnswerQuestion:
                 "class": "missing_outcome",
                 "message": f"FSM завершилась без терминального исхода (outcome={outcome!r})",
             }
-            return FSMResult(outcome="fail", state=final)
-        return FSMResult(outcome=outcome, state=final)
+            return FSMResult(outcome="fail", state=final, thread_id=thread_id)
+        return FSMResult(outcome=outcome, state=final, thread_id=thread_id)
 
 
 def _with_error(
-    outcome: TerminalOutcome, state: dict[str, Any], template: str, exc: Exception
+    outcome: TerminalOutcome,
+    state: dict[str, Any],
+    template: str,
+    exc: Exception,
+    thread_id: str = "",
 ) -> FSMResult:
     return FSMResult(
         outcome=outcome,
+        thread_id=thread_id,
         state={
             **state,
             "error": {"class": type(exc).__name__, "message": template.format(error=exc)},

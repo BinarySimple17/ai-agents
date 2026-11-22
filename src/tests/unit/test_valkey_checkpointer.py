@@ -253,3 +253,11 @@ class TestStoreBoundary:
             saver.put(_config("t1"), _checkpoint(CKPT1), {}, {})
         with pytest.raises(CheckpointStoreError, match="хранилище сессий недоступно"):
             saver.delete_thread("t1")
+
+    def test_list_boundary_is_guarded_not_lazy(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Re-review M-r4: list был генератором — тело мимо guard-декоратора;
+        # материализация гарантирует, что redis-сбой ловится при ВЫЗОВЕ, а не
+        # при первом next() (на генераторной версии тест не падал бы)
+        saver, _ = _saver(monkeypatch, _FakeClock(), fail=True)
+        with pytest.raises(CheckpointStoreError, match="хранилище сессий недоступно"):
+            saver.list(_config("t1"))
