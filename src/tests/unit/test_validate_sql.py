@@ -224,6 +224,42 @@ class TestStatementForm:
         )
         assert result.verdict.outcome is ValidationOutcome.OK
 
+    def test_order_by_expression_uses_input_column_denied(self):
+        # ревью волна-2 (Critical — регрессия I3-фикса bf518b7): unqualified имя
+        # ВНУТРИ выражения ORDER BY резолвится в input-колонку (проверено на PG:
+        # «ORDER BY country + 1» берёт customers.country) — она обязана пройти
+        # ACL: region не в правах customers, алиас region маскирует orders.status
+        perms = {"orders": ["id", "customer_id", "total", "status"], "customers": ["id", "name"]}
+        result = _validate(
+            "SELECT o.status AS region FROM orders o INNER JOIN customers c "
+            "ON o.customer_id = c.id ORDER BY length(region) LIMIT 10",
+            permissions=perms,
+        )
+        assert result.verdict.outcome is ValidationOutcome.DENIED
+
+    def test_correlated_whole_row_requires_star(self):
+        # ревью волна-2 (Important): whole-row внешнего скоупа внутри подзапроса —
+        # не «колонка» разрешённого локального источника: '*' обязателен и на
+        # внешнюю таблицу (PG возвращает ВСЮ строку orders)
+        perms = {"orders": list(ORDERS_COLUMNS), "customers": ["*"]}
+        result = _validate(
+            "SELECT (SELECT orders FROM customers LIMIT 1) FROM orders INNER JOIN customers "
+            "ON orders.customer_id = customers.id LIMIT 10",
+            permissions=perms,
+        )
+        assert result.verdict.outcome is ValidationOutcome.DENIED
+
+    def test_nested_select_star_is_own_scope_concern(self):
+        # ревью волна-2 (Minor): прямая звезда ВНУТРЕННЕГО скоупа — забота своего
+        # скоупа (разворот по его правам); сканер выражений проекции не спускается
+        # во вложенный SELECT — иначе поверхность парсера сужена сверх необходимого
+        result = _validate(
+            "SELECT (SELECT * FROM customers LIMIT 1) FROM orders INNER JOIN customers "
+            "ON orders.customer_id = customers.id LIMIT 10"
+        )
+        assert result.verdict.outcome is ValidationOutcome.OK
+        assert "*" not in result.sql  # внутренняя звезда развёрнута своим скоупом
+
 
 class TestFunctionAllowList:
     @pytest.mark.parametrize(

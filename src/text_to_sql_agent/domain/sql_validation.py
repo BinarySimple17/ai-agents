@@ -153,7 +153,6 @@ class SqlAudit(BaseModel):
 
     from_table: str = ""  # bare-имя источника FROM внешнего запроса ("" у set-операций)
     tables: tuple[str, ...] = ()
-    cte_names: tuple[str, ...] = ()
     columns: tuple[SqlColumn, ...] = ()
     joins: tuple[SqlJoin, ...] = ()
     where_conjuncts: tuple[str, ...] = ()

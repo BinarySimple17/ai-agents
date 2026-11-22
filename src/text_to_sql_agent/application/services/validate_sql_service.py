@@ -258,23 +258,46 @@ def _build_audit(tree: exp.Expression) -> SqlAudit:
             if isinstance(expr, exp.Alias) and expr.alias
         }
         order_node = scope.args.get("order")
-        order_ids = {id(n) for n in order_node.walk()} if order_node is not None else set()
+        # ревью волна-2 (Critical, регрессия I3-фикса bf518b7): пропуск — только
+        # НЕПОСРЕДСТВЕННО упорядоченное голое unqualified имя (Ordered.this);
+        # unqualified имя ВНУТРИ выражения ORDER BY PG резолвит в input-колонку —
+        # она обязана пройти ACL (утечка видна через порядок строк)
+        skip_ids: set[int] = set()
+        if order_node is not None:
+            for ordered in order_node.expressions:
+                expr = ordered.this
+                if (
+                    isinstance(expr, exp.Column)
+                    and not expr.table
+                    and expr.name.lower() in output_aliases
+                ):
+                    skip_ids.add(id(expr))
         for node in _local_nodes(scope):
             if not isinstance(node, exp.Column):
                 continue
             if isinstance(node.this, exp.Star):
                 continue  # t.* — проекция звёздами, собирается в star_sources
-            if id(node) in order_ids and node.name.lower() in output_aliases:
+            if id(node) in skip_ids:
                 # ревью S11 I3: ORDER BY по output-алиасу — не ссылка на колонку
                 # БД (приоритет имени вывода в PostgreSQL); GROUP BY остаётся
                 # fail-closed (там приоритет у input-колонки)
                 continue
             candidates = _resolve_candidates(node, maps_by_scope[id(scope)], local_sources)
             sources = tuple(SqlSource(name=s.name, kind=s.kind) for s in candidates)
-            # ревью S11 C1: unqualified-ссылка, совпавшая с алиасом источника, —
-            # whole-row reference (PG: колонок с таким именем нет → вся строка)
-            whole_row = not node.table and node.name.lower() in local_refs
-            key = (node.name.lower(), sources, whole_row)
+            # ревью S11 C1 + волна-2 (Important): unqualified-ссылка, совпавшая
+            # с алиасом источника СВОЕГО скоупа или объемлющего, — whole-row
+            # reference (PG: колонок с таким именем нет → вся строка)
+            name_lower = node.name.lower()
+            whole_row = False
+            if not node.table:
+                if name_lower in local_refs:
+                    whole_row = True
+                else:
+                    outer = _resolve_outer_ref(name_lower, maps_by_scope[id(scope)])
+                    if outer is not None:
+                        whole_row = True
+                        sources = (SqlSource(name=outer.name, kind=outer.kind),)
+            key = (name_lower, sources, whole_row)
             if key not in seen_columns:
                 seen_columns.add(key)
                 columns.append(
@@ -292,7 +315,6 @@ def _build_audit(tree: exp.Expression) -> SqlAudit:
     return SqlAudit(
         from_table=_from_table(root_select),
         tables=_collect_tables(tree),
-        cte_names=tuple(sorted({cte.alias_or_name.lower() for cte in tree.find_all(exp.CTE)})),
         columns=tuple(columns),
         joins=_collect_joins(root_select, maps_by_scope),
         where_conjuncts=_collect_where(root_select, root_maps),
@@ -300,6 +322,16 @@ def _build_audit(tree: exp.Expression) -> SqlAudit:
         functions=_collect_functions(tree),
         star_sources=tuple(star_sources),
     )
+
+
+def _resolve_outer_ref(name: str, maps: list[dict[str, _Source]]) -> _Source | None:
+    """Поиск ref'а источника в ВНЕШНИХ скоупах (внутренний→внешний, локальный
+    исключён) — correlated whole-row (ревью S11 волна-2)."""
+    for mapping in maps[1:]:
+        source = mapping.get(name)
+        if source is not None:
+            return source
+    return None
 
 
 def _visible_ctes_for(expr: exp.Expression) -> frozenset[str]:
@@ -374,18 +406,24 @@ def _reject_expression_stars(item: exp.Expression) -> None:
     """Форм-отказ на звезду, спрятанную в выражении проекции (ревью S11 C1):
     ``(t.*)``, ``t.* AS x``, ``(t.*)::text`` — разворот сложен, а литеральная
     звезда не должна доходить до БД (ACL-байпас). ``COUNT(*)`` — агрегат, колонок
-    не раскрывает (ruling R2) — исключение."""
+    не раскрывает (ruling R2) — исключение. Звезда вложенного SELECT — забота
+    своего скоупа (ревью волна-2: сканер не пересекает границу Select/Subquery,
+    иначе поверхность парсера сужена сверх необходимого)."""
     for star in item.find_all(exp.Star):
         parent = star.parent
         under_count = False
+        other_scope = False
         while parent is not None:
             if isinstance(parent, exp.Count):
                 under_count = True
                 break
             if parent is item:
                 break
+            if isinstance(parent, (exp.Select, exp.Subquery)):
+                other_scope = True
+                break
             parent = parent.parent
-        if not under_count:
+        if not under_count and not other_scope:
             raise SqlAuditError(
                 "звезда '*' внутри выражения проекции (скобки/алиас/CAST) "
                 "не поддерживается — литеральная звезда не доходит до БД"
