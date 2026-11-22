@@ -209,7 +209,7 @@ class AgentState(TypedDict, total=False):
     rows: list[Any] | None
     row_count: int | None
     compact: dict[str, Any] | None  # ResultCompact (pydantic — S15/ADR-008)
-    error: dict[str, Any] | None  # {class, message}
+    error: dict[str, Any] | None  # {class, message, probe? — факты пробы (S14, внутренний)}
     diagnosis: dict[str, Any] | None  # {error_class, hint, retry_futile} — S14
     retry_count: int
     budget_used: dict[str, Any] | None  # {llm_calls: int, rub: float}

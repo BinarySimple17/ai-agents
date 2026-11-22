@@ -160,7 +160,7 @@ make infra-up && uv run pytest src/tests/integration/test_retry_cycle.py -q   # 
 ## Гейты субагентов (заполняется по факту, до закрытия сессии)
 
 - ARCH-GATE: ✅ needs-decision → rulings R1–R6 закрыты ДО кода (canon-check architect 2026-11-22; R1 — probe-ноль → compact_result, не short_circuit; R2 — носители исчерпания по канону; R3 — BL-016: ребро generate_sql → retry_generate_sql, state-agent v1.8; R4 — retire заготовки execute_sql_route; R5 — трейс-события diagnose.*/execute.probe; R6 — определение «попытки узла» в m1_policy; правки правил 4/5 и Task 2/3 плана — секция Rulings в этом файле)
-- REVIEW-GATE: [✅ <Ready to merge? вердикт> + <BASE7>..<HEAD7> | N/A — <причина>]
+- REVIEW-GATE: ✅ Ready to merge: Yes (scoped re-review fix-волны eff8162: все 5 находок волны-1 [0C/1I/4M] закрыты по существу, новые тесты кусают до-фиксовый код [проверено ревьюером против eff8162^], фикс Minor-2 попутно устранил реальный риск stale-RETRYABLE на ребре ретрая) — диапазон acbb42e..1107312 + fix-волна eff8162; цикл: ревью-1 «With fixes» (0C/1I/4M — S9-инвариант probe-фактов в пользовательском message) → fix-волна eff8162 (message фиксированный, факты — внутренний error["probe"] → промпт диагностики; parity шаговых флагов с routing-константами; симметричная очистка RETRYABLE; тип executor — SQLExecutor; осмысленные detail) → re-review-2 Yes; новый Minor (дублирование литерала step-флагов) → BL-019, nit (инлайн-комментарий entities) — закрыт в коммите закрытия
 
 ### Rulings ARCH-GATE S14 (canon-check 2026-11-22, до первого код-коммита)
 
