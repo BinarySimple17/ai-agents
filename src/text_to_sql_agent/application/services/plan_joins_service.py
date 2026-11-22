@@ -55,6 +55,12 @@ from text_to_sql_agent.application.ports.vector_store import (
     VectorStore,
     VectorStoreError,
 )
+from text_to_sql_agent.application.services.m1_policy import (
+    ESCALATION_ATTEMPT,
+    ESCALATION_RESERVE_ROUBLES,
+    MAX_ATTEMPTS,
+    ROLE_UP,
+)
 from text_to_sql_agent.domain.entities import RunContext
 from text_to_sql_agent.domain.join_plan import (
     MAX_JOIN_PLAN_TABLES,
@@ -74,13 +80,9 @@ _MAX_CANDIDATE_TABLES = 6
 _K_PATHS_PER_PAIR = 3
 # Топ-5 кандидатов на ранжирование моделью (ADR-007 §4 матрица plan_joins)
 _MAX_RANK_CANDIDATES = 5
-# Ретраи M1: три попытки на узел (ADR-007 §4.1; per-node кап ≤ 3 — S00 стык 1)
-_MAX_PLAN_ATTEMPTS = 3
-# Резерв бюджета: эскалация только при остатке ВЫШЕ резерва (ADR-007 §4.3;
-# после эскалации прогон сохраняет запас на interpret_result)
-_ESCALATION_RESERVE_ROUBLES = 0.6
-# Номер попытки с эскалацией роли вверх (D-016: попытка 3 — уровень вверх)
-_ESCALATION_ATTEMPT = 3
+# Ретраи M1 / резерв эскалации / роль попытки 3 — общие константы политики
+# (application/services/m1_policy.py; унификация при третьем потребителе — S10,
+# предсказано комментарием констант clarify S08)
 # Равенство весов кандидатов: NUMERIC реестра → float, сравнение с допуском
 _WEIGHT_TIE_EPSILON = 1e-9
 # Кап заявок за прогон: очередь владельцу не спамим (частота = COUNT(*) строк)
@@ -92,8 +94,6 @@ _PAYLOAD_WEIGHT_PRECISION = 4
 # Роль попытки 1 — матрица ADR-007 §4: план_joins = дешёвая модель (ранжирование
 # готовых кандидатов — классификационная задача, ошибка дёшево исправима ретраем)
 _RANKING_ROLE_START: Role = "cheap"
-# D-016: попытка 3 — роль вверх (cheap→mid→strong); вершина — сама на себя
-_ROLE_UP: dict[Role, Role] = {"cheap": "mid", "mid": "strong", "strong": "strong"}
 
 # ADR-008 слой 2: structured output — через тул (tool-based enforcement), не
 # свободный JSON-текст (отвергнутый вариант B ADR-008); pydantic ниже —
@@ -180,6 +180,10 @@ class PlanJoinsResult(BaseModel):
     error: str | None = None
     candidate_tables: list[str] = Field(default_factory=list)
     hit_edge_ids: list[str] = Field(default_factory=list)
+    # Учёт прогона для state.budget_used (гвард капов ≤ 8 — routing.llm_guard;
+    # S10/ruling R6 ARCH-GATE: честный расход при подключении узла к FSM —
+    # прецедент ClarifyResult.llm_calls)
+    llm_calls: int = Field(ge=0, default=0)
 
 
 class PathRanking(BaseModel):
@@ -347,9 +351,10 @@ class PlanJoinsService:
             )
 
         winner = candidates[0]
+        llm_calls = 0
         if len(candidates) > 1:
-            verdict, ranking = self._rank_by_llm(question, candidates, sem_by_rel)
-            if verdict is not None:  # FAIL — честный исход без плана
+            verdict, ranking, llm_calls = self._rank_by_llm(question, candidates, sem_by_rel)
+            if verdict is not None:  # FAIL — честный исход без плана (llm_calls внутри)
                 return verdict
             tie = (
                 abs(candidates[0].total_weight - candidates[1].total_weight) <= _WEIGHT_TIE_EPSILON
@@ -364,6 +369,7 @@ class PlanJoinsService:
                     ),
                     candidate_tables=candidate_tables,
                     hit_edge_ids=hit_edge_ids,
+                    llm_calls=llm_calls,
                 )
             winner = candidates[ranking.ranking[0]]
         # Один кандидат: ранжировать нечего — вызов шлюза не тратим (экономия
@@ -388,6 +394,7 @@ class PlanJoinsService:
             graph_version=graph_version,
             candidate_tables=candidate_tables,
             hit_edge_ids=hit_edge_ids,
+            llm_calls=llm_calls,
         )
 
     # --- Ноги узла ---
@@ -461,48 +468,62 @@ class PlanJoinsService:
         question: str,
         candidates: list[JoinPath],
         sem_by_rel: dict[str, EdgeSemantics],
-    ) -> tuple[PlanJoinsResult | None, PathRanking | None]:
+    ) -> tuple[PlanJoinsResult | None, PathRanking | None, int]:
         """Ранжирование моделью с ретраями M1 (Task 3).
 
-        Возвращает (FAIL-вердикт, None) или (None, ranking) — исходы «уточнение»
-        (tie/ambiguous) решает вызывающий по ranking. Попытка 1 — cheap;
-        попытка 2 — cheap + текст ошибки; попытка 3 — роль вверх при остатке
-        бюджета с резервом (ruling Q7), иначе честный отказ.
+        Возвращает (FAIL-вердикт, None, вызовы) или (None, ranking, вызовы) —
+        исходы «уточнение» (tie/ambiguous) решает вызывающий по ranking.
+        Попытка 1 — cheap; попытка 2 — cheap + текст ошибки; попытка 3 — роль
+        вверх при остатке бюджета с резервом (ruling Q7), иначе честный отказ.
+        Число вызовов complete() — для учёта гварда капов (ruling R6 ARCH-GATE
+        S10: PlanJoinsResult.llm_calls).
         """
         payload = self._ranking_payload(candidates, sem_by_rel)
         error_text: str | None = None
         last_output: str | None = None
         role: Role = _RANKING_ROLE_START
-        for attempt in range(1, _MAX_PLAN_ATTEMPTS + 1):
-            if attempt == _ESCALATION_ATTEMPT:
+        calls = 0
+        for attempt in range(1, MAX_ATTEMPTS + 1):
+            if attempt == ESCALATION_ATTEMPT:
                 if (
                     self._budget_remaining_roubles is not None
-                    and self._budget_remaining_roubles() <= _ESCALATION_RESERVE_ROUBLES
+                    and self._budget_remaining_roubles() <= ESCALATION_RESERVE_ROUBLES
                 ):
-                    return self._fail(
-                        f"эскалация попытки {_ESCALATION_ATTEMPT} отклонена: остаток "
-                        f"бюджета не покрывает резерв {_ESCALATION_RESERVE_ROUBLES} ₽ "
-                        "(ADR-007 §4.3) — ретраи исчерпаны",
-                    ), None
-                role = _ROLE_UP[role]
+                    return (
+                        self._fail(
+                            f"эскалация попытки {ESCALATION_ATTEMPT} отклонена: остаток "
+                            f"бюджета не покрывает резерв {ESCALATION_RESERVE_ROUBLES} ₽ "
+                            "(ADR-007 §4.3) — ретраи исчерпаны",
+                            llm_calls=calls,
+                        ),
+                        None,
+                        calls,
+                    )
+                role = ROLE_UP[role]
             messages = self._ranking_messages(question, payload, error_text, last_output)
             try:
                 response = self._llm.complete(role, messages, tools=[_RANK_TOOL_SPEC])
             except LLMProviderError as exc:
                 # Политика провайдера исчерпана (backoff/breaker/бюджет) — ретрай
                 # M1 поверх неё бессмыслен: честный отказ (S00 правило 8)
-                return self._fail(f"шлюз недоступен: {exc}"), None
+                return self._fail(f"шлюз недоступен: {exc}", llm_calls=calls + 1), None, calls + 1
+            calls += 1
             try:
                 ranking = _parse_ranking(response, len(candidates))
             except ValueError as exc:
                 error_text = str(exc)
                 last_output = _last_output_text(response)
                 continue
-            return None, ranking
-        return self._fail(
-            f"ранжирование не удалось за {_MAX_PLAN_ATTEMPTS} попытки (M1): "
-            f"последняя ошибка: {error_text}"
-        ), None
+            return None, ranking, calls
+        return (
+            self._fail(
+                f"ранжирование не удалось за {MAX_ATTEMPTS} попытки (M1): "
+                f"последняя ошибка: {error_text}",
+                llm_calls=calls,
+            ),
+            None,
+            calls,
+        )
 
     @staticmethod
     def _ranking_payload(
@@ -673,12 +694,13 @@ class PlanJoinsService:
     # --- Вспомогательное ---
 
     @staticmethod
-    def _fail(error: str) -> PlanJoinsResult:
+    def _fail(error: str, *, llm_calls: int = 0) -> PlanJoinsResult:
         """Честный отказ: fail с уточняющим вопросом, НЕ выдуманный план (Task 3)."""
         return PlanJoinsResult(
             outcome=PlanOutcome.FAIL,
             error=error,
             clarifying_question=_FAIL_CLARIFY_QUESTION,
+            llm_calls=llm_calls,
         )
 
     @staticmethod

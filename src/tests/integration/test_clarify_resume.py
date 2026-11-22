@@ -40,6 +40,48 @@ class _ScriptedClarify:
         return ClarifyResult(outcome=ClarifyOutcome.CLARIFY, question=_SCRIPTED_QUESTION)
 
 
+class _ScriptedPlanJoins:
+    """S10 подключила планер к FSM: тесты interrupt/resume идут мимо LLM-ног
+    планера (S00-7) — PLAN-исход с планом из активных рёбер сидов."""
+
+    def plan(self, question: str, *, ctx: object, permissions: object) -> object:
+        from text_to_sql_agent.application.services.plan_joins_service import (
+            PlanJoinsResult,
+            PlanOutcome,
+        )
+        from text_to_sql_agent.domain.join_plan import JoinPlan, JoinPlanEdge
+
+        return PlanJoinsResult(
+            outcome=PlanOutcome.PLAN,
+            plan=JoinPlan(
+                tables=["orders", "order_items"],
+                edges=[
+                    JoinPlanEdge(
+                        rel_id="e_orders_items",
+                        from_table="orders",
+                        to_table="order_items",
+                        from_columns=("order_id",),
+                        to_columns=("order_id",),
+                        join_type="inner",
+                    )
+                ],
+                graph_version=1,
+            ),
+        )
+
+
+class _ScriptedGenerateSql:
+    """Генератор — мок (S00-7): SQL достаточен, чтобы happy path дошёл до done."""
+
+    def generate(self, **kwargs: object) -> object:
+        from text_to_sql_agent.application.services.generate_sql_service import (
+            GenerateSqlOutcome,
+            GenerateSqlResult,
+        )
+
+        return GenerateSqlResult(outcome=GenerateSqlOutcome.SQL, sql="SELECT count(*) FROM orders")
+
+
 def _dsn(env_var: str) -> str:
     dsn = os.getenv(env_var)
     if not dsn:
@@ -84,12 +126,19 @@ def _settings(tmp_path: Path, *, ttl_s: int) -> Settings:
 
 @pytest.fixture()
 def container(tmp_path, postgres_available, valkey_available):
-    """Собранный контейнер: реальный ValkeyCheckpointer (TTL 600) + скриптовый clarify.
+    """Собранный контейнер: реальный ValkeyCheckpointer (TTL 600) + скриптовые
+    clarify/plan_joins/generate_sql (LLM-ноги — моки, S00-7; проверяется
+    interrupt-механика, не генерация).
 
     Токены — только проверенные (ruling R4 S05): verify в тесте ДО прогона.
     """
     service = _ScriptedClarify()
-    ck = build_container(_settings(tmp_path, ttl_s=600), clarify_service=service)
+    ck = build_container(
+        _settings(tmp_path, ttl_s=600),
+        clarify_service=service,
+        plan_joins_service=_ScriptedPlanJoins(),  # type: ignore[arg-type]
+        generate_sql_service=_ScriptedGenerateSql(),  # type: ignore[arg-type]
+    )
     yield ck, service
     ck.checkpointer.close()
 
@@ -129,7 +178,12 @@ class TestInterruptResumeFlow:
         # TTL истёк (ruling R3): clarification-терминал — валидный исход, не
         # исключение; инъекция короткого TTL (Ловушка 5: не спать 10 минут)
         service = _ScriptedClarify()
-        ck = build_container(_settings(tmp_path / "ttl", ttl_s=1), clarify_service=service)
+        ck = build_container(
+            _settings(tmp_path / "ttl", ttl_s=1),
+            clarify_service=service,
+            plan_joins_service=_ScriptedPlanJoins(),  # type: ignore[arg-type]
+            generate_sql_service=_ScriptedGenerateSql(),  # type: ignore[arg-type]
+        )
         try:
             thread_id = uuid4().hex
             user_id = ck.auth_provider.verify("dev-analyst-token")

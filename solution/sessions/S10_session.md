@@ -1,6 +1,6 @@
 # S10 — build_skeleton + generate_sql: наполнение скелета от кода (веха V4, ДЗ-05)
 
-Этап: Веха V4 (ДЗ-05: генерация SQL внутри FSM) | Владелец: агент | Зависимости: S09, S04 | Оценка: 1 | Статус: [ ] не начата
+Этап: Веха V4 (ДЗ-05: генерация SQL внутри FSM) | Владелец: агент | Зависимости: S09, S04 | Оценка: 1 | Статус: ◐ в работе
 Фичи: feat-010 — generate_sql; зависимость feat-009 (passing)
 Роль по фиче: закрывает feat-010 — финальная сессия, через make verify-feature
 
@@ -32,19 +32,21 @@ build_skeleton/generate_sql и рёбрами в validate_sql). Эта сесс�
    попытка 3 — glm-5.3-prime (strong) ТОЛЬКО если остаток бюджета с резервом 0,6 ₽
    позволяет (шов `budget_remaining_roubles()` — прецедент S09); в контексте при
    retry — только последний SQL + текст ошибки, не цепочка попыток.
-4. Структурированный выход (ADR-008): pydantic-схема ответа (sql-строка), temperature 0;
-   невалидный/пустой SQL → ретрай по M1; reasoning-only выход → структурный парсер
-   падает и уходит в ретрай (D-021-урок), не «понимается».
+4. Структурированный выход (ADR-008, ruling R1 ARCH-GATE): pydantic-схема тула —
+   4 поля (select_list, where, group_by, order_by); ФИНАЛЬНЫЙ SQL собирает КОД
+   поверх скелета (модель физически не пишет FROM/JOIN/ON), temperature 0;
+   невалидный/пустой выход → ретрай по M1; reasoning-only выход → структурный
+   парсер падает и уходит в ретрай (D-021-урок), не «понимается».
 5. Модель не выбирает таблицы: список таблиц промпта = таблицы JoinPlan ∩ permissions
    (deny-by-default, контракт 3); выдуманная таблица невозможна как класс —
    тест-инвариант по образцу S09.
 
 ## Предусловия
 
-- [ ] Сессия СТАРТУЕТ: статус в шапке переведён в «◐ в работе» и ARCH-GATE резолвлен ДО кода (canon-check architect ✅ либо обоснованный N/A) — старт-гейт (`guard-subagents.sh --phase start`, D-027) проверяет только стартованные (◐) сессии; «[ ] не начата» — план, гейт её скипает
-- [ ] S09 закрыта: `uv run pytest src/tests/unit/test_plan_joins.py -q` → passed (feat-009 passing)
-- [ ] S04 закрыта: `uv run pytest src/tests/unit/test_graph.py -q` → passed (feat-004 passing)
-- [ ] `make check` зелёный (baseline репозитория)
+- [x] Сессия СТАРТУЕТ: статус в шапке переведён в «◐ в работе» и ARCH-GATE резолвлен ДО кода (canon-check architect ✅ либо обоснованный N/A) — старт-гейт (`guard-subagents.sh --phase start`, D-027) проверяет только стартованные (◐) сессии; «[ ] не начата» — план, гейт её скипает
+- [x] S09 закрыта: `uv run pytest src/tests/unit/test_plan_joins.py -q` → passed (feat-009 passing)
+- [x] S04 закрыта: `uv run pytest src/tests/unit/test_graph.py -q` → passed (feat-004 passing)
+- [x] `make check` зелёный (baseline репозитория) — `./init.sh` EXIT=0, 544 passed (2026-11-22, до старта работ)
 - [ ] feat-009, feat-004 в state=passing; feat-010 активирована в state=active до старта работ
 
 ## Задачи
@@ -100,7 +102,15 @@ uv run pytest src/tests/unit/test_generate_sql.py -q   # бюджет < резе
 
 Наполнение заглушек S04: планер (S09-сервис) → build_skeleton → generate_sql →
 validate_sql (заглушка-транзит до S11). Маршрут — код: verdict генератора
-(sql/fail) читает routing, модель имя узла не возвращает.
+(sql/fail) читает routing, модель имя узла не возвращает. Новые кодовые рёбра
+(ruling R2 ARCH-GATE): `FLAG_PLAN_JOINS_NO_PATH` → план_joins → узел degrade
+(поведение feat-009 «нет активного пути» + заявка; отказ формулирует S15);
+исход FAIL планера — `error` в state + reuse `FLAG_PLAN_JOINS_EXHAUSTED` →
+terminal_fail; `FLAG_GENERATE_SQL_FAILED` → generate_sql → узел degrade
+(носитель отказа генератора при исчерпании M1 — канон degrade, state-agent).
+`PlanJoinsResult` дополняется `llm_calls` (учёт гварда капов честный — находка
+архитектора). Синк `docs/diagrams/state-agent.md` → v1.7 (два новых ребра) —
+тем же коммитом (прецедент FIX-009).
 
 **✅ Самопроверка:**
 
@@ -135,7 +145,7 @@ uv run pytest src/tests/unit/test_graph.py src/tests/unit/test_generate_sql.py -
 
 ## Гейты субагентов (заполняется по факту, до закрытия сессии)
 
-- ARCH-GATE: [✅ <verdict: compliant | violations | needs-decision> + <план/файл> | N/A — <причина>]
+- ARCH-GATE: ✅ needs-decision → rulings R1–R7 до кода (canon-check architect 2026-11-22): **R1** — тул generate_sql = 4 поля (select_list/where/group_by/order_by), финальный SQL собирает КОД поверх скелета (hw-01 §2.1:59 + ADR-008 тул-принуждение); полный SQL от модели — возврат класса «галлюцинация связи»; правило 4 плана исправлено. **R2** — новые рёбра: FLAG_PLAN_JOINS_NO_PATH → plan_joins→degrade (behavior feat-009, hw-01 §3.1:113; state-agent v1.6 этого ребра не рисовал — синк v1.7); FAIL планера — error в state + reuse FLAG_PLAN_JOINS_EXHAUSTED → terminal_fail (routing.py:163 «флаг exhausted — решение узла»); FLAG_GENERATE_SQL_FAILED → generate_sql→degrade (носитель отказа генератора — degrade, state-agent.md:59; terminal_fail на диаграмме исходит только из plan_joins). **R3** — skeleton_hash = sha256 канонизированной НЕИЗМЕНЯЕМОЙ части (JOIN-секции + mandatory_predicates, БЕЗ плейсхолдеров SELECT); нормализация collapse-whitespace + lowercase + сортировка ключей предикатов; нормализующая функция — именованная, в domain, единый источник build_skeleton и S11. **R4** — Skeleton VO в domain/skeleton.py (прецедент join_plan.py); в state — model_dump(). **R5** — таблицы промпта = JoinPlan ∩ permissions + парсер отвергает таблицы вне скелета → ретрай (оба уровня, ADR-008:71–76 проверка по существу). **R6** — трейс-события plan_joins.verdict / generate_sql.verdict (payload — факты: outcome/attempts/escalated/graph_version, без SQL-текста); PlanJoinsResult += llm_calls (находка: гвард капов занизил бы расход); budget_used.llm_calls += result.llm_calls (прецедент clarify_node). **R7** — внутренний M1-цикл сервиса не противоречит стыку 2 (FSM-рёбра ретрая — S14); сервис принимает стартовую роль/попытку параметром (S14 сеет из attempts_used). Findings закрыты правкой плана до кода (правило 4, Task 4).
 - REVIEW-GATE: [✅ <Ready to merge? вердикт> + <BASE7>..<HEAD7> | N/A — <причина>]
 
 ## Отчёт по сессии (заполняется по факту)

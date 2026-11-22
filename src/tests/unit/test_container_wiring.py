@@ -126,23 +126,60 @@ def test_fsm_runner_honors_caps_and_completes(tmp_path) -> None:
     # исчерпанный счётчик вызовов → budget_stop ДО первого LLM-узла.
     # user_id обязателен (S05): узел resolve_access fail-closed на пустой
     # identity → rejected сработал бы раньше гварда (решение ребра первично).
-    # clarify — скриптовый сервис (S00 правило 7: реальный узел зовёт LLM,
-    # в юните — только инъекция через composition)
+    # clarify/plan_joins/generate_sql — скриптовые сервисы (S00 правило 7:
+    # реальные узлы зовут LLM, в юните — только инъекция через composition)
     from text_to_sql_agent.application.services.clarify_service import (
         ClarifyOutcome,
         ClarifyResult,
     )
+    from text_to_sql_agent.application.services.generate_sql_service import (
+        GenerateSqlOutcome,
+        GenerateSqlResult,
+    )
+    from text_to_sql_agent.application.services.plan_joins_service import (
+        PlanJoinsResult,
+        PlanOutcome,
+    )
     from text_to_sql_agent.application.services.stub_nodes import initial_state
+    from text_to_sql_agent.domain.join_plan import JoinPlan, JoinPlanEdge
 
     class _ScriptedClarify:
         def clarify(self, question: str, *, ctx: object, permissions: object) -> ClarifyResult:
             return ClarifyResult(outcome=ClarifyOutcome.UNAMBIGUOUS)
+
+    class _ScriptedPlanJoins:
+        def plan(self, question: str, *, ctx: object, permissions: object) -> PlanJoinsResult:
+            return PlanJoinsResult(
+                outcome=PlanOutcome.PLAN,
+                plan=JoinPlan(
+                    tables=["orders", "order_items"],
+                    edges=[
+                        JoinPlanEdge(
+                            rel_id="e_orders_items",
+                            from_table="orders",
+                            to_table="order_items",
+                            from_columns=("order_id",),
+                            to_columns=("order_id",),
+                            join_type="inner",
+                        )
+                    ],
+                    graph_version=1,
+                ),
+            )
+
+    class _ScriptedGenerateSql:
+        def generate(self, **kwargs: object) -> GenerateSqlResult:
+            return GenerateSqlResult(
+                outcome=GenerateSqlOutcome.SQL, sql="SELECT count(*) FROM orders"
+            )
 
     container = build_container(
         _settings(tmp_path),
         permission_store=_FakePermissionStore(),
         checkpointer=_mem_ckpt(),
         clarify_service=_ScriptedClarify(),  # type: ignore[arg-type]
+        plan_joins_service=_ScriptedPlanJoins(),  # type: ignore[arg-type]
+        generate_sql_service=_ScriptedGenerateSql(),  # type: ignore[arg-type]
     )
     state = initial_state("Сколько заказов?", user_id="u_analyst")
     state["budget_used"] = {"llm_calls": container.settings.fsm_max_llm_calls, "rub": 0.0}

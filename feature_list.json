@@ -250,8 +250,8 @@
       "dependencies": [
         "feat-009"
       ],
-      "state": "not_started",
-      "status": "not-started",
+      "state": "active",
+      "status": "in-progress",
       "evidence": "",
       "layers": [
         {

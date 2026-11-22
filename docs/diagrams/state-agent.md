@@ -1,6 +1,6 @@
 # State Diagram — агент Text-to-SQL (FSM)
 
-- **Статус:** каноническая схема v1.6 (2026-11-22 — FIX-009/ruling R1 ARCH-GATE S08: ребро `plan_joins → clarify` (равные кандидаты пути — hw-01 §4.2; в v1.5 ребро не рисовалось, канон-текст против диаграммы); clarify-механика interrupt: само-ребро `clarify → clarify` (вопрос сформулирован → пауза), `clarify → clarification` — отказ при несформулированном вопросе, TTL-истёк — clarification исходом от раннера. v1.5 — FIX-008: входящие рёбра overflow/short_circuit, цикл merge_results → generate_step_sql; v1.4 — 2026-11-18: ретрай шага декомпозиции — явное ребро `diagnose_error → generate_step_sql` (ретраится упавший шаг, не весь план); T2: approximate/matview — через `compact_result → interpret_result` с флагом `approximate`, async/отказ — терминал. v1.3 — состав 15 узлов = hw-01 §2.1, M1, recursion_limit, T2 → degraded_out; v1.2 — валидация JoinPlan; v1.1 — ревизия 02)
+- **Статус:** каноническая схема v1.7 (2026-11-22 — ruling R2 ARCH-GATE S10: два ребра отказа генерирующей цепочки — `plan_joins → degrade` («нет активного пути» + заявка владельцу — behavior feat-009, hw-01 §3.1; в v1.6 не рисовалось, диаграмма против канона) и `generate_sql → degrade` (исчерпание M1/бюджет/дефект скелета — носитель отказа генератора — degrade, state-agent: «лимит попыток / бюджет / дедлайн»; терминал `fail` исходит только из plan_joins); подключение plan_joins/build_skeleton/generate_sql — feat-010. v1.6 — FIX-009/ruling R1 ARCH-GATE S08: ребро `plan_joins → clarify` (равные кандидаты пути — hw-01 §4.2; в v1.5 ребро не рисовалось, канон-текст против диаграммы); clarify-механика interrupt: само-ребро `clarify → clarify` (вопрос сформулирован → пауза), `clarify → clarification` — отказ при несформулированном вопросе, TTL-истёк — clarification исходом от раннера. v1.5 — FIX-008: входящие рёбра overflow/short_circuit, цикл merge_results → generate_step_sql; v1.4 — 2026-11-18: ретрай шага декомпозиции — явное ребро `diagnose_error → generate_step_sql` (ретраится упавший шаг, не весь план); T2: approximate/matview — через `compact_result → interpret_result` с флагом `approximate`, async/отказ — терминал. v1.3 — состав 15 узлов = hw-01 §2.1, M1, recursion_limit, T2 → degraded_out; v1.2 — валидация JoinPlan; v1.1 — ревизия 02)
 - **Требования prd.md:** FR-1…FR-14; переходы контролирует код — модель не может перепрыгнуть валидацию или уйти из цикла (ADR-002)
 - **Связанные:** ADR-002 (recursion_limit — второй предохранитель), ADR-004 (ветка декомпозиции, T2-исходы), ADR-005 (degrade vs diagnose), ADR-006 (JoinPlan по `edge_id`), ADR-007 (политика ретраев M1), ADR-009 (кэш); c4-l3-agent.md (компоненты узлов), sequence-query.md (интерактивный путь целиком)
 
@@ -18,16 +18,19 @@ stateDiagram-v2
     plan_joins --> clarify: равные кандидаты пути → уточняющий вопрос (ребро FIX-009; активирует S10)
     plan_joins --> build_skeleton: k взвешенных путей + ранжирование топ-5 → JoinPlan (edge_id рёбер)
     plan_joins --> plan_query: T1 (≥ 4 таблиц или ≥ 3 хопов)
+    plan_joins --> degrade: нет активного пути → отказ + заявка agent_edge_proposals (S10, R2; отказ формулирует S15)
     plan_joins --> plan_joins: план невалиден, попытка 2 — та же модель + текст ошибки (M1)
     plan_joins --> plan_joins: попытка 3 — уровень вверх, если остаток бюджета с резервом 0,6 ₽ позволяет
     plan_joins --> fail: попытки исчерпаны
 
     build_skeleton --> generate_sql: JOIN-скелет от кода (ключи, тип, mandatory_predicates) + skeleton_hash
     build_skeleton --> plan_query: T1 — декомпозиция
+    build_skeleton --> degrade: скелет не собран (дефект каркаса) — генерация невозможна (S10, R2)
     plan_query --> generate_step_sql: QueryPlan валиден (инварианты — код)
     plan_query --> generate_sql: план невалиден после retry по M1 → откат к одиночному SQL
 
-    generate_sql --> validate_sql: наполнение скелета (SELECT/WHERE/GROUP BY/ORDER BY)
+    generate_sql --> validate_sql: наполнение скелета (тул 4 поля: SELECT/WHERE/GROUP BY/ORDER BY — SQL собирает код, R1)
+    generate_sql --> degrade: исчерпание M1 / бюджет — носитель отказа генератора (S10, R2)
     generate_step_sql --> validate_sql: наполнение шага скелетом
 
     validate_sql --> diagnose_error: галлюцинация (таблицы/связи нет) — retry

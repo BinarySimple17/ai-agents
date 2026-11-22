@@ -12,8 +12,12 @@ from text_to_sql_agent.application.ports.auth_provider import AuthProvider
 from text_to_sql_agent.application.ports.llm_provider import LLMProvider
 from text_to_sql_agent.application.ports.permission_store import PermissionStore
 from text_to_sql_agent.application.ports.tracer import Tracer
+from text_to_sql_agent.application.services.build_skeleton_node import make_build_skeleton_node
 from text_to_sql_agent.application.services.clarify_node import make_clarify_node
 from text_to_sql_agent.application.services.clarify_service import ClarifyService
+from text_to_sql_agent.application.services.generate_sql_node import make_generate_sql_node
+from text_to_sql_agent.application.services.generate_sql_service import GenerateSqlService
+from text_to_sql_agent.application.services.plan_joins_node import make_plan_joins_node
 from text_to_sql_agent.application.services.plan_joins_service import PlanJoinsService
 from text_to_sql_agent.application.services.resolve_access_node import make_resolve_access_node
 from text_to_sql_agent.application.services.resolve_access_service import ResolveAccessService
@@ -49,6 +53,7 @@ class Container:
     graph_store: Neo4jGraphStore
     edge_proposal_store: PgEdgeProposalStore
     plan_joins_service: PlanJoinsService
+    generate_sql_service: GenerateSqlService
     clarify_service: ClarifyService
     auth_provider: AuthProvider
     resolve_access_service: ResolveAccessService
@@ -68,6 +73,8 @@ def build_container(
     permission_store: PermissionStore | None = None,
     checkpointer: object | None = None,
     clarify_service: ClarifyService | None = None,
+    plan_joins_service: PlanJoinsService | None = None,
+    generate_sql_service: GenerateSqlService | None = None,
 ) -> Container:
     """Дефолтная сборка; `settings=None` → fail-fast чтение окружения.
 
@@ -77,9 +84,10 @@ def build_container(
     сервисный DSN записи в память знаний (ruling W1, ревью S06 Important-2).
     `checkpointer` — сессии interrupt-механики (S08/feat-008, ruling R2 ARCH-GATE):
     None → ValkeyCheckpointer (TTL из Settings); инъекция фейка — юнит-тесты без
-    инфры (S00 правило 7, прецедент permission_store). `clarify_service` —
-    инъекция скриптового сервиса юнит-тестов wiring (S00 правило 7 — LLM в тестах
-    только моки; реальный контур собирает ClarifyService со швом бюджета Q7).
+    инфры (S00 правило 7, прецедент permission_store). `clarify_service` /
+    `plan_joins_service` / `generate_sql_service` — инъекции скриптовых сервисов
+    юнит-тестов wiring и integration-прогонов без LLM (S00 правило 7 — LLM в
+    тестах только моки; реальный контур собирает сервисы со швом бюджета Q7).
     """
     settings = settings or load_settings()
     tracer: Tracer = JsonlTracer(settings.trace_jsonl_path)
@@ -124,14 +132,22 @@ def build_container(
     # (миграция 0009, ruling Q1 ARCH-GATE S09); append-only через отсутствие
     # UPDATE/DELETE/SELECT-грантов.
     edge_proposal_store = PgEdgeProposalStore(settings.agent_planner_dsn)
-    # Узел plan_joins (S09): retrieval + граф + ранжирование. Шов бюджета
-    # (ruling Q7): остаток = кап запроса − резидентный аккумулятор адаптера;
-    # FSM (V4) заменит на порт BudgetGuard.
-    plan_joins_service = PlanJoinsService(
+    # Узел plan_joins (S09 сервис, подключение к FSM — S10/feat-010): retrieval +
+    # граф + ранжирование. Шов бюджета (ruling Q7): остаток = кап запроса −
+    # резидентный аккумулятор адаптера; FSM (V4) заменит на порт BudgetGuard.
+    plan_joins_service = plan_joins_service or PlanJoinsService(
         llm=llm,
         vector_store=vector_store,
         graph_store=graph_store,
         edge_proposals=edge_proposal_store,
+        budget_remaining_roubles=lambda: settings.budget_per_request_rub - llm.budget_used_rub,
+    )
+    # Узел generate_sql (S10/feat-010): наполнение скелета deepseek/mid; ретраи
+    # M1 с эскалацией mid→strong при остатке с резервом (ruling R7 ARCH-GATE —
+    # тот же шов бюджета, что у plan_joins/clarify)
+    generate_sql_service = generate_sql_service or GenerateSqlService(
+        llm=llm,
+        vector_store=vector_store,
         budget_remaining_roubles=lambda: settings.budget_per_request_rub - llm.budget_used_rub,
     )
     # Права и identity (S05/feat-005): чтение настроек — agent_planner (гранты
@@ -170,11 +186,15 @@ def build_container(
         recursion_limit=settings.fsm_recursion_limit,
         # S05/feat-005: resolve_access — содержательный узел (права из настроек);
         # S08/feat-008: clarify — классификация + interrupt (шлюз-адаптер —
-        # orchestration, ruling R2); заглушки остаются для юнит-тестов каркаса
-        # (test_graph строит граф сам)
+        # orchestration, ruling R2); S10/feat-010: plan_joins (сервис S09) →
+        # build_skeleton (код) → generate_sql (наполнение mid); заглушки остаются
+        # для юнит-тестов каркаса (test_graph строит граф сам)
         node_overrides={
             "resolve_access": make_resolve_access_node(resolve_access_service, tracer=tracer),
             "clarify": make_clarify_node(clarify_service, LangGraphInterruptGate(), tracer=tracer),
+            "plan_joins": make_plan_joins_node(plan_joins_service, tracer=tracer),
+            "build_skeleton": make_build_skeleton_node(tracer=tracer),
+            "generate_sql": make_generate_sql_node(generate_sql_service, tracer=tracer),
         },
     )
     answer_question = AnswerQuestion(runner=fsm_runner, llm=llm)
@@ -188,6 +208,7 @@ def build_container(
         graph_store=graph_store,
         edge_proposal_store=edge_proposal_store,
         plan_joins_service=plan_joins_service,
+        generate_sql_service=generate_sql_service,
         clarify_service=clarify_service,
         auth_provider=auth_provider,
         resolve_access_service=resolve_access_service,

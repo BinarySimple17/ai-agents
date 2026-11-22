@@ -751,3 +751,198 @@ class TestAnswerQuestion:
         result = use_case.resume("ответ", thread_id="t-second")
         assert result.paused is True
         assert result.thread_id == "t-second"
+
+
+class _ScriptedPlanService:
+    """Скриптовый планер для FSM-пути (S00-7): один исход на прогон."""
+
+    def __init__(self, result: Any) -> None:
+        self._result = result
+        self.called = 0
+
+    def plan(self, question: str, *, ctx: Any, permissions: Any) -> Any:
+        self.called += 1
+        return self._result
+
+
+class _ScriptedGenerateService:
+    """Скриптовый генератор для FSM-пути (S00-7): один исход на прогон."""
+
+    def __init__(self, result: Any) -> None:
+        self._result = result
+        self.called = 0
+
+    def generate(self, **kwargs: Any) -> Any:
+        self.called += 1
+        return self._result
+
+
+def _valid_join_plan() -> Any:
+    from text_to_sql_agent.domain.join_plan import JoinPlan, JoinPlanEdge
+
+    return JoinPlan(
+        tables=["orders", "order_items"],
+        edges=[
+            JoinPlanEdge(
+                rel_id="e_orders_items",
+                from_table="orders",
+                to_table="order_items",
+                from_columns=("order_id",),
+                to_columns=("order_id",),
+                join_type="inner",
+            )
+        ],
+        graph_version=1,
+    )
+
+
+class TestGenerateSqlPath:
+    """S10/feat-010: содержательные узлы plan_joins → build_skeleton → generate_sql
+    в FSM-пути (validate_sql/check_cost/… — заглушки-транзиты S04 до S11/S12)."""
+
+    def _runner(
+        self,
+        plan_result: Any,
+        generate_result: Any,
+        tracer: Any | None = None,
+    ) -> tuple[Any, _ScriptedPlanService, _ScriptedGenerateService]:
+        from text_to_sql_agent.application.services.build_skeleton_node import (
+            make_build_skeleton_node,
+        )
+        from text_to_sql_agent.application.services.generate_sql_node import (
+            make_generate_sql_node,
+        )
+        from text_to_sql_agent.application.services.plan_joins_node import make_plan_joins_node
+
+        plan_service = _ScriptedPlanService(plan_result)
+        generate_service = _ScriptedGenerateService(generate_result)
+        runner = build_fsm_runner(
+            tracer=tracer,
+            caps=CAPS,
+            checkpointer=MemorySaver(),
+            deadline_s=90.0,
+            recursion_limit=50,
+            node_overrides={
+                "resolve_access": _rights_passing_node,
+                "plan_joins": make_plan_joins_node(plan_service, tracer=tracer),
+                "build_skeleton": make_build_skeleton_node(tracer=tracer),
+                "generate_sql": make_generate_sql_node(generate_service, tracer=tracer),
+            },
+        )
+        return runner, plan_service, generate_service
+
+    def _scripted_plan(self, **kwargs: Any) -> Any:
+        from text_to_sql_agent.application.services.plan_joins_service import (
+            PlanJoinsResult,
+            PlanOutcome,
+        )
+
+        defaults: dict[str, Any] = {
+            "outcome": PlanOutcome.PLAN,
+            "plan": _valid_join_plan(),
+            "graph_version": 1,
+            "llm_calls": 2,
+        }
+        defaults.update(kwargs)
+        return PlanJoinsResult(**defaults)
+
+    def _scripted_sql(self, **kwargs: Any) -> Any:
+        from text_to_sql_agent.application.services.generate_sql_service import (
+            GenerateSqlOutcome,
+            GenerateSqlResult,
+        )
+
+        defaults: dict[str, Any] = {
+            "outcome": GenerateSqlOutcome.SQL,
+            "sql": (
+                "SELECT count(*)\nFROM orders\n"
+                "INNER JOIN order_items ON orders.order_id = order_items.order_id"
+            ),
+            "llm_calls": 1,
+        }
+        defaults.update(kwargs)
+        return GenerateSqlResult(**defaults)
+
+    def test_full_path_reaches_done_with_sql_and_skeleton(self) -> None:
+        tracer = _RecordingTracer()
+        runner, plan_service, generate_service = self._runner(
+            self._scripted_plan(), self._scripted_sql(), tracer=tracer
+        )
+        final = runner.run(initial_state(QUESTION, user_id="u_analyst"), thread_id="t-gen")
+        assert final["outcome"] == "done"
+        assert final["visited_nodes"] == HAPPY_PATH
+        assert final["sql"].startswith("SELECT count(*)")
+        assert final["join_plan"]["tables"] == ["orders", "order_items"]
+        assert final["skeleton_hash"]  # вход валидатора S11 в state (контракт стыка 1)
+        assert generate_service.called == 1
+        assert plan_service.called == 1
+
+    def test_budget_counts_scripted_verdicts(self) -> None:
+        # Ruling R6: узлы учитывают фактический расход (заглушка clarify платит 1,
+        # планер 2, генератор 1, заглушка interpret_result — 1 (LLM-узел канона,
+        # содержательный — S15) → гвард видит 5, не «бесплатные» узлы)
+        runner, _, _ = self._runner(self._scripted_plan(), self._scripted_sql())
+        final = runner.run(initial_state(QUESTION, user_id="u_analyst"), thread_id="t-budget")
+        assert final["budget_used"]["llm_calls"] == 5
+
+    def test_plan_fail_is_terminal_fail(self) -> None:
+        # Ruling R2: FAIL планера (исчерпание M1 внутри сервиса) → terminal_fail
+        from text_to_sql_agent.application.services.plan_joins_service import PlanOutcome
+
+        runner, _, generate_service = self._runner(
+            self._scripted_plan(outcome=PlanOutcome.FAIL, error="шлюз недоступен"),
+            self._scripted_sql(),
+        )
+        final = runner.run(initial_state(QUESTION, user_id="u_analyst"), thread_id="t-pfail")
+        assert final["outcome"] == "fail"
+        assert final["error"]["class"] == "plan_failed"
+        assert generate_service.called == 0  # до генератора прогон не дошёл
+
+    def test_plan_no_path_is_degrade_terminal(self) -> None:
+        # Ruling R2: «нет активного пути» → узел degrade (behavior feat-009);
+        # заявка владельцу записана S09-сервисом, отказ формулирует degrade (S15)
+        from text_to_sql_agent.application.services.plan_joins_service import PlanOutcome
+
+        runner, _, generate_service = self._runner(
+            self._scripted_plan(outcome=PlanOutcome.NO_PATH, error="активных рёбер нет"),
+            self._scripted_sql(),
+        )
+        final = runner.run(initial_state(QUESTION, user_id="u_analyst"), thread_id="t-pnp")
+        assert final["outcome"] == "degrade"
+        assert "plan_joins" in final["visited_nodes"]
+        assert "degrade" in final["visited_nodes"]
+        assert generate_service.called == 0
+
+    def test_generate_fail_is_degrade_terminal(self) -> None:
+        # Ruling R2: отказ генератора → degrade (носитель отказа — канон degrade)
+        from text_to_sql_agent.application.services.generate_sql_service import GenerateSqlOutcome
+
+        runner, _, _ = self._runner(
+            self._scripted_plan(),
+            self._scripted_sql(outcome=GenerateSqlOutcome.FAIL, error="наполнение не удалось"),
+        )
+        final = runner.run(initial_state(QUESTION, user_id="u_analyst"), thread_id="t-gfail")
+        assert final["outcome"] == "degrade"
+        assert final["sql"] is None
+        assert final["error"]["class"] == "generate_sql_unavailable"
+
+    def test_skeleton_defect_from_planless_plan_degrades(self) -> None:
+        # Дефект каркаса: PLAN-исход без плана → build_skeleton fail-closed → degrade
+        runner, _, generate_service = self._runner(
+            self._scripted_plan(plan=None), self._scripted_sql()
+        )
+        final = runner.run(initial_state(QUESTION, user_id="u_analyst"), thread_id="t-sdef")
+        assert final["outcome"] == "degrade"
+        assert final["error"]["class"] == "skeleton_defect"
+        assert generate_service.called == 0
+
+    def test_verdict_trace_events_recorded(self) -> None:
+        # Ruling R6: события вердиктов узлов — факты, без SQL-текста
+        tracer = _RecordingTracer()
+        runner, _, _ = self._runner(self._scripted_plan(), self._scripted_sql(), tracer=tracer)
+        runner.run(initial_state(QUESTION, user_id="u_analyst"), thread_id="t-trace")
+        events = [t.event for t in tracer.records]
+        assert "plan_joins.verdict" in events
+        assert "generate_sql.verdict" in events
+        sql_events = [t for t in tracer.records if t.event == "generate_sql.verdict"]
+        assert all("sql" not in t.payload for t in sql_events)  # текст SQL не трейсится

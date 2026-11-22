@@ -235,19 +235,64 @@ class _ScriptedClarify:
         return ClarifyResult(outcome=ClarifyOutcome.UNAMBIGUOUS)
 
 
+class _ScriptedPlanJoins:
+    """S10 подключила планер к FSM: прогон тестов resolve_access идёт мимо LLM-ног
+    (S00-7) — PLAN-исход с планом из активных рёбер сидов (orders ↔ order_items)."""
+
+    def plan(self, question: str, *, ctx: object, permissions: object) -> object:
+        from text_to_sql_agent.application.services.plan_joins_service import (
+            PlanJoinsResult,
+            PlanOutcome,
+        )
+        from text_to_sql_agent.domain.join_plan import JoinPlan, JoinPlanEdge
+
+        return PlanJoinsResult(
+            outcome=PlanOutcome.PLAN,
+            plan=JoinPlan(
+                tables=["orders", "order_items"],
+                edges=[
+                    JoinPlanEdge(
+                        rel_id="e_orders_items",
+                        from_table="orders",
+                        to_table="order_items",
+                        from_columns=("order_id",),
+                        to_columns=("order_id",),
+                        join_type="inner",
+                    )
+                ],
+                graph_version=1,
+            ),
+        )
+
+
+class _ScriptedGenerateSql:
+    """Генератор — мок (S00-7): SQL достаточен, чтобы happy path дошёл до done."""
+
+    def generate(self, **kwargs: object) -> object:
+        from text_to_sql_agent.application.services.generate_sql_service import (
+            GenerateSqlOutcome,
+            GenerateSqlResult,
+        )
+
+        return GenerateSqlResult(outcome=GenerateSqlOutcome.SQL, sql="SELECT count(*) FROM orders")
+
+
 class TestFSMThroughContainer:
     """Task 4: FSM-путь жив — тест через собранный Container, не напрямую сервис."""
 
     @pytest.fixture()
     def container(self, tmp_path, postgres_available):
-        # clarify — скриптовый сервис (реальный узел зовёт LLM; здесь проверяется
-        # resolve_access); checkpointer — MemorySaver (живой Valkey — test_clarify_resume)
+        # clarify/plan_joins/generate_sql — скриптовые сервисы (реальные узлы
+        # зовут LLM; здесь проверяется resolve_access); checkpointer — MemorySaver
+        # (живой Valkey — test_clarify_resume)
         from langgraph.checkpoint.memory import MemorySaver
 
         return build_container(
             _settings(tmp_path),
             checkpointer=MemorySaver(),
             clarify_service=_ScriptedClarify(),  # type: ignore[arg-type]
+            plan_joins_service=_ScriptedPlanJoins(),  # type: ignore[arg-type]
+            generate_sql_service=_ScriptedGenerateSql(),  # type: ignore[arg-type]
         )
 
     def test_known_user_done_with_permissions_in_state(self, container) -> None:
