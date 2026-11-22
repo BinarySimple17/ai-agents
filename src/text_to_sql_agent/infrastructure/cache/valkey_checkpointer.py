@@ -35,6 +35,7 @@ from langgraph.checkpoint.base import (
     get_checkpoint_metadata,
     writes_sort_key,
 )
+from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from redis import Redis
 from redis.exceptions import RedisError
 
@@ -45,6 +46,31 @@ from text_to_sql_agent.application.ports.checkpointer import CheckpointStoreErro
 _KEY_PREFIX = "ckptr"
 # Разделитель kind/данных сериализатора в блобе (US — не встречается в kind)
 _KIND_SEP = b"\x1f"
+
+# Явный allowlist доменных типов state в чекпоинте — deny-by-default канона
+# (S27, находка живого resume: дефолтный JsonPlusSerializer пропускает
+# незарегистрированные типы с deprecation-warning «will be blocked in a
+# future version»; с явным списком чужой тип на LOAD получает «Blocked
+# deserialization» и сырой dict вместо VO — семантика ревью S27 I1: dump
+# pydantic-VO список НЕ гейтит, гейтится загрузка; dict-дрейф на resume —
+# тихий, поэтому новый VO в AgentState (S00 контракт 1) добавляется сюда
+# осознанно, тем же коммитом с правкой state, иначе поля молча станут dict).
+# Ревью S27 I2: живое VO в state сейчас одно — Assumption; остальные записи —
+# проактивная авторизация (join_plan/skeleton/compact/validation пишутся
+# model_dump()-dict; при переводе поля на живой VO — регресс roundtrip).
+# (module, name) — формат ключа реестра LangGraph.
+_CHECKPOINT_MSGPACK_TYPES: tuple[tuple[str, str], ...] = (
+    ("text_to_sql_agent.domain.entities", "Assumption"),
+    ("text_to_sql_agent.domain.join_plan", "JoinPlan"),
+    ("text_to_sql_agent.domain.join_plan", "JoinPlanEdge"),
+    ("text_to_sql_agent.domain.skeleton", "Skeleton"),
+    ("text_to_sql_agent.domain.result_compact", "ResultCompact"),
+    ("text_to_sql_agent.domain.sql_validation", "ValidationVerdict"),
+    ("text_to_sql_agent.domain.sql_validation", "SqlSource"),
+    ("text_to_sql_agent.domain.sql_validation", "SqlColumn"),
+    ("text_to_sql_agent.domain.sql_validation", "SqlJoin"),
+    ("text_to_sql_agent.domain.sql_validation", "SqlAudit"),
+)
 
 
 def _pack(typed: tuple[str, bytes]) -> bytes:
@@ -79,7 +105,9 @@ class ValkeyCheckpointer(BaseCheckpointSaver[str]):
     """Checkpointer на Valkey: сессии interrupt-прогонов с TTL (S00 стек — redis-py)."""
 
     def __init__(self, url: str, *, ttl_s: int) -> None:
-        super().__init__()
+        super().__init__(
+            serde=JsonPlusSerializer(allowed_msgpack_modules=_CHECKPOINT_MSGPACK_TYPES)
+        )
         self._client = Redis.from_url(url, decode_responses=False)
         self._ttl_s = ttl_s  # канон 10 мин (S00 стык 1); инъекция короткого — тесты
 

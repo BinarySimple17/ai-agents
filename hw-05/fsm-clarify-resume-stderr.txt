@@ -1,0 +1,32 @@
+▶ Вопрос: клиенты, пришедшие из рекламы
+  → узел resolve_access
+  → узел clarify
+  · qwen3.8-9b · 957→102 ток · 6.5с · 0.00₽
+  · clarify: исход clarify, допущений 1
+  → узел clarify
+  ⏸ interrupt — ждёт ответа: Нужно ли учитывать только заказы с `campaign_id IS NOT NULL` (только из рекламы), или также включать заказы без кампани…
+  → узел clarify
+  → узел plan_joins
+  · qwen3.8-9b · 1354→35 ток · 5.8с · 0.00₽
+  · plan_joins: исход plan, gv 225, кандидаты: campaigns, orders, customers
+  → узел build_skeleton
+  → узел generate_sql
+  · qwen3.8-9b · 1187→57 ток · 6.0с · 0.00₽
+  · generate_sql: исход sql, таблиц 2, вызовов 1, эскалация нет
+  → узел validate_sql
+  · validate_sql: исход hallucination, замечаний 1, LIMIT 1000
+  → узел diagnose_error
+  · qwen3.8-9b · 626→92 ток · 2.0с · 0.00₽
+  · diagnose: класс semantics, вызовов 1
+  → узел generate_sql
+  · qwen3.8-9b · 1330→57 ток · 6.0с · 0.00₽
+  · generate_sql: исход sql, таблиц 2, вызовов 1, эскалация нет
+  → узел validate_sql
+  · validate_sql: исход ok, замечаний 0, LIMIT 1000
+  → узел check_cost
+  → узел execute_sql
+  → узел compact_result
+  → узел interpret_result
+  · qwen3.8-9b · 740→102 ток · 2.6с · 0.00₽
+  · qwen3.8-9b · 801→61 ток · 1.1с · 0.00₽
+  · interpret: answer, строк 1, 0.00₽

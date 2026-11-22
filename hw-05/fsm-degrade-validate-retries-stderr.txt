@@ -1,0 +1,37 @@
+▶ Вопрос: Сколько клиентов имеет более одной рекламной кампании?
+  → узел resolve_access
+  → узел clarify
+  · qwen3.8-9b · 812→67 ток · 5.8с · 0.00₽
+  · clarify: исход unambiguous, допущений 1
+  → узел plan_joins
+  · plan_joins: исход plan, gv 225, кандидаты: campaigns, orders
+  → узел build_skeleton
+  → узел generate_sql
+  · qwen3.8-9b · 974→90 ток · 6.3с · 0.00₽
+  · generate_sql: исход sql, таблиц 2, вызовов 1, эскалация нет
+  → узел validate_sql
+  · validate_sql: исход hallucination, замечаний 1, LIMIT 1000
+  → узел diagnose_error
+  · qwen3.8-9b · 645→134 ток · 2.9с · 0.00₽
+  · diagnose: класс semantics, вызовов 1
+  → узел generate_sql
+  · qwen3.8-9b · 1171→71 ток · 6.1с · 0.00₽
+  · generate_sql: исход sql, таблиц 2, вызовов 1, эскалация нет
+  → узел validate_sql
+  · validate_sql: исход hallucination, замечаний 1, LIMIT 1000
+  → узел diagnose_error
+  · qwen3.8-9b · 615→109 ток · 2.6с · 0.00₽
+  · diagnose: класс semantics, вызовов 1
+  → узел generate_sql
+  · qwen3.8-9b · 1122→71 ток · 6.0с · 0.00₽
+  · generate_sql: исход sql, таблиц 2, вызовов 1, эскалация да
+  → узел validate_sql
+  · validate_sql: исход ok, замечаний 0, LIMIT 1000
+  → узел check_cost
+  → узел execute_sql
+  → узел diagnose_error
+  · qwen3.8-9b · 626→92 ток · 2.2с · 0.00₽
+  · diagnose: класс syntax, вызовов 1
+  → узел degrade
+  · qwen3.8-9b · 473→111 ток · 2.1с · 0.00₽
+  · degrade: причина technical, формулировка модель, вариант предложен

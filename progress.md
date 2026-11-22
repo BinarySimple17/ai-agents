@@ -7,9 +7,9 @@
 ## Current State
 
 **Last Updated:** 2026-11-22
-**Session ID:** … → S11 → S14 → **S15 ✅ (compact_result + interpret_result + degrade + BudgetGuard — feat-015 → passing [verify-feature PASS: 66 test_interpret; REVIEW-GATE «Ready to merge: Yes» после fix-волны 4655c66 + scoped re-review 5/5]; unit 807 + integration 82; layer-3 live: happy-path done с финальным ответом + полный цикл самокоррекции → degrade с честным отказом; amend ADR-007 v1.3 [blocker canon-check]; BL-015/BL-005 закрыты, BL-020 открыт)**
-**Active Feature:** — (feat-015 passing; веха V4: 7/8 фич [feat-004/005/008/010/011/014/015], следующая — S27 сборка hw-05)
-**Last commit:** ветка `feat-015-interpret-result` — merge --no-ff в `milestone/v4` по закрытии сессии
+**Session ID:** … → S15 → **S27 ✅ (интеграционная сборка вехи V4 — ДЗ-05 собран: живые прогоны FSM 5 сцен + артефакт hw-05/README.md [hw-plan §5]; интеграционные находки закрыты фиксами с регрессами — ConsoleTracer FSM-рендер + agent.start в раннере [1a61840], allowlist msgpack-типов чекпойнтера [6cd7d9f], BL-020 стемы санитайзера [d3f22ca]; BL-010 закрыт; 898 passed)**
+**Active Feature:** — (сессия без фич; веха V4 собрана целиком: 7 фич passing + сборочная S27; сдача ДЗ-05 — по команде владельца, D-031)
+**Last commit:** ветка `harness/hw-05-artifacts` — merge --no-ff в `milestone/v4` по закрытии сессии
 
 ## Status
 
@@ -61,16 +61,14 @@
 
 ### What's In Progress
 
-- (нет — S15 закрывается; см. отчёт в `solution/sessions/archive/S15_session.md`)
+- (нет — S27 закрывается; см. отчёт в файле сессии `solution/sessions/archive/S27_session.md` после make close-session)
 
 ### Next Steps
 
-1. **Веха V4 (ДЗ-05, state machine): S15 ✅ (feat-015 passing — FSM 15/15 узлов содержательные); осталось: S27 (сборка hw-05) — артефакт ДЗ-05; заглушки FSM подменяются сервисами через node_overrides в composition (прецеденты S05/S08/S10/S11/S14/S15); внутренний дедлайн 28.12.2026; сессии создавать/закрывать через make new-session/close-session (S28)**
-2. **Merge feat-021-hybrid-memory → milestone/v3 (--no-ff, D-029)** + финальный make check — веха V3 (ДЗ-04) собрана: feat-007+feat-009+feat-021 passing
-2. **Merge feat-021-hybrid-memory → milestone/v3 (--no-ff, D-029)** + финальный make check — веха V3 (ДЗ-04) собрана: feat-007+feat-009+feat-021 passing
-3. **Сдача ДЗ-02/ДЗ-03 по команде владельца** (01.12/07.12): видео/скрин ДЗ-03 — за владельцем; ДЗ-02 артефакт `hw-02/README.md` уже синхронизирован (--plain)
-4. Хвосты S19 — в s19-переносах (отчёт сессии): finish_reason=length с текстом — incomplete-политика feat-015 (V4/S15); abandon генератора не учитывает потраченные токены — S15/BudgetGuard; TTFT 5.7с локально > порога 3с — SLO-калибровка (выпускная)
-5. Открытые беклоги: BL-001 (P2), BL-005/BL-006/BL-010/BL-011/BL-012 (P3); BL-007/BL-009 закрыты S26; BL-003 решён целиком (п.1 S20, п.2 S09/D-030, п.3 S07; п.4 — за S8/аудитом)
+1. **Веха V4 (ДЗ-05, state machine) — СОБРАНА (S27 ✅): артефакт hw-05/README.md [hw-plan §5: схема = state-agent v1.8 как есть, код графа, ветвления clarify/validate/probe/degrade, 5 живых сцен с трейсами, ограничения стенда]; сдача ДЗ-05 и слияние milestone/v4 → dev/main — ТОЛЬКО по явной команде владельца (D-031); внутренний дедлайн 28.12.2026**
+2. **Сдача ДЗ-02/ДЗ-03 по команде владельца** (01.12/07.12): видео/скрин ДЗ-03 — за владельцем; ДЗ-02 артефакт `hw-02/README.md` уже синхронизирован (--plain)
+3. Хвосты S19 — в s19-переносах (отчёт сессии): finish_reason=length с текстом — incomplete-политика feat-015 (V4/S15); abandon генератора не учитывает потраченные токены — S15/BudgetGuard; TTFT 5.7с локально > порога 3с — SLO-калибровка (выпускная)
+4. Открытые беклоги: BL-001 (P2), BL-006/BL-008/BL-011/BL-012/BL-013/BL-014/BL-017 (P3); BL-007/BL-009 закрыты S26; BL-010/BL-020 закрыты S27; BL-003 решён целиком (п.1 S20, п.2 S09/D-030, п.3 S07; п.4 — за S8/аудитом); BL-015/BL-016 закрыты S15/S14
 
 ## Blockers / Risks
 
@@ -151,6 +149,7 @@
 - [x] Повторный clean-check — `make clean-check` (S19, 2026-11-20): 7 passed, 0 failed
 - [x] **S15 Evidence (2026-11-22):** baseline `./init.sh` EXIT=0 (818 passed на 072fa53); ARCH-GATE canon-check needs-decision → rulings R1–R8 до кода (blocker — amend ADR-007 v1.3 тем же коммитом с degrade); коммиты 14323af (старт+Task 1) → b985673 (Task 2) → 235f9c3 (Task 3+ADR-007 v1.3) → c5daf5c (Task 4, BL-015/BL-005 закрыты) → 4b1f433 (Task 5) → f4d702f (нарратив+docs) → 4655c66 (fix-волна 0C/2I/3M) → eb29e60 (доводка re-review + BL-020); unit 807 + integration 82; `make verify-feature F=feat-015` → **PASS** (66 test_interpret, state=passing, evidence записан); layer-3 live (локальный qwen3.8-9b + БД): ① «Сколько всего заказов в базе?» — 10 узлов → done, ответ+исполненный SQL+допущение из usage_notes ребра+стоимость; ② «премии» под u_logist — права-фильтрованный мир → clarify-цикл → clarification по TTL (честно); ③ «Сколько клиентов имеет более одной рекламной кампании?» (нет активного ребра customers–campaigns) — полный цикл → diagnose → ретраи ×2 → degrade с честным отказом (только свои темы, без чужих имён/подтверждений — санитайзер в бою)
 - [ ] `make infra-up` + первая миграция — feat-002 (S02)
+- [x] **S27 Evidence (2026-11-22, сборка ДЗ-05):** baseline ./init.sh EXIT=0 (889 passed, uv sync + ruff + self-test 23); ARCH-GATE canon-check архитектора **compliant** до кода (ruling: deny-сцены — ОБЕ [clarify-мир + no-path/degrade]; BL-020 закрывать по файлу беклога; санитайзер — degrade_service.py, не guardrails); инфра-цепочка: migrate → sync-graph (7 вершин/5 рёбер, gv=221–225 монотонен) → index-knowledge (324 дока: ddl 7 + relationship 5 + glossary 7 + few_shot 5 + noise 300); **живые прогоны FSM (LM Studio qwen3.8-9b, трейсы hw-05/)**: ① happy-path «Сколько заказов у клиентов из РФ?» u_logist — 10 узлов → done «100 заказов», 'RU' с первого хода [fsm-happy-*]; ② clarify-interrupt+resume «клиенты, пришедшие из рекламы» + stdin — clarify×2 → done «20 клиентов» first-touch [fsm-clarify-resume-*]; ③ EOF → clarification честно [fsm-clarify-eof-*]; ④ retry «Сколько заказов у клиентов из Бурундии?» — validate hallucination → diagnose (semantics) → регенерация → done «0 шт.» [fsm-retry-*]; ⑤ deny «премии» u_analyst — права-фильтрованный мир → clarify → clarification, grep employees|bonuses по пользовательскому тексту = 0 [fsm-deny-bonuses-*]; ⑥ degrade u_logist — 2 контура: validate-ретраи ×2 + эскалация strong → execute-ошибка (БД второй рубеж, ACL='*' не ловит несуществующую колонку) → diagnose → fuse исчерпан → честный отказ своими темами [fsm-degrade-validate-retries-*], execute-ретраи ×3 → degrade [fsm-degrade-execute-retries-*]; **фиксы с регрессами**: 1a61840 (ConsoleTracer FSM-события + agent.start в раннере — трейс артефакта полон), 6cd7d9f (allowlist msgpack ValkeyCheckpointer — deprecation-warning LangGraph на живом resume; deny-семантика: тип вне списка — «Blocked deserialization» + dict на load [dump не гейтится — выправлено fix-волной ревью I1]), d3f22ca (BL-020: стемы имее/обнаруж/встреча/найден + 4 бит-теста + гвард шаблонов); a5f9a38 (hw-05/README.md); BL-010 закрыт (глоссарий проиндексирован, FSM-регресс 'RU' живой); `make check` EXIT=0 (**899 passed** + self-test); планер недетерминирован — no_path сегодня не воспроизводится, фиксируем наблюдаемое (правило 4); REVIEW-GATE — по факту
 
 ## Notes for Next Session
 

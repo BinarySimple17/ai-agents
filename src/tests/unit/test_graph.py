@@ -459,6 +459,27 @@ class TestInterruptFlow:
         assert final["outcome"] == "fail"
         assert final["error"]["class"] == "resume_without_interrupt"
 
+    def test_run_emits_agent_start_once_resume_does_not(self) -> None:
+        # S27 Task 1: трейс FSM-прогона начинается с вопроса (agent.start,
+        # mode=fsm) — «вопрос принят» с trace_id раннера; resume продолжает
+        # ТОТ ЖЕ прогон — повторного «вопрос принят» нет
+        tracer = _RecordingTracer()
+        runner, _ = self._runner(
+            ClarifyResult(outcome=ClarifyOutcome.CLARIFY, question="За какой период?"),
+            tracer=tracer,
+        )
+        runner.run(initial_state(QUESTION, user_id="u_analyst"), thread_id="t-start")
+        starts = [e for e in tracer.records if e.event == "agent.start"]
+        assert len(starts) == 1
+        payload = starts[0].payload
+        assert payload["question"] == QUESTION
+        assert payload["user_id"] == "u_analyst"
+        assert payload["mode"] == "fsm"
+        assert payload["trace_id"]  # trace_id ставит раннер — корреляция трейса
+        final = runner.resume("за 2026 год", thread_id="t-start")
+        assert final["outcome"] == "done"
+        assert len([e for e in tracer.records if e.event == "agent.start"]) == 1
+
     def test_interrupt_without_checkpointer_is_fail_not_traceback(self) -> None:
         # Ловушка 1 S08: interrupt без checkpointer = GraphInterrupt наружу —
         # раннер переводит в честный fail (misuse сборки)

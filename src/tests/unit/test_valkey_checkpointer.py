@@ -261,3 +261,83 @@ class TestStoreBoundary:
         saver, _ = _saver(monkeypatch, _FakeClock(), fail=True)
         with pytest.raises(CheckpointStoreError, match="хранилище сессий недоступно"):
             saver.list(_config("t1"))
+
+
+# --- Allowlist msgpack-сериализации (S27, находка живого resume) ---
+# Дефолтный JsonPlusSerializer пропускал незарегистрированные типы с
+# deprecation-warning «will be blocked in a future version» — VO из AgentState
+# (Assumption на interrupt-чекпоинте) десериализовались «на честном слове».
+# Семантика allowlist (ревью S27 I1, проверено на живом serde): dump
+# pydantic-VO список НЕ гейтит; гейтится LOAD — тип вне списка получает
+# «Blocked deserialization» и СЫРОЙ dict вместо VO (тихий dict-дрейф на resume).
+
+
+class _Foreign:
+    """Несериализуемый объект (без model_dump/_asdict) — не про allowlist."""
+
+
+def _checkpointer() -> ValkeyCheckpointer:
+    # Redis.from_url ленив — соединения нет до первой команды; serde-тесты
+    # используют только self.serde, инфра не нужна (S00 правило 7)
+    return ValkeyCheckpointer("redis://localhost:6399/0", ttl_s=600)
+
+
+def test_domain_vos_roundtrip_without_unregistered_warning(
+    recwarn: pytest.WarningsRecorder,
+) -> None:
+    import warnings as _warnings
+
+    from text_to_sql_agent.domain.entities import Assumption
+    from text_to_sql_agent.domain.result_compact import ResultCompact
+    from text_to_sql_agent.domain.skeleton import Skeleton
+
+    ckpt = _checkpointer()
+    assumption = Assumption(source="user_answer", text="за 2026 год")
+    skeleton = Skeleton(
+        tables=("orders", "customers"),
+        from_table="orders",
+        join_sections=("INNER JOIN customers ON orders.customer_id = customers.customer_id",),
+        mandatory_predicates=(),
+        skeleton_hash="abc123",
+    )
+    blob = ckpt.serde.dumps_typed((assumption, skeleton, None))
+    with _warnings.catch_warnings():
+        _warnings.simplefilter("error")  # «unregistered type» теперь ошибка теста
+        assumption_back, skeleton_back, _ = ckpt.serde.loads_typed(blob)
+    assert assumption_back == assumption
+    assert skeleton_back == skeleton
+    assert not [w for w in recwarn if "unregistered" in str(w.message)]
+    # ResultCompact — тот же allowlist (pydantic-VO из state, S15)
+    compact = ResultCompact(row_count=1, sample=[{"n": 5}])
+    blob2 = ckpt.serde.dumps_typed((compact,))
+    (compact_back,) = ckpt.serde.loads_typed(blob2)
+    assert compact_back == compact
+
+
+def test_unregistered_vo_degrades_to_dict_on_load_not_vo() -> None:
+    # Честный deny-семант (ревью S27 I1): pydantic-VO вне allowlist dump-ится,
+    # но на LOAD возвращает сырой dict — НЕ экземпляр класса; «забытый» VO в
+    # state дрейфует в dict после resume — добавление в _CHECKPOINT_MSGPACK_TYPES
+    # обязательно тем же коммитом, что и VO в state (S00 контракт 1)
+    from pydantic import BaseModel
+
+    class _Unregistered(BaseModel):
+        """First-party pydantic-VO, отсутствующий в allowlist."""
+
+        x: int = 1
+
+    ckpt = _checkpointer()
+    blob = ckpt.serde.dumps_typed((_Unregistered(x=5),))  # dump всегда успешен
+    (value,) = ckpt.serde.loads_typed(blob)
+    assert not isinstance(value, _Unregistered)
+    assert value == {"x": 5}  # сырой dict, не VO
+
+
+def test_unserializable_object_rejected_on_dump() -> None:
+    # НЕ про allowlist (ревью S27 I1): произвольный класс без model_dump/_asdict
+    # отвергается движком ormsgpack на dump в любом режиме
+    import pytest as _pytest
+
+    ckpt = _checkpointer()
+    with _pytest.raises(TypeError):
+        ckpt.serde.dumps_typed((_Foreign(),))
