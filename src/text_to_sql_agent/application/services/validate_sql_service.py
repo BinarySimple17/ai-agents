@@ -252,11 +252,16 @@ def _build_audit(tree: exp.Expression) -> SqlAudit:
     for scope in scopes:
         local_sources = sources_by_scope[id(scope)]
         local_refs = {src.ref for src in local_sources}
-        output_aliases = {
-            expr.alias.lower()
-            for expr in scope.args.get("expressions") or []
-            if isinstance(expr, exp.Alias) and expr.alias
-        }
+        # ревью волна-3 (Critical): семантика PG — quoted идентификатор сохраняет
+        # регистр, unquoted складывается в нижний; сопоставление output-алиаса
+        # с именем в ORDER BY — только по ЭФФЕКТИВНЫМ именам (иначе quoted
+        # mixed-case «Country» + unquoted Country — исполняемый ACL-байпас)
+        output_aliases: set[str] = set()
+        for expr in scope.args.get("expressions") or []:
+            if isinstance(expr, exp.Alias):
+                ident = expr.args.get("alias")
+                if isinstance(ident, exp.Identifier):
+                    output_aliases.add(ident.name if ident.quoted else ident.name.lower())
         order_node = scope.args.get("order")
         # ревью волна-2 (Critical, регрессия I3-фикса bf518b7): пропуск — только
         # НЕПОСРЕДСТВЕННО упорядоченное голое unqualified имя (Ordered.this);
@@ -269,7 +274,9 @@ def _build_audit(tree: exp.Expression) -> SqlAudit:
                 if (
                     isinstance(expr, exp.Column)
                     and not expr.table
-                    and expr.name.lower() in output_aliases
+                    and isinstance(expr.this, exp.Identifier)
+                    and (expr.this.name if expr.this.quoted else expr.this.name.lower())
+                    in output_aliases
                 ):
                     skip_ids.add(id(expr))
         for node in _local_nodes(scope):
@@ -295,8 +302,14 @@ def _build_audit(tree: exp.Expression) -> SqlAudit:
                 else:
                     outer = _resolve_outer_ref(name_lower, maps_by_scope[id(scope)])
                     if outer is not None:
+                        # ревью волна-3 (Important): НЕ замена, а ДОПОЛНЕНИЕ
+                        # кандидатов — домен требует '*' на КАЖДОЙ таблице
+                        # (schema-blind: права — единственный прокси существования
+                        # колонки; при коллизии PG читает ЛОКАЛЬНУЮ колонку)
                         whole_row = True
-                        sources = (SqlSource(name=outer.name, kind=outer.kind),)
+                        extra = SqlSource(name=outer.name, kind=outer.kind)
+                        if all(s != extra for s in sources):
+                            sources = (*sources, extra)
             key = (name_lower, sources, whole_row)
             if key not in seen_columns:
                 seen_columns.add(key)

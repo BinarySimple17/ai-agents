@@ -237,6 +237,40 @@ class TestStatementForm:
         )
         assert result.verdict.outcome is ValidationOutcome.DENIED
 
+    def test_order_by_quoted_alias_case_mismatch_denied(self):
+        # ревью волна-3 (Critical — остаток I3-пропуска в 1ab30f7): PG сопоставляет
+        # output-алиас С УЧЁТОМ РЕГИСТРА — quoted «Country» ≠ unquoted Country,
+        # ORDER BY Country берёт input-колонку customers.country (вне прав);
+        # регистронезависимое сравнение валидатора считало это output-алиасом
+        perms = {"orders": ["id", "customer_id", "total", "status"], "customers": ["id", "name"]}
+        result = _validate(
+            'SELECT o.status AS "Country" FROM orders o INNER JOIN customers c '
+            "ON o.customer_id = c.id ORDER BY Country LIMIT 10",
+            permissions=perms,
+        )
+        assert result.verdict.outcome is ValidationOutcome.DENIED
+
+    def test_order_by_quoted_exact_match_ok(self):
+        # quoted-алиас и quoted-точное имя в ORDER BY — легитимный output-алиас
+        perms = {"orders": ["id", "customer_id", "total", "status"], "customers": ["id", "name"]}
+        result = _validate(
+            'SELECT o.status AS "Country" FROM orders o INNER JOIN customers c '
+            'ON o.customer_id = c.id ORDER BY "Country" LIMIT 10',
+            permissions=perms,
+        )
+        assert result.verdict.outcome is ValidationOutcome.OK
+
+    def test_order_by_unquoted_alias_any_case_ok(self):
+        # unquoted алиас + любой регистр ORDER BY — PG складывает оба в нижний
+        # регистр: output-алиас легитимен
+        perms = {"orders": ["id", "customer_id", "total", "status"], "customers": ["id", "name"]}
+        result = _validate(
+            "SELECT o.status AS country FROM orders o INNER JOIN customers c "
+            "ON o.customer_id = c.id ORDER BY Country LIMIT 10",
+            permissions=perms,
+        )
+        assert result.verdict.outcome is ValidationOutcome.OK
+
     def test_correlated_whole_row_requires_star(self):
         # ревью волна-2 (Important): whole-row внешнего скоупа внутри подзапроса —
         # не «колонка» разрешённого локального источника: '*' обязателен и на
@@ -248,6 +282,30 @@ class TestStatementForm:
             permissions=perms,
         )
         assert result.verdict.outcome is ValidationOutcome.DENIED
+
+    def test_correlated_whole_row_local_candidates_stay_checked(self):
+        # ревью волна-3 (Important): fallback НЕ заменяет локальных кандидатов
+        # внешним ref, а ДОПОЛНЯЕТ — домен требует '*' на КАЖДОЙ таблице-
+        # кандидате (schema-blind: права — единственный прокси существования
+        # колонки; PG при коллизии читает ЛОКАЛЬНУЮ customers.country)
+        perms = {"orders": ["*"], "customers": ["id", "name"]}
+        result = _validate(
+            "SELECT (SELECT country FROM customers LIMIT 1) FROM orders country "
+            "INNER JOIN customers c ON country.customer_id = c.id LIMIT 10",
+            permissions=perms,
+        )
+        assert result.verdict.outcome is ValidationOutcome.DENIED
+
+    def test_correlated_whole_row_with_star_everywhere_ok(self):
+        # ревью волна-3 (Minor): позитивный кейс — '*' на обеих таблицах,
+        # correlated whole-row легален (защита от овер-отказа)
+        perms = {"orders": ["*"], "customers": ["*"]}
+        result = _validate(
+            "SELECT (SELECT country FROM customers LIMIT 1) FROM orders country "
+            "INNER JOIN customers c ON country.customer_id = c.id LIMIT 10",
+            permissions=perms,
+        )
+        assert result.verdict.outcome is ValidationOutcome.OK
 
     def test_nested_select_star_is_own_scope_concern(self):
         # ревью волна-2 (Minor): прямая звезда ВНУТРЕННЕГО скоупа — забота своего
