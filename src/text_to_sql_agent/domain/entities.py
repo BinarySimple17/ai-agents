@@ -145,6 +145,13 @@ class AgentState(TypedDict, total=False):
                       БЕЗ имён таблиц — S9), enforced_limit}
     rows/row_count    execute_sql / merge_results (слияние шагов)
     compact           compact_result
+    final_answer      interpret_result / degrade (S15): финальный payload исхода —
+                      {text, sql, assumptions, usage_notes, row_count, truncated,
+                      approximate, incomplete, cost_rub}; degrade добавляет cause/
+                      has_variant (и пишет sql=None — SQL недоступной выборки не
+                      показывается, S9); читают CLI/Streamlit (FSMResult.answer).
+                      Два писателя — как у sql (generate_sql/generate_step_sql):
+                      оба узла — терминальные авторы ответа (done/degrade)
     error             diagnose_error / узлы, поймавшие сбой; кодовое поле — читается
                       ребром execute_sql (SQL-ошибка → diagnose_error, routing),
                       успешный execute_sql ОБЯЗАН очищать его (ревью S04 M2);
@@ -209,6 +216,7 @@ class AgentState(TypedDict, total=False):
     rows: list[Any] | None
     row_count: int | None
     compact: dict[str, Any] | None  # ResultCompact (pydantic — S15/ADR-008)
+    final_answer: dict[str, Any] | None  # {text, sql, assumptions, usage_notes, флаги, cost} — S15
     error: dict[str, Any] | None  # {class, message, probe? — факты пробы (S14, внутренний)}
     diagnosis: dict[str, Any] | None  # {error_class, hint, retry_futile} — S14
     retry_count: int

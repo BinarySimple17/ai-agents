@@ -27,6 +27,12 @@ from text_to_sql_agent.application.ports.tracer import (
     EVENT_AGENT_ROUND,
     EVENT_AGENT_START,
     EVENT_AGENT_TOOL_CALL,
+    EVENT_LLM_BREAKER_OPEN,
+    EVENT_LLM_BUDGET_STOP,
+    EVENT_LLM_COMPLETE,
+    EVENT_LLM_REJECT,
+    EVENT_LLM_RETRY,
+    EVENT_LLM_TIMEOUT,
     OBSERVATION_PREVIEW_ROWS,
 )
 from text_to_sql_agent.domain.entities import Trace
@@ -40,7 +46,13 @@ _MESSAGE_MAX_CHARS = 120  # текст ошибки / вопрос / причи�
 _MS_PER_S = 1000.0
 
 # События-неполадки шлюза: однострочные «!»-строки с ключевыми полями payload.
-_TROUBLE_EVENTS = {"llm.retry", "llm.timeout", "llm.reject", "llm.breaker_open", "llm.budget_stop"}
+_TROUBLE_EVENTS = {
+    EVENT_LLM_RETRY,
+    EVENT_LLM_TIMEOUT,
+    EVENT_LLM_REJECT,
+    EVENT_LLM_BREAKER_OPEN,
+    EVENT_LLM_BUDGET_STOP,
+}
 
 
 def _truncate(text: str, limit: int) -> str:
@@ -63,7 +75,7 @@ def _render(trace: Trace) -> str:
         return f"▶ Вопрос: {_one_line(payload.get('question', ''), _MESSAGE_MAX_CHARS)}"
     if event == EVENT_AGENT_ROUND:
         return f"─ Ход {payload.get('call', '?')}"
-    if event == "llm.complete":
+    if event == EVENT_LLM_COMPLETE:
         return _render_llm_complete(payload)
     if event == EVENT_AGENT_TOOL_CALL:
         sql = _one_line(payload.get("sql", ""), _SQL_DISPLAY_MAX_CHARS)
@@ -158,21 +170,21 @@ def _plural(count: int, one: str, few: str, many: str) -> str:
 def _render_trouble(event: str, payload: dict[str, Any]) -> str:
     # .get-стиль (ревью S21 Minor): переименование поля у провайдера даёт «?»,
     # а не KeyError-потерю строки
-    if event == "llm.retry":
+    if event == EVENT_LLM_RETRY:
         attempt = payload.get("attempt", "?")
         reason = payload.get("status_code", "?")
         return f"  ! шлюз: повтор (попытка {attempt}, причина {reason})"
-    if event == "llm.timeout":
+    if event == EVENT_LLM_TIMEOUT:
         return f"  ! шлюз: таймаут ({payload.get('role', '?')}, {payload.get('elapsed_ms', '?')}мс)"
-    if event == "llm.reject":
+    if event == EVENT_LLM_REJECT:
         status = payload.get("status_code")
         reason = payload.get("reason")  # стрим-путь (S19): HTTP-статуса нет — причина
         detail = f"HTTP {status}" if status is not None else (reason or "?")
         return f"  ! шлюз: отказ {detail} ({payload.get('role', '?')})"
-    if event == "llm.breaker_open":
+    if event == EVENT_LLM_BREAKER_OPEN:
         detail = payload.get("reason") or f"сбоев подряд: {payload.get('failures', '?')}"
         return f"  ! breaker открыт ({detail})"
-    if event == "llm.budget_stop":
+    if event == EVENT_LLM_BUDGET_STOP:
         used = float(payload.get("budget_used_rub", 0))
         cap = float(payload.get("cap_rub", 0))
         return f"  ! бюджет исчерпан ({used:.2f}₽ из {cap:.2f}₽)"

@@ -315,6 +315,7 @@ def initial_state(question: str, user_id: str = "") -> "AgentState":
         "rows": None,
         "row_count": None,
         "compact": None,
+        "final_answer": None,  # финальный payload исхода (S15) — interpret/degrade
         "error": None,
         "diagnosis": None,  # разбор ошибки (S14) — пишется diagnose_error
         "retry_count": 0,

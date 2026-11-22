@@ -64,6 +64,16 @@ def make_retry_gate(target: str) -> Callable[[State], dict[str, Any]]:
     return gate
 
 
+# Терминальные payload-дополнения (R3 ARCH-GATE S15): budget_stop — гвард капов
+# перехватывает НА РЕБРЕ, узел не выполняется — частичные данные (compact/rows)
+# в state нельзя выдавать за полное: incomplete ставит сам терминал (декларативная
+# карта, протокольный клей orchestration; exception-fallback answer_question
+# ставит тот же флаг на втором пути budget_stop)
+TERMINAL_PAYLOADS: dict[TerminalOutcome, dict[str, Any]] = {
+    "budget_stop": {"incomplete": True},
+}
+
+
 def make_terminal(outcome: TerminalOutcome) -> Callable[[State], dict[str, Any]]:
     """Терминальный маркер: различимый payload исхода, затем END (state-agent v1.5).
 
@@ -71,7 +81,9 @@ def make_terminal(outcome: TerminalOutcome) -> Callable[[State], dict[str, Any]]
     """
 
     def terminal(state: State) -> dict[str, Any]:
-        return {"outcome": outcome}
+        payload: dict[str, Any] = {"outcome": outcome}
+        payload.update(TERMINAL_PAYLOADS.get(outcome, {}))
+        return payload
 
     return terminal
 

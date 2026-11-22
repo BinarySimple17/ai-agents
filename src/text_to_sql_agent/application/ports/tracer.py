@@ -70,6 +70,25 @@ EVENT_EXECUTE_PROBE = "execute.probe"
 # или сбой самой COUNT-пробы — деталь оператору, не пользователю (S9-прецедент
 # skeleton.unavailable); маршрут — degrade без diagnose (FLAG_EXECUTE_DEFECT)
 EVENT_EXECUTE_UNAVAILABLE = "execute.unavailable"
+# FSM interpret_result (S15): вердикт финального объяснения (strong) + сбой;
+# payload факты (outcome/flags/cost_rub/row_count), БЕЗ текста ответа и БЕЗ
+# строк данных (R7 ARCH-GATE S15)
+EVENT_INTERPRET_VERDICT = "interpret.verdict"
+EVENT_INTERPRET_UNAVAILABLE = "interpret.unavailable"
+# FSM degrade (S15): отказ по правам бизнес-понятиями (mid + санитайзер R1);
+# payload факты (cause/has_variant), текст отказа не дублируется; reason —
+# llm/budget у сбоя (R5 ARCH-GATE S15)
+EVENT_DEGRADE_VERDICT = "degrade.verdict"
+EVENT_DEGRADE_UNAVAILABLE = "degrade.unavailable"
+
+# --- Семья llm.* (BL-005, S15 Task 4): единый источник имён для эмиттера
+# (openai_provider) и рендерера (console_tracer) — прецедент EVENT_AGENT_*/graph.* ---
+EVENT_LLM_COMPLETE = "llm.complete"
+EVENT_LLM_RETRY = "llm.retry"
+EVENT_LLM_TIMEOUT = "llm.timeout"
+EVENT_LLM_REJECT = "llm.reject"
+EVENT_LLM_BREAKER_OPEN = "llm.breaker_open"
+EVENT_LLM_BUDGET_STOP = "llm.budget_stop"
 
 # BL-004 (требование владельца): результат тулa показывается строками данных,
 # хоть обрезанными; единый контракт эмиссии (apps.cli) и рендера (ConsoleTracer)

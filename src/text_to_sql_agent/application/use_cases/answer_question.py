@@ -65,7 +65,10 @@ class FSMResult:
 
     @property
     def answer(self) -> dict[str, Any] | None:
-        return self.state.get("compact")
+        """Финальный payload исхода (S15): interpret_result/degrade пишут
+        ``final_answer`` (текст + SQL + допущения + флаги + стоимость);
+        compact — внутренний вид для промпта, наружу не идёт."""
+        return self.state.get("final_answer")
 
 
 class AnswerQuestion:
@@ -121,10 +124,14 @@ class AnswerQuestion:
         try:
             final = call()
         except BudgetExceededError as exc:
-            # Кап бюджета сработал до вызова шлюза (S03-адаптер) — budget_stop
-            return _with_error(
+            # Кап бюджета сработал до вызова шлюза (S03-адаптер) — budget_stop;
+            # incomplete — как на графе (TERMINAL_PAYLOADS, ruling R3 S15):
+            # exception-fallback не должен обходить флаг честности
+            result = _with_error(
                 "budget_stop", fallback_state, BUDGET_STOP_MESSAGE_TEMPLATE, exc, thread_id
             )
+            result.state["incomplete"] = True
+            return result
         except LLMProviderError as exc:
             # Недоступность шлюза (ретраи/breaker/таймаут) — деградация-исход
             return _with_error("degrade", fallback_state, DEGRADE_MESSAGE_TEMPLATE, exc, thread_id)
