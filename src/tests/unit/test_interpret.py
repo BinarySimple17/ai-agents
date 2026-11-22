@@ -516,9 +516,19 @@ class TestDegradationCase:
         assert "bonuses" not in text and "salaries" not in text
 
     def test_fallback_no_existence_markers(self) -> None:
-        # S9: шаблон не подтверждает существование недоступных данных
+        # S9: шаблон не подтверждает существование недоступных данных — гвард
+        # теми же стемами, что санитайзер (M2 re-review: будущая правка шаблона
+        # со словом «наличие/содержит» не пройдёт молча)
         text = fallback_text(_rights_case()).lower()
-        for marker in ("существ", "есть строки", "есть данные", "содержит строки"):
+        for marker in (
+            "существ",
+            "присутству",
+            "содерж",
+            "имеютс",
+            "наличи",
+            "есть строки",
+            "есть данные",
+        ):
             assert marker not in text
 
     def test_fallback_no_path_mentions_reformulation(self) -> None:
