@@ -385,9 +385,9 @@
         "feat-005",
         "feat-014"
       ],
-      "state": "not_started",
-      "status": "not-started",
-      "evidence": "",
+      "state": "active",
+      "status": "in-progress",
+      "evidence": "S15 стартовала 2026-11-22 (ветка feat-015-interpret-result от milestone/v4)",
       "layers": [
         {
           "label": "layer-1-static",

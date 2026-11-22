@@ -1,6 +1,6 @@
 # S15 — compact_result + interpret_result + degrade + BudgetGuard (веха V4, ДЗ-05)
 
-Этап: Веха V4 (ДЗ-05: финальные узлы FSM — объяснение и честный отказ) | Владелец: агент | Зависимости: S05, S14 | Оценка: 1 | Статус: [ ] не начата
+Этап: Веха V4 (ДЗ-05: финальные узлы FSM — объяснение и честный отказ) | Владелец: агент | Зависимости: S05, S14 | Оценка: 1 | Статус: ◐ в работе (2026-11-22, ветка feat-015-interpret-result)
 Фичи: feat-015 — interpret_result + degrade; зависимости feat-005 (закрывается S05), feat-014 (закрывается S14)
 Роль по фиче: закрывает feat-015 — финальная сессия, через make verify-feature
 
@@ -41,19 +41,20 @@ eval-метрик (ДЗ-06).
 
 ## Предусловия
 
-- [ ] Сессия СТАРТУЕТ: статус в шапке переведён в «◐ в работе» и ARCH-GATE резолвлен ДО кода (canon-check architect ✅ либо обоснованный N/A) — старт-гейт (`guard-subagents.sh --phase start`, D-027) проверяет только стартованные (◐) сессии; «[ ] не начата» — план, гейт её скипает
-- [ ] S05, S14 закрыты: `uv run pytest src/tests/integration/test_resolve_access.py src/tests/unit/test_diagnose.py -q` → passed (feat-005, feat-014 passing)
-- [ ] `make check` зелёный (baseline репозитория)
-- [ ] feat-005, feat-014 в state=passing; feat-015 активирована в state=active до старта работ
+- [x] Сессия СТАРТУЕТ: статус в шапке переведён в «◐ в работе» и ARCH-GATE резолвлен ДО кода (canon-check architect ✅ либо обоснованный N/A) — старт-гейт (`guard-subagents.sh --phase start`, D-027) проверяет только стартованные (◐) сессии; «[ ] не начата» — план, гейт её скипает
+- [x] S05, S14 закрыты: `uv run pytest src/tests/integration/test_resolve_access.py src/tests/unit/test_diagnose.py -q` → passed (feat-005, feat-014 passing)
+- [x] `make check` зелёный (baseline репозитория) — ./init.sh exit 0 на 072fa53 (818 passed, 2026-11-22)
+- [x] feat-005, feat-014 в state=passing; feat-015 активирована в state=active до старта работ
 
 ## Задачи
 
 ### Task 1: compact_result — код
 
-`application/services/compact_result_service.py` + VO ResultCompact (domain): из
-rows → row_count, первые ≤ 20 строк (усечение с флагом truncated), агрегаты по
-числовым колонкам (sum/avg/min/max — код), флаги state. Без LLM. Бюджет промпта —
-константа; превышение — усечение с флагом, не «молча больше».
+`application/services/compact_result_service.py` + VO ResultCompact (domain, поля по
+ER — ruling R2: `row_count`, `sample` ≤ 20 строк, `aggregates`, `truncated`,
+`approximate`): из rows → row_count, первые ≤ 20 строк (усечение с флагом truncated),
+агрегаты по числовым колонкам (sum/avg/min/max — код), флаги state. Без LLM. Бюджет
+промпта — константа; превышение — усечение с флагом, не «молча больше».
 
 **✅ Самопроверка:**
 
@@ -82,11 +83,17 @@ uv run pytest src/tests/unit/test_interpret.py -q   # состав ответа 
 
 ### Task 3: degrade + incomplete
 
-Degrade-узел: вход — вердикт причин (от S11/S05); выход — отказ бизнес-понятиями +
-доступный вариант (код подбирает по permissions, LLM формулирует). Инварианты
-текстов: без имён недоступных таблиц, без подтверждения существования — adversarial-тесты
-на формулировки (Ловушка-2). Incomplete: BudgetGuard-исчерпание → частичный ответ
-только с флагом; finish_reason=length с текстом → incomplete (хвост S19), не «как есть».
+Degrade-узел: вход — типизированный вердикт-причина (domain VO — ruling R8: cause +
+бизнес-понятия + доступный вариант из permissions; сырые route_flags/validation в
+промпт не идут); выход — отказ бизнес-понятиями + доступный вариант (LLM формулирует,
+роль mid, одна попытка без эскалации — ruling R1). Инварианты текстов: без имён
+недоступных таблиц, без подтверждения существования — adversarial-тесты на формулировки
+(Ловушка-2) + **детерминированный санитайзер** поверх выхода (runtime-гарантия: нарушение
+⇒ шаблон-fallback 0 вызовов) + шаблон-fallback при недоступности LLM (NFR-8) — R1.
+**Amend ADR-007 v1.3** (degrade → LLM-формулировка mid, строка экономики) — тем же
+коммитом. Incomplete: budget_stop ставит incomplete в обоих путях (терминал-карта +
+exception-fallback answer_question — ruling R3); finish_reason=length с текстом →
+incomplete (хвост S19), не «как есть».
 
 **✅ Самопроверка:**
 
@@ -98,11 +105,15 @@ uv run pytest src/tests/unit/test_interpret.py -q   # deny-сцена «прем
 
 ### Task 4: BudgetGuard — порт + перевод швов
 
-`application/ports/budget_guard.py` (Protocol) + реализация поверх аккумулятора S03
-(reset на старте прогона — уже делает S04): check-before-call для всех узлов с LLM,
-расход по usage (usage_missing → консервативная оценка, прецедент S03), остаток с
-резервом 0,6 ₽ для эскалаций. Перевод вызовов budget_remaining_roubles (S09/S10)
-на порт; поведение тестов не меняется (рефакторинг точки вызова, не механики).
+`application/ports/budget_guard.py` (Protocol, read-side — ruling R4) + реализация
+`infrastructure/token_budget.py` поверх аккумулятора S03 (reset на старте прогона —
+уже делает S04): check-before-call для всех узлов с LLM (адаптер + llm_guard —
+порт лишь read-side учёт), расход по usage (usage_missing → консервативная оценка,
+прецедент S03), остаток с резервом 0,6 ₽ для эскалаций. Узлы пишут budget_used.rub
+снапшотом guard.spent_rub() (ruling R6 — ₽-половина llm_guard живёт). Перевод
+вызовов budget_remaining_roubles (S09/S10) на порт; поведение тестов не меняется
+(рефакторинг точки вызова, не механики). BL-005: константы EVENT_LLM_* — в ports/
+tracer.py без новой семьи (ruling R5).
 
 Триаж беклога 2026-11-22 — закрыть здесь хвосты: BL-015 (остаток: три одинаковые
 лямбды шва budget_remaining_roubles в composition/container.py уходят на порт —
@@ -159,8 +170,19 @@ uv run pytest src/tests/unit/test_graph.py src/tests/unit/test_interpret.py -q  
 
 ## Гейты субагентов (заполняется по факту, до закрытия сессии)
 
-- ARCH-GATE: [✅ <verdict: compliant | violations | needs-decision> + <план/файл> | N/A — <причина>]
+- ARCH-GATE: ✅ needs-decision → rulings R1–R8 закрыты ДО кода (canon-check architect 2026-11-22: план по канону; blocker — живой ADR-007:74 «degrade — код, без LLM»/«0 ₽» противоречит ADR-005:171 + state-agent v1.8 + routing.LLM_NODES → обязателен amend ADR-007 v1.3 тем же коммитом с degrade)
 - REVIEW-GATE: [✅ <Ready to merge? вердикт> + <BASE7>..<HEAD7> | N/A — <причина>]
+
+### Rulings ARCH-GATE S15 (canon-check 2026-11-22, до первого код-коммита)
+
+- **R1 — degrade: LLM формулирует, код фиксирует и страхует.** Живой канон — ADR-005:171 («код фиксирует, чего не хватает; LLM формулирует») + prd FR-6/сцена RBAC №2 + state-agent v1.8 + routing.LLM_NODES; hw-01-таблица «код, без LLM» — исторический артефакт сдачи. Роль формулировки — **mid, одна попытка, без эскалации** (opinion архитектора, фиксируется amend'ом ADR-007). Гарантии S9 — двухслойные: adversarial-тесты валидируют промпт; **детерминированный санитайзер** поверх выхода — runtime-гарантия («текст LLM не доверенный», AGENTS Constraints): запрещённые маркеры (имена недоступных таблиц, слова существования) → нарушение ⇒ **шаблон-fallback** (0 вызовов). Шаблон-fallback также при недоступности LLM/бюджета (NFR-8) — живой остаток «degrade-кода» из ADR-007/hw-01. **Amend ADR-007 v1.3** (таблица узлов: degrade → LLM-формулировка mid; строка экономики «degrade — 0 ₽») — тем же коммитом с кодом degrade.
+- **R2 — ResultCompact VO по ER:** поля по er-data-model.md:177 — `row_count`, `sample` (≤ 20 строк, не «rows»), `aggregates`, `truncated`, `approximate` (в VO с S15, False до выпускной feat-012/017); поле `columns` — НЕ вводить. MAX_COMPACT_ROWS=20 — именованная константа с комментарием (~1150 токенов входа interpret, ADR-007:131).
+- **R3 — incomplete при budget_stop — оба пути:** make_terminal — декларативная карта терминальных payload `{budget_stop: {"incomplete": True}}` (протокольный клей orchestration, не бизнес-узел); exception-fallback answer_question (BudgetExceededError → budget_stop) ставит incomplete там же — иначе второй путь budget_stop обходил бы флаг.
+- **R4 — BudgetGuard: порт read-side, реализация — infrastructure/token_budget.py** (S00:91 «token_budget.py», не инлайн в composition). Порт `{spent_rub() -> float; remaining_rub() -> float; reset() -> None}`; composition инжектирует callables над аккумулятором S03 (llm.budget_used_rub / llm.reset_request_budget); шов ruling Q7 S09 — 4 лямбды → guard.remaining_rub (сигнатура сервисов Callable[[], float] не меняется, BL-015 закрывается). Исключение ДО вызова поднимает адаптер (S00:116) и ребро llm_guard — порт лишь read-side учёт, сервисные проверки резерва 0,6 ₽ не меняются. Docstring порта ссылается на определение «попытки» R6 S14 (m1_policy) — BL-016-смежное зафиксировано.
+- **R5 — BL-005 без новой семьи:** константы EVENT_LLM_* (llm.complete/retry/timeout/reject/breaker_open/budget_stop) — в ports/tracer.py, provider и console_tracer импортируют (infrastructure → ports разрешено); семью «budget.stop» НЕ вводить (llm.budget_stop уже в семье BL-005); отказ guard-проверки в сервисе трейсится node-событием `*.unavailable` reason=budget (прецедент R5 S14).
+- **R6 — ₽-учёт в state: пишут узлы** (прецедент владения budget_used: plan_joins/generate_sql/diagnose nodes) — снапшот `guard.spent_rub()` тем же единым обновлением budget-dict, что llm_calls; фабрики узлов принимают optional budget_guard. llm_guard-проверка ₽ становится живой; стоимость для interpret — тот же снапшот (usage фактических вызовов, не пересчёт по матрице — Ловушка 2).
+- **R7 — трейс-события новых узлов (семья R5 S14):** interpret.verdict — outcome/флаги/cost_rub/row_count, БЕЗ текста ответа и БЕЗ строк данных (JSONL-приватность); interpret.unavailable — reason (llm/budget); degrade.verdict — cause/has_variant (внутренние детали — JSONL, не пользователю), текст отказа не дублируется; degrade.unavailable — reason.
+- **R8 — вход degrade: типизированный вердикт-причина (domain VO)** — сервис degrade собирает cause-enum + бизнес-понятия + доступный вариант из state.permissions ДО промпта; сырые route_flags/validation-словари в промпт не попадают. «Своё упоминать можно» — ADR-005:78 (граница знаний = граница прав).
 
 ## Отчёт по сессии (заполняется по факту)
 
