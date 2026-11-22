@@ -27,6 +27,7 @@ from langgraph.types import Command
 
 from text_to_sql_agent.application.ports.checkpointer import CheckpointStoreError
 from text_to_sql_agent.application.ports.tracer import (
+    EVENT_AGENT_START,
     EVENT_CHECKPOINT_UNAVAILABLE,
     EVENT_CLARIFY_INTERRUPT,
 )
@@ -146,6 +147,22 @@ class LangGraphRunner:
             started["deadline_at"] = time.monotonic() + self._deadline_s
         if started.get("trace_id") is None:
             started["trace_id"] = uuid4().hex
+        if self._tracer is not None:
+            # «Вопрос принят» — трейс FSM-прогона начинается с вопроса (S27
+            # Task 1: трейс-артефакт «вопрос → … → ответ» самодостаточен);
+            # контуры ДЗ-02/03 эмитят agent.start из CLI, FSM-вход — здесь:
+            # trace_id раннер ставит сам (строкой выше), CLI его ещё не знает.
+            self._tracer.record(
+                Trace(
+                    event=EVENT_AGENT_START,
+                    payload={
+                        "question": started.get("question", ""),
+                        "trace_id": started.get("trace_id"),
+                        "user_id": started.get("user_id", ""),
+                        "mode": "fsm",
+                    },
+                )
+            )
         try:
             final = self._app.invoke(started, config=self._config(tid))
         except CheckpointStoreError as exc:

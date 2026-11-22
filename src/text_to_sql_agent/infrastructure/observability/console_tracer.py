@@ -27,12 +27,22 @@ from text_to_sql_agent.application.ports.tracer import (
     EVENT_AGENT_ROUND,
     EVENT_AGENT_START,
     EVENT_AGENT_TOOL_CALL,
+    EVENT_CLARIFY_INTERRUPT,
+    EVENT_CLARIFY_VERDICT,
+    EVENT_DEGRADE_VERDICT,
+    EVENT_DIAGNOSE_VERDICT,
+    EVENT_EXECUTE_PROBE,
+    EVENT_GENERATE_SQL_VERDICT,
+    EVENT_GRAPH_NODE,
+    EVENT_INTERPRET_VERDICT,
     EVENT_LLM_BREAKER_OPEN,
     EVENT_LLM_BUDGET_STOP,
     EVENT_LLM_COMPLETE,
     EVENT_LLM_REJECT,
     EVENT_LLM_RETRY,
     EVENT_LLM_TIMEOUT,
+    EVENT_PLAN_JOINS_VERDICT,
+    EVENT_VALIDATE_SQL_VERDICT,
     OBSERVATION_PREVIEW_ROWS,
 )
 from text_to_sql_agent.domain.entities import Trace
@@ -92,6 +102,9 @@ def _render(trace: Trace) -> str:
         return f"✓ ответ ({payload.get('source', '')})"
     if event in _TROUBLE_EVENTS:
         return _render_trouble(event, payload)
+    fsm_line = _render_fsm(event, payload)
+    if fsm_line is not None:
+        return fsm_line
     return f"  · {event}"  # неизвестное событие — generic (устойчивость к будущим agent.*)
 
 
@@ -189,6 +202,70 @@ def _render_trouble(event: str, payload: dict[str, Any]) -> str:
         cap = float(payload.get("cap_rub", 0))
         return f"  ! бюджет исчерпан ({used:.2f}₽ из {cap:.2f}₽)"
     return f"  · {event}"  # недостижимо из _render (контроль полноты словаря событий)
+
+
+def _render_fsm(event: str, payload: dict[str, Any]) -> str | None:
+    """Рендер событий FSM-контура (S04–S15): этапы с содержанием payload.
+
+    Сборка ДЗ-05 (S27): до этого FSM-события шли generic-веткой («имя события
+    без payload») — консольный трейс прогона не показывал план/SQL-вердикт/
+    валидацию, артефакт «Пример выполнения» (hw-plan §5) был неполон. Ключи
+    payload — фактические emit-точки узлов (сверены с живым JSONL S27);
+    .get-стиль — переименование поля у узла даёт «?», не KeyError. Редкие
+    события (семейство *.unavailable, checkpoint.unavailable) остаются
+    generic — деталь сбоя смотрят в JSONL-трейсе.
+    """
+    if event == EVENT_GRAPH_NODE:
+        return f"  → узел {payload.get('node', '?')}"
+    if event == EVENT_CLARIFY_VERDICT:
+        return (
+            f"  · clarify: исход {payload.get('outcome', '?')}, "
+            f"допущений {payload.get('assumptions', 0)}"
+        )
+    if event == EVENT_CLARIFY_INTERRUPT:
+        question = _one_line(payload.get("question") or "", _MESSAGE_MAX_CHARS)
+        return f"  ⏸ interrupt — ждёт ответа: {question}"
+    if event == EVENT_PLAN_JOINS_VERDICT:
+        candidates = ", ".join(str(table) for table in (payload.get("candidate_tables") or []))
+        return (
+            f"  · plan_joins: исход {payload.get('outcome', '?')}, "
+            f"gv {payload.get('graph_version', '?')}, кандидаты: {candidates or '—'}"
+        )
+    if event == EVENT_GENERATE_SQL_VERDICT:
+        escalated = "да" if payload.get("escalated") else "нет"
+        return (
+            f"  · generate_sql: исход {payload.get('outcome', '?')}, "
+            f"таблиц {payload.get('tables', '?')}, вызовов {payload.get('llm_calls', '?')}, "
+            f"эскалация {escalated}"
+        )
+    if event == EVENT_VALIDATE_SQL_VERDICT:
+        limit = payload.get("enforced_limit")
+        limit_part = f", LIMIT {limit}" if limit is not None else ""
+        return (
+            f"  · validate_sql: исход {payload.get('outcome', '?')}, "
+            f"замечаний {payload.get('issues_count', '?')}{limit_part}"
+        )
+    if event == EVENT_DIAGNOSE_VERDICT:
+        futile = ", ретрай бесперспективен" if payload.get("retry_futile") else ""
+        return (
+            f"  · diagnose: класс {payload.get('error_class', '?')}, "
+            f"вызовов {payload.get('llm_calls', '?')}{futile}"
+        )
+    if event == EVENT_EXECUTE_PROBE:
+        tables = ", ".join(str(table) for table in (payload.get("tables") or []))
+        return f"  · probe COUNT: {payload.get('verdict', '?')} ({tables or '—'})"
+    if event == EVENT_INTERPRET_VERDICT:
+        cost = f"{float(payload.get('cost_rub', 0.0)):.2f}₽"
+        incomplete = ", НЕПОЛНЫЙ ответ" if payload.get("incomplete") else ""
+        return (
+            f"  · interpret: {payload.get('outcome', '?')}, строк {payload.get('row_count', '?')}, "
+            f"{cost}{incomplete}"
+        )
+    if event == EVENT_DEGRADE_VERDICT:
+        source = "модель" if payload.get("used_llm") else "шаблон"
+        variant = ", вариант предложен" if payload.get("has_variant") else ""
+        return f"  · degrade: причина {payload.get('cause', '?')}, формулировка {source}{variant}"
+    return None
 
 
 class ConsoleTracer:

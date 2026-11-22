@@ -267,3 +267,138 @@ def test_llm_reject_stream_abort_renders_reason() -> None:
         )
     )
     assert "  ! шлюз: отказ stream_abort (mid)" in stream.getvalue()
+
+
+# --- FSM-события (S27 Task 1): этапы прогона с содержанием payload ---
+# До S27 FSM-события шли generic-веткой (имя без payload) — консольный трейс
+# не показывал план/валидацию/вердикт, артефакт hw-plan §5 был неполон.
+
+
+def test_fsm_node_line() -> None:
+    tracer, stream = _tracer()
+    tracer.record(Trace(event="graph.node", payload={"node": "plan_joins"}))
+    assert stream.getvalue() == "  → узел plan_joins\n"
+
+
+def test_fsm_clarify_verdict_and_interrupt() -> None:
+    tracer, stream = _tracer()
+    tracer.record(
+        Trace(
+            event="clarify.verdict",
+            payload={"user_id": "u_logist", "outcome": "clarify", "assumptions": 1},
+        )
+    )
+    tracer.record(
+        Trace(
+            event="clarify.interrupt",
+            payload={
+                "thread_id": "abc123def",
+                "user_id": "u_logist",
+                "question": "Какие кампании?",
+            },
+        )
+    )
+    lines = stream.getvalue().splitlines()
+    assert lines[0] == "  · clarify: исход clarify, допущений 1"
+    assert lines[1] == "  ⏸ interrupt — ждёт ответа: Какие кампании?"
+
+
+def test_fsm_plan_and_generate_verdicts() -> None:
+    tracer, stream = _tracer()
+    tracer.record(
+        Trace(
+            event="plan_joins.verdict",
+            payload={
+                "user_id": "u_logist",
+                "outcome": "plan",
+                "graph_version": 221,
+                "candidate_tables": ["orders", "customers"],
+                "hit_edge_ids": [],
+            },
+        )
+    )
+    tracer.record(
+        Trace(
+            event="generate_sql.verdict",
+            payload={
+                "user_id": "u",
+                "outcome": "sql",
+                "llm_calls": 1,
+                "escalated": True,
+                "tables": 2,
+            },
+        )
+    )
+    lines = stream.getvalue().splitlines()
+    assert lines[0] == "  · plan_joins: исход plan, gv 221, кандидаты: orders, customers"
+    assert lines[1] == "  · generate_sql: исход sql, таблиц 2, вызовов 1, эскалация да"
+
+
+def test_fsm_validate_diagnose_verdicts() -> None:
+    tracer, stream = _tracer()
+    tracer.record(
+        Trace(
+            event="validate_sql.verdict",
+            payload={"user_id": "u", "outcome": "ok", "issues_count": 0, "enforced_limit": 1000},
+        )
+    )
+    tracer.record(
+        Trace(
+            event="diagnose.verdict",
+            payload={
+                "user_id": "u",
+                "error_class": "sql_syntax",
+                "retry_futile": True,
+                "llm_calls": 1,
+            },
+        )
+    )
+    lines = stream.getvalue().splitlines()
+    assert lines[0] == "  · validate_sql: исход ok, замечаний 0, LIMIT 1000"
+    assert lines[1] == "  · diagnose: класс sql_syntax, вызовов 1, ретрай бесперспективен"
+
+
+def test_fsm_probe_interpret_degrade_verdicts() -> None:
+    tracer, stream = _tracer()
+    tracer.record(
+        Trace(
+            event="execute.probe",
+            payload={
+                "user_id": "u",
+                "tables": ["orders"],
+                "counts": {"orders": 0},
+                "verdict": "empty",
+            },
+        )
+    )
+    tracer.record(
+        Trace(
+            event="interpret.verdict",
+            payload={
+                "outcome": "answer",
+                "incomplete": True,
+                "llm_calls": 2,
+                "row_count": 1,
+                "cost_rub": 0.0,
+                "truncated": False,
+                "approximate": False,
+            },
+        )
+    )
+    tracer.record(
+        Trace(
+            event="degrade.verdict",
+            payload={"cause": "no_path", "has_variant": True, "used_llm": False, "llm_calls": 0},
+        )
+    )
+    lines = stream.getvalue().splitlines()
+    assert lines[0] == "  · probe COUNT: empty (orders)"
+    assert lines[1] == "  · interpret: answer, строк 1, 0.00₽, НЕПОЛНЫЙ ответ"
+    assert lines[2] == "  · degrade: причина no_path, формулировка шаблон, вариант предложен"
+
+
+def test_fsm_unavailable_events_stay_generic() -> None:
+    # Семейство *.unavailable остаётся generic — деталь сбоя смотрят в JSONL
+    tracer, stream = _tracer()
+    tracer.record(Trace(event="plan_joins.unavailable", payload={"user_id": "u", "detail": "gv=0"}))
+    assert stream.getvalue() == "  · plan_joins.unavailable\n"
