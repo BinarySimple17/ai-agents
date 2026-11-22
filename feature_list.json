@@ -194,9 +194,9 @@
       "dependencies": [
         "feat-004"
       ],
-      "state": "active",
-      "status": "in-progress",
-      "evidence": "",
+      "state": "passing",
+      "status": "done",
+      "evidence": "command «uv run pytest src/tests/unit/test_clarify.py -q» exited 0 at 2026-11-22T11:24:23+03:00 (scripts/verify-feature.sh)",
       "layers": [
         {
           "label": "layer-1-static",

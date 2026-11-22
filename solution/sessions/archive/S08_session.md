@@ -1,6 +1,6 @@
 # S08 — clarify: классификация однозначности + interrupt()/checkpointer (веха V4, ДЗ-05)
 
-Этап: Веха V4 (ДЗ-05: clarify-ветвление — FSM v1.4) | Владелец: агент | Зависимости: S04, S03 | Оценка: 1 | Статус: ◐ в работе
+Этап: Веха V4 (ДЗ-05: clarify-ветвление — FSM v1.4) | Владелец: агент | Зависимости: S04, S03 | Оценка: 1 | Статус: ✅ 2026-11-22
 Фичи: feat-008 — clarify; зависимость feat-004 (закрывается S04 до старта)
 Роль по фиче: закрывает feat-008 — финальная сессия, через make verify-feature
 
@@ -113,7 +113,7 @@ uv run pytest src/tests/unit/test_graph.py src/tests/unit/test_clarify.py -q   #
 - [x] Допущения попадают в state (и далее — в финальный ответ, поле готово для S15) (behavior feat-008)
 - [x] TTL истёк → clarification-терминал — валидный исход, не traceback (S00 правило 8)
 - [x] Уточняющий вопрос — ровно один (behavior feat-008), формулировка без раскрытия недоступной схемы
-- [ ] Фича закрыта: `make verify-feature F=feat-008` → PASS, state=passing с evidence
+- [x] Фича закрыта: `make verify-feature F=feat-008` → PASS, state=passing с evidence (2026-11-22: 27 passed test_clarify; evidence записан скриптом)
 
 ## Ловушки
 
@@ -133,7 +133,7 @@ uv run pytest src/tests/unit/test_graph.py src/tests/unit/test_clarify.py -q   #
 ## Гейты субагентов (заполняется по факту, до закрытия сессии)
 
 - ARCH-GATE: ✅ verdict needs-decision → rulings R1–R7 закрыты до кода (canon-check architect 2026-11-22, план S08_session.md: ребро plan_joins → clarify закладывается новым флагом FLAG_PLAN_JOINS_CLARIFY + диаграмма v1.6 в том же коммите, противоречие hw-01:226 vs state-agent v1.5 — FIX-009 — R1; кастомный BaseCheckpointSaver на redis-py без новой зависимости, thread_id — параметр раннера — R2; расширение порта GraphRunner run(…, thread_id)/resume + TTL-истёк синтезирует раннер, S00-таблица портов в том же коммите — R3; стартовая роль cheap, эскалация попытки 3 по D-016 сохраняется — R4; assumption — pydantic VO {source, text} в domain + S00 стык 1 синхрон — R5; капы бюджета/вызовов продолжаются после resume, deadline_at перевзводится раннером — R6; вердикт классификатора через тул по ADR-008 слой 2 — R7)
-- REVIEW-GATE: [✅ <Ready to merge? вердикт> + <BASE7>..<HEAD7> | N/A — <причина>]
+- REVIEW-GATE: ✅ Ready to merge: Yes — ревью 7ed5ef6..e8064c4 «With fixes» (0C/3I/8M: I1 пауза с ненаружным thread_id — тупик [resume нечем вызвать], I2 сбой Valkey traceback-ом в FSM-путь [S00-8], I3 нет R6-регрессий на перевзвод дедлайна/персист капов) → fix-волна fdc65e0 (I1 FSMResult.thread_id [регресс: AttributeError на до-фикс + live integration], I2 CheckpointStoreError-граница [прецедент VectorStoreError; _BrokenPutSaver + monkeypatch get_tuple], I3 управляемые часы [bite-прогон: без перевзвода — budget_stop] + персист капов; 8 миноров, M7 → BL-015; 10 unit сейвера на фейк-redis) → scoped re-review e8064c4..fdc65e0 **«Ready to merge: Yes»** (0C/0I/4M-хвосты: resume-thread_id инвариант, M8 доведён до конца [мёртвая константа], docs-строка checkpoint.unavailable, list-граница под регрессией) → доводка be01f32 до clock-out | 465 unit + 18 integration, make check EXIT=0
 
 ### Rulings ARCH-GATE (canon-check architect 2026-11-22 — verdict needs-decision, закрыты до кода)
 
