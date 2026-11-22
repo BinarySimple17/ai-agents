@@ -751,8 +751,12 @@ def _run_fsm(container: Container, question: str, *, token: str) -> int:
     print("Исход: " + result.outcome)
     error = result.state.get("error")
     if error:
+        # Сообщение отказа — фиксированный текст узла (S9): деталей настройки
+        # (host/роль БД) здесь нет, они — только в операторском трейсе (ревью I1)
         print("Ошибка: " + str(error.get("message")))
-    return 0
+    # Отказ — единообразный non-zero для скриптов (ревью S05 Minor-4), как и
+    # отказ аутентификации выше; содержательный прогон (в т.ч. budget_stop) — 0
+    return 1 if result.outcome == "rejected" else 0
 
 
 if __name__ == "__main__":

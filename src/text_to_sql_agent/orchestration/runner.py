@@ -8,7 +8,7 @@ LangGraph — ADR-002 §5), наружу — валидный fail-исход в
 """
 
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Any
 
 from langgraph.errors import GraphRecursionError
@@ -67,7 +67,7 @@ def build_fsm_runner(
     caps: FSMGuardCaps | None = None,
     deadline_s: float,
     recursion_limit: int,
-    node_overrides: Any | None = None,
+    node_overrides: Mapping[str, Callable[[Mapping[str, Any]], dict[str, Any]]] | None = None,
 ) -> LangGraphRunner:
     """Сборка раннера из графа (вызывает composition — единственное место сборки).
 

@@ -14,24 +14,31 @@ Fail-closed (ruling R6, все три случая — `FLAG_IDENTITY_FAILED` �
 - недоступность БД настроек (`RightsUnavailableError`) — `rights_unavailable`:
   отказ, НЕ «пустые права = всё разрешено» (S00 правило 8).
 
+Политика отказов S9: сообщение отказа в state — ФИКСИРОВАННЫЙ текст без деталей
+инфраструктуры (host/port/роль БД psycopg — ревью S05 Important-1); техническая
+деталь `RightsUnavailableError` — только в трейс (`resolve.rights_unavailable`,
+операторский JSONL, не пользовательский stdout).
+
 «Роли есть, прав нет» — легальный deny-по-умолчанию: пустая карта, продолжение
 по графу (подграф/retrieval/валидатор в S09/S11 закроют всё сами).
 
 Граница слоёв: имя флага дублируется константой — application не импортирует
 orchestration (F0 = routing.py), ребро terminal_rejected читает
-FLAG_IDENTITY_FAILED; совпадение имён проверяет тест.
+FLAG_IDENTITY_FAILED; совпадение имён проверяет тест (test_resolve_access_node).
 """
 
 from collections.abc import Callable, Mapping
 from typing import Any
 
 from text_to_sql_agent.application.ports.permission_store import RightsUnavailableError
+from text_to_sql_agent.application.ports.tracer import EVENT_RESOLVE_RIGHTS_UNAVAILABLE, Tracer
 from text_to_sql_agent.application.services.resolve_access_service import ResolveAccessService
+from text_to_sql_agent.domain.entities import Trace
 
 State = Mapping[str, Any]
 
 # Имя флага — FLAG_IDENTITY_FAILED (orchestration/routing.py): приложение не
-# импортирует orchestration, совпадение строк проверяет тест (test_graph)
+# импортирует orchestration, совпадение строк проверяет тест (test_resolve_access_node)
 IDENTITY_FAILED_FLAG = "identity_failed"
 
 ERROR_KEY = "error"
@@ -45,6 +52,8 @@ NO_SNAPSHOT_VERSION = 0
 
 _UNKNOWN_USER_MESSAGE = "пользователь не найден в системе прав — запрос отклонён (fail-closed)"
 _IDENTITY_MISSING_MESSAGE = "verified identity отсутствует в прогоне — сырой user_id не проходит"
+# S9/Task 4: без деталей настройки (host/порт/роль БД из psycopg) — ревью S05 I1
+_RIGHTS_UNAVAILABLE_MESSAGE = "права недоступны — запрос отклонён (fail-closed)"
 
 
 def _reject(
@@ -60,6 +69,8 @@ def _reject(
 
 def make_resolve_access_node(
     service: ResolveAccessService,
+    *,
+    tracer: Tracer | None = None,
 ) -> Callable[[State], dict[str, Any]]:
     """Фабрика узла: сервис прав → функция узла для биндера графа (S04-форма).
 
@@ -71,18 +82,21 @@ def make_resolve_access_node(
     def node(state: State) -> dict[str, Any]:
         updated = dict(state)
         flags = dict(updated.get(ROUTE_FLAGS_KEY) or {})
-        user_id = updated.get(USER_ID_KEY) or ""
+        user_id = (updated.get(USER_ID_KEY) or "").strip()
         if not user_id:
             return _reject(updated, flags, "identity_missing", _IDENTITY_MISSING_MESSAGE)
         try:
             rights = service.resolve(user_id)
         except RightsUnavailableError as exc:
-            return _reject(
-                updated,
-                flags,
-                "rights_unavailable",
-                f"права недоступны — отказ вместо пустой карты: {exc}",
-            )
+            # Деталь сбоя — оператору (трейс), не пользователю (S9/ревью I1)
+            if tracer is not None:
+                tracer.record(
+                    Trace(
+                        event=EVENT_RESOLVE_RIGHTS_UNAVAILABLE,
+                        payload={"user_id": user_id, "detail": str(exc)},
+                    )
+                )
+            return _reject(updated, flags, "rights_unavailable", _RIGHTS_UNAVAILABLE_MESSAGE)
         if not rights.user_known:
             return _reject(updated, flags, "unknown_user", _UNKNOWN_USER_MESSAGE)
         updated[PERMISSIONS_KEY] = {table: list(cols) for table, cols in rights.tables.items()}

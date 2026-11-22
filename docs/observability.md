@@ -143,6 +143,7 @@ best-effort — сбой приёмника не рвёт запрос). Сбо�
 | `agent.degrade` | reason | деградация исхода (S00 правило 8) или контекста — для retrieval non-terminal (прогон продолжается без блока знаний) |
 | `agent.answer` | source: text / final_no_tools / agent_stream | финальный ответ |
 | `graph.node` | node | FSM (S04/feat-004): содержательный узел вошёл — трейс-спан узла (ADR-002 §2), порядок сцены читается из trace 1:1; константа — порт Tracer (EVENT_GRAPH_NODE) |
+| `resolve.rights_unavailable` | user_id, detail | FSM (S05/feat-005): сбой чтения прав в resolve_access — деталь сбоя (psycopg) оператору в JSONL, не пользователю; отказ в state — фиксированный текст (S9, ревью I1); константа — порт Tracer (EVENT_RESOLVE_RIGHTS_UNAVAILABLE) |
 
 S25 (feat-020): mode `agent` — объединённый контур (retrieval + тул run_sql +
 стрим ходов), `tool_loop` — голый тул-контур ДЗ-02 за флагом `--plain`;

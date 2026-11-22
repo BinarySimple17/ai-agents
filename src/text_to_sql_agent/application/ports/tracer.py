@@ -21,6 +21,9 @@ EVENT_AGENT_DEGRADE = "agent.degrade"  # деградация-исход (reason
 EVENT_AGENT_ANSWER = "agent.answer"  # финальный ответ (source)
 EVENT_AGENT_RETRIEVE = "agent.retrieve"  # retrieval контура ДЗ-03 (docs, source_refs)
 EVENT_GRAPH_NODE = "graph.node"  # FSM: содержательный узел вошёл (node; S04, ADR-002 §2)
+# FSM resolve_access: сбой чтения прав — деталь сбоя оператору (JSONL), не
+# пользователю (S9/ревью S05 Important-1: отказ в state — фиксированный текст)
+EVENT_RESOLVE_RIGHTS_UNAVAILABLE = "resolve.rights_unavailable"
 
 # BL-004 (требование владельца): результат тулa показывается строками данных,
 # хоть обрезанными; единый контракт эмиссии (apps.cli) и рендера (ConsoleTracer)

@@ -18,6 +18,7 @@ import pytest
 from psycopg.conninfo import make_conninfo
 from pydantic import SecretStr
 
+from text_to_sql_agent.application.ports.auth_provider import AuthenticationError
 from text_to_sql_agent.application.services.resolve_access_service import ResolveAccessService
 from text_to_sql_agent.application.services.stub_nodes import initial_state
 from text_to_sql_agent.composition.container import build_container
@@ -87,7 +88,7 @@ class TestDevTokenAuthIntegration:
         auth = DevTokenAuth(_settings(tmp_path).dev_token_map)
         assert auth.verify("dev-analyst-token") == "u_analyst"
         assert auth.verify("dev-logist-token") == "u_logist"
-        with pytest.raises(Exception, match="fail-closed"):
+        with pytest.raises(AuthenticationError, match="fail-closed"):
             auth.verify("dev-hr-token")  # u_hr не в демо-списке этой сборки
 
 
@@ -159,6 +160,37 @@ class TestRightsFreshness:
             after = service.resolve("integration-ghost")
             assert after.user_known is True
             assert after.tables == {"orders": ("*",), "order_items": ("*",), "products": ("*",)}
+        finally:
+            with admin_conn.cursor() as cur:
+                cur.execute("DELETE FROM agent_user_roles WHERE user_id = 'integration-ghost'")
+            admin_conn.commit()
+
+    def test_role_revoke_invalidates_cache(self, planner_dsn, admin_conn) -> None:
+        # Отзыв роли — опасное направление (стейл-ПОВЫШЕННЫЕ права, ревью S05
+        # Minor-8): DELETE в agent_user_roles инкрементирует 'user_roles' →
+        # следующий запрос перечитывает права и теряет выданные таблицы
+        store = PgPermissionStore(planner_dsn)
+        service = ResolveAccessService(store)
+        try:
+            with admin_conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO agent_user_roles (user_id, role) "
+                    "VALUES ('integration-ghost', 'analyst') "
+                    "ON CONFLICT (user_id, role) DO NOTHING"
+                )
+            admin_conn.commit()
+            granted = service.resolve("integration-ghost")
+            assert granted.user_known is True
+            assert "orders" in granted.tables
+            with admin_conn.cursor() as cur:
+                cur.execute(
+                    "DELETE FROM agent_user_roles "
+                    "WHERE user_id = 'integration-ghost' AND role = 'analyst'"
+                )
+            admin_conn.commit()
+            revoked = service.resolve("integration-ghost")
+            assert revoked.user_known is False
+            assert revoked.tables == {}
         finally:
             with admin_conn.cursor() as cur:
                 cur.execute("DELETE FROM agent_user_roles WHERE user_id = 'integration-ghost'")

@@ -13,7 +13,11 @@ In-memory per-user в MVP правомерен (ADR-005 §4: пользоват�
 только если доказано needed (границы скоупа S05).
 """
 
-from text_to_sql_agent.application.ports.permission_store import PermissionStore, UserRights
+from text_to_sql_agent.application.ports.permission_store import (
+    RIGHTS_VERSION_KEYS,
+    PermissionStore,
+    UserRights,
+)
 
 
 class ResolveAccessService:
@@ -26,11 +30,13 @@ class ResolveAccessService:
     def resolve(self, user_id: str) -> UserRights:
         """Карта прав пользователя (кэш-хит при неизменных версиях настроек)."""
         # Сверка версий ДО кэша (ruling R3): оба счётчика — кэш устарел при правке
-        # строк прав ИЛИ при выдаче/отзыве роли; отсутствие строки счётчика = 0
+        # строк прав ИЛИ при выдаче/отзыве роли; отсутствие строки счётчика = 0.
+        # Итерация по RIGHTS_VERSION_KEYS, не по ответу store (ревью S05 Minor-1):
+        # частичный/пустой словарь store не должен морозить стейл-кэш
         versions = self._store.settings_versions()
         cached = self._cache.get(user_id)
         if cached is not None and all(
-            cached.versions.get(key, 0) == value for key, value in versions.items()
+            cached.versions.get(key, 0) == versions.get(key, 0) for key in RIGHTS_VERSION_KEYS
         ):
             return cached
         rights = self._store.fetch_rights(user_id)

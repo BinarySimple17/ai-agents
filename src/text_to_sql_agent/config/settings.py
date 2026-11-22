@@ -181,10 +181,12 @@ class Settings(BaseSettings):
     # --- Dev-аутентификация (S05, ruling R4 ARCH-GATE; ADR-005:114-117) ---
     # Токены демо-пользователей "user_id:token,user_id:token" (сидированные
     # u_analyst/u_logist/u_hr — миграция 0003); секрет — в .env, не в коде.
+    # SecretStr (ревью S05 Important-2): как пароли — иначе token попадает в
+    # repr(Settings) мимо гварда test_secret_never_leaks_into_repr.
     # Production — OIDCAuth за тем же портом (вне скоупа MVP). Пусто —
     # DevTokenAuth отклоняет любой токен (fail-closed); CLI --fsm требует
     # --token (сырой --user verify не проходит).
-    agent_dev_tokens: str = ""
+    agent_dev_tokens: SecretStr = SecretStr("")
 
     # --- Трейс (FR-11): JSONL вне git; дефолт — канонный путь наблюдаемости ---
     trace_jsonl_path: Path = Path(".harness/traces/trace.jsonl")
@@ -215,7 +217,7 @@ class Settings(BaseSettings):
         (fail-fast на старте процесса).
         """
         tokens: dict[str, str] = {}
-        raw = self.agent_dev_tokens.strip()
+        raw = self.agent_dev_tokens.get_secret_value().strip()
         if not raw:
             return {}
         for entry in raw.split(","):

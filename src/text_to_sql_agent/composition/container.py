@@ -140,7 +140,9 @@ def build_container(
         recursion_limit=settings.fsm_recursion_limit,
         # S05/feat-005: resolve_access — содержательный узел (права из настроек);
         # заглушки остаются для юнит-тестов каркаса (test_graph строит граф сам)
-        node_overrides={"resolve_access": make_resolve_access_node(resolve_access_service)},
+        node_overrides={
+            "resolve_access": make_resolve_access_node(resolve_access_service, tracer=tracer)
+        },
     )
     answer_question = AnswerQuestion(runner=fsm_runner, llm=llm)
     return Container(

@@ -38,23 +38,30 @@ _RIGHTS = UserRights(
 class _FakeStore:
     """Скриптовый PermissionStore: счётчики вызовов, правки версий снаружи."""
 
-    def __init__(self, *, rights: dict[str, UserRights] | None = None, broken: bool = False):
+    def __init__(
+        self,
+        *,
+        rights: dict[str, UserRights] | None = None,
+        broken: bool = False,
+        broken_message: str | None = None,
+    ):
         self.rights = rights if rights is not None else {}
+        # broken = сбой fetch_rights (settings_versions жив — узел доходит до
+        # чтения прав; rевью I1: деталь psycopg приходит из fetch-пути)
         self.broken = broken
+        self.broken_message = broken_message or "таблицы прав недоступны"
         self.versions = {"permissions": 2, "user_roles": 1}
         self.versions_calls = 0
         self.fetch_calls = 0
 
     def settings_versions(self) -> dict[str, int]:
         self.versions_calls += 1
-        if self.broken:
-            raise RightsUnavailableError("settings_version недоступна")
         return dict(self.versions)
 
     def fetch_rights(self, user_id: str) -> UserRights:
         self.fetch_calls += 1
         if self.broken:
-            raise RightsUnavailableError("таблицы прав недоступны")
+            raise RightsUnavailableError(self.broken_message)
         rights = self.rights.get(user_id)
         if rights is None:
             return UserRights(
@@ -192,4 +199,57 @@ class TestResolveAccessNode:
         updated = self._node(store)({"user_id": "u_bare"})
         assert updated["permissions"] == {}
         assert updated["route_flags"][IDENTITY_FAILED_FLAG] is False
-        assert updated["error"] is None
+
+
+class _RecordingTracer:
+    """Фейковый Tracer: копит записи для проверок (прецедент юнит-тестов S03)."""
+
+    def __init__(self) -> None:
+        self.records: list[Any] = []
+
+    def record(self, trace: Any) -> None:
+        self.records.append(trace)
+
+
+class TestRefusalPolicyS9:
+    """Политика отказов S9 / ревью S05 Important-1: пользовательский отказ без
+    деталей инфраструктуры; техническая деталь — только в операторский трейс."""
+
+    _PSYCOSP_DETAIL = (
+        'connection to server at "127.0.0.1", port 5432 failed: '
+        'FATAL: password authentication failed for user "agent_planner"'
+    )
+
+    @staticmethod
+    def _node(store: _FakeStore, tracer: _RecordingTracer | None = None) -> Any:
+        return make_resolve_access_node(ResolveAccessService(store), tracer=tracer)
+
+    def test_refusal_message_fixed_without_infra_details(self) -> None:
+        # Регрессия: до фикса message содержал str(exc) — host/port/роль БД
+        # psycopg утекали в stdout через CLI (S9/Task 4 плана S05)
+        store = _FakeStore(broken=True, broken_message=self._PSYCOSP_DETAIL)
+        updated = self._node(store)({"user_id": "u_analyst"})
+        message = updated["error"]["message"]
+        assert "127.0.0.1" not in message
+        assert "agent_planner" not in message
+        assert message == "права недоступны — запрос отклонён (fail-closed)"
+
+    def test_infra_detail_goes_to_trace_not_state(self) -> None:
+        store = _FakeStore(broken=True, broken_message=self._PSYCOSP_DETAIL)
+        tracer = _RecordingTracer()
+        self._node(store, tracer)({"user_id": "u_analyst"})
+        assert [event.event for event in tracer.records] == ["resolve.rights_unavailable"]
+        payload = tracer.records[0].payload
+        assert "agent_planner" in payload["detail"]  # оператору — для диагностики
+        assert payload["user_id"] == "u_analyst"
+
+    def test_whitespace_identity_rejected_not_crash(self) -> None:
+        # Ревью S05 Minor-2: whitespace-only user_id — fail-closed, не ValueError
+        # из адаптера, проброшенный наружу графа
+        updated = self._node(_FakeStore())({"user_id": "   "})
+        assert updated["error"]["class"] == "identity_missing"
+
+    def test_node_works_without_tracer(self) -> None:
+        store = _FakeStore(broken=True)
+        updated = self._node(store)({"user_id": "u_analyst"})  # tracer не передан
+        assert updated["error"]["class"] == "rights_unavailable"

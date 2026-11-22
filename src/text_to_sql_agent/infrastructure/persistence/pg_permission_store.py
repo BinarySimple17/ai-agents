@@ -23,8 +23,13 @@ _CONNECT_TIMEOUT_S = 10  # slow-фейл узла лучше висячего с
 
 _VERSIONS_SQL = "SELECT name, version FROM settings_version WHERE name = ANY(%s)"
 _ROLES_SQL = "SELECT role FROM agent_user_roles WHERE user_id = %s ORDER BY role"
+# schema_name = 'public' — defense-in-depth (ревью S05 Minor-3): мир агента —
+# публичная схема (ключи карты прав — голые table_name, как agent_permissions.table_name
+# в retrieval-фильтре S06); строка прав непубличной схемы молча не попадает в карту —
+# deny-by-default («недоступная таблица не существует»), не слияние в чужой ключ
 _PERMISSIONS_SQL = (
-    "SELECT table_name, columns FROM agent_permissions WHERE role = ANY(%s) ORDER BY table_name"
+    "SELECT table_name, columns FROM agent_permissions "
+    "WHERE schema_name = 'public' AND role = ANY(%s) ORDER BY table_name"
 )
 
 
