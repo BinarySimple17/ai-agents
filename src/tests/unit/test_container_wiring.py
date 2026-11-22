@@ -10,6 +10,7 @@ import pytest
 from langgraph.checkpoint.memory import MemorySaver
 from pydantic import SecretStr
 
+from tests.unit.fakes import FakeExecutor
 from text_to_sql_agent.application.ports.auth_provider import AuthenticationError
 from text_to_sql_agent.application.ports.permission_store import UserRights
 from text_to_sql_agent.application.ports.vector_store import DocKind, KnowledgeDocument
@@ -200,6 +201,7 @@ def test_fsm_runner_honors_caps_and_completes(tmp_path) -> None:
         clarify_service=_ScriptedClarify(),  # type: ignore[arg-type]
         plan_joins_service=_ScriptedPlanJoins(),  # type: ignore[arg-type]
         generate_sql_service=_ScriptedGenerateSql(),  # type: ignore[arg-type]
+        executor=FakeExecutor(),  # S14: execute_sql — реальный узел FSM (фейк без БД)
     )
     state = initial_state("Сколько заказов?", user_id="u_analyst")
     state["budget_used"] = {"llm_calls": container.settings.fsm_max_llm_calls, "rub": 0.0}
@@ -207,12 +209,15 @@ def test_fsm_runner_honors_caps_and_completes(tmp_path) -> None:
     # Нейтральный прогон — happy path до терминала done; resolve_access отдал
     # права из стора в state (S00 контракт 3), validate_sql (S11, реальный узел)
     # пропустил скриптовый SQL (структура = план, таблицы в правах) и положил
-    # вердикт в state.validation; sql перезаписан исполненным текстом (R1: LIMIT)
+    # вердикт в state.validation; sql перезаписан исполненным текстом (R1: LIMIT);
+    # execute_sql (S14, реальный узел) исполнил SQL фейком канала (строки есть —
+    # probe не запускается) → compact_result → done
     result = container.fsm_runner.run(initial_state("Сколько заказов?", user_id="u_analyst"))
     assert result["outcome"] == "done"
     assert result["permissions"] == {"orders": ["*"], "order_items": ["*"]}
     assert result["validation"]["outcome"] == "ok"
     assert "LIMIT" in result["sql"].upper()
+    assert result["row_count"] == 1
 
 
 def test_fsm_rejects_unknown_user_without_llm_calls(tmp_path) -> None:

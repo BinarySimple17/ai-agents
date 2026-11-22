@@ -140,6 +140,20 @@ class GenerateSqlOutcome(StrEnum):
     FAIL = "fail"  # ретраи исчерпаны / шлюз или retrieval недоступны — отказ узла
 
 
+class GenerateFailKind(StrEnum):
+    """Род отказа генератора — различение BL-016 (ruling R3 ARCH-GATE S14).
+
+    ``GENERATION`` — битый выход модели (парсер/структура/чужие таблицы):
+    ретрай оправдан — на FSM-ретрай-визите узел ведёт ребро
+    generate_sql → retry_generate_sql → визит 3 (эскалация strong).
+    ``UNAVAILABLE`` — шлюз/retrieval/бюджет: ретрай бессмыслен — degrade
+    (ruling R2: носитель отказа при инфраструктуре/исчерпании — degrade).
+    """
+
+    GENERATION = "generation"
+    UNAVAILABLE = "unavailable"
+
+
 class FillFields(BaseModel):
     """Structured output генератора (ADR-008): 4 поля наполнения скелета.
 
@@ -175,6 +189,7 @@ class GenerateSqlResult(BaseModel):
     outcome: GenerateSqlOutcome
     sql: str | None = None
     error: str | None = None  # причина отказа — в трейс, не пользователю (S9)
+    fail_kind: GenerateFailKind = GenerateFailKind.UNAVAILABLE  # BL-016/ruling R3 S14
     clarifying_question: str | None = None  # честный отказ — вопрос переформулировки
     llm_calls: int = Field(ge=0, default=0)
     escalated: bool = False
@@ -442,8 +457,12 @@ class GenerateSqlService:
                 llm_calls=calls,
                 escalated=escalated,
             )
+        # Исчерпание цикла — выходы модели не разобрались (kind GENERATION):
+        # на FSM-ретрай-визите узел ведёт ребро эскалации (ruling R3/BL-016);
+        # на первом визите узел видит on_fsm_retry=False → degrade как раньше
         return self._fail(
             f"наполнение скелета не удалось (M1): последняя ошибка: {error_text}",
+            kind=GenerateFailKind.GENERATION,
             llm_calls=calls,
             clarifying_question=_FAIL_CLARIFY_QUESTION,
         )
@@ -497,12 +516,14 @@ class GenerateSqlService:
     def _fail(
         error: str,
         *,
+        kind: GenerateFailKind = GenerateFailKind.UNAVAILABLE,
         llm_calls: int = 0,
         clarifying_question: str | None = None,
     ) -> GenerateSqlResult:
         return GenerateSqlResult(
             outcome=GenerateSqlOutcome.FAIL,
             error=error,
+            fail_kind=kind,
             llm_calls=llm_calls,
             clarifying_question=clarifying_question,
         )

@@ -1,14 +1,31 @@
 """Узел-сервис FSM `execute_sql` (S00 стык 1): исполнение SQL каналом `SQLExecutor`.
 
-Узел читает `sql` из state и пишет `rows`/`row_count`/`truncated`/`error`; переходы
-назначает граф (ADR-002 — модель не рулит маршрутом), здесь — заготовка условного
-ребра по FSM state-agent v1.5: SQL-ошибка → `diagnose_error`, 0 строк → `probe`
-(probe COUNT — не отдельный узел), успех → `compact_result`. Подключение к графу —
-V4. Пустой результат — валидный исход (S00 правило 8), не ошибка.
+Два слоя (прецедент формы: generate_sql = сервис + node-фабрика):
+- ``ExecuteSqlNode`` (S13/feat-013) — исполнение: читает `sql` из state, пишет
+  `rows`/`row_count`/`truncated`/`error`; SQL-ошибка — структурированный
+  ``{class, message}`` (не traceback — S00 правило 8). Пустой результат —
+  валидный исход, не ошибка.
+- ``make_execute_sql_node`` (S14/feat-014) — FSM-glue: RunContext из state
+  (identity/trace — ruling R4 S05/R3 S08), defense-in-depth проверки каркаса
+  (SQL приходит только от validate_sql) и probe COUNT при 0 строк
+  (state-agent v1.7 — probe НЕ узел): COUNT по каждой таблице плана ТЕМ ЖЕ
+  каналом agent_ro (капы LIMIT/timeout S13 — Ловушка 3), вердикт —
+  ``FLAG_PROBE_LOST_JOIN`` (подозрение на потерянный джойн → diagnose_error)
+  или молчаливое «реально пусто» → compact_result (ruling R1: валидный пустой
+  ответ строится через interpret_result, НЕ short_circuit — тот терминал
+  только шагового цикла).
+
+Маршрут — routing.route_execute_sql (единственный источник рёбер; ruling R4:
+заготовка execute_sql_route из S13 в граф не подключалась и удалена).
+Дефекты каркаса (identity/sql/скелет отсутствуют) — fail-closed в degrade без
+diagnose (``FLAG_EXECUTE_DEFECT``, дефект не чинится разбором — прецедент
+resolve_access → rejected).
 """
 
-from collections.abc import Mapping
-from typing import Any, Literal
+from typing import Any
+from uuid import uuid4
+
+from pydantic import ValidationError
 
 from text_to_sql_agent.application.ports.sql_executor import (
     QueryRequest,
@@ -16,9 +33,13 @@ from text_to_sql_agent.application.ports.sql_executor import (
     SQLExecutor,
     SQLFailureClass,
 )
-from text_to_sql_agent.domain.entities import RunContext
-
-RouteTo = Literal["compact_result", "probe", "diagnose_error"]
+from text_to_sql_agent.application.ports.tracer import (
+    EVENT_EXECUTE_PROBE,
+    EVENT_EXECUTE_UNAVAILABLE,
+    Tracer,
+)
+from text_to_sql_agent.domain.entities import RunContext, Trace
+from text_to_sql_agent.domain.skeleton import Skeleton
 
 SQL_KEY = "sql"
 ERROR_KEY = "error"
@@ -26,12 +47,29 @@ ROWS_KEY = "rows"
 ROW_COUNT_KEY = "row_count"
 TRUNCATED_KEY = "truncated"
 
-ROUTE_ON_ERROR: Literal["diagnose_error"] = "diagnose_error"
-ROUTE_ON_EMPTY: Literal["probe"] = "probe"
-ROUTE_ON_SUCCESS: Literal["compact_result"] = "compact_result"
+# application не импортирует orchestration — имена флагов дублируются из
+# routing.FLAG_*; совпадение строк гвардит parity-тест (прецедент S05/S08/S10/S11)
+PROBE_LOST_JOIN_FLAG = "probe_lost_join"
+EXECUTE_DEFECT_FLAG = "execute_defect"
+
+# Флаги шагового контура (S17, имена — routing.FLAG_STEP_*): в шаговом цикле
+# 0 строк ключа — short_circuit/overflow-решения, probe одиночного запроса
+# туда не входит (S17 подключит шаговое исполнение)
+_STEP_LOOP_FLAGS: frozenset[str] = frozenset(
+    {"step_done", "steps_pending", "step_empty_keyset", "step_keyset_overflow"}
+)
 
 _MISSING_SQL_CLASS = SQLFailureClass.SYNTAX
 _MISSING_SQL_MESSAGE = "в state нет SQL для исполнения"
+
+# Фиксированные сообщения дефектов/пробы (S9-политика: пользовательский текст —
+# фиксированный; факты пробы с именами/счётчиками — внутренний ключ error["probe"]
+# (ревью S14 Important-1 — прецедент state.validation.issues S11: CLI печатает
+# только message, внутренний контекст читает diagnose_error)
+_DEFECT_MESSAGE = "часть данных по этому вопросу вам недоступна — повторите позже"
+_PROBE_LOST_JOIN_MESSAGE = (
+    "по этому вопросу данных не нашлось — проверим условия выборки и повторим"
+)
 
 
 def _drop_stale_result(state: dict[str, Any]) -> dict[str, Any]:
@@ -47,7 +85,7 @@ class ExecuteSqlNode:
     def __init__(self, executor: SQLExecutor) -> None:
         self._executor = executor
 
-    def run(self, state: Mapping[str, Any], *, ctx: RunContext) -> dict[str, Any]:
+    def run(self, state: dict[str, Any], *, ctx: RunContext) -> dict[str, Any]:
         """Возвращает НОВЫЙ dict-state с результатом (state иммутабелен для LangGraph)."""
         updated = dict(state)
         sql = updated.get(SQL_KEY)
@@ -69,10 +107,159 @@ class ExecuteSqlNode:
         return updated
 
 
-def execute_sql_route(state: Mapping[str, Any]) -> RouteTo:
-    """Заготовка условного ребра: маршрут — код (ADR-002); граф подключает в V4."""
-    if state.get(ERROR_KEY):
-        return ROUTE_ON_ERROR
-    if not state.get(ROWS_KEY):
-        return ROUTE_ON_EMPTY
-    return ROUTE_ON_SUCCESS
+def make_execute_sql_node(
+    executor: SQLExecutor,
+    *,
+    tracer: Tracer | None = None,
+) -> Any:
+    """Фабрика узла execute_sql для FSM: исполнение S13 + probe COUNT (S14)."""
+
+    def node(state: dict[str, Any]) -> dict[str, Any]:
+        passthrough_flags = dict(state.get("route_flags") or {})
+        user_id = (state.get("user_id") or "").strip()
+        if not user_id:
+            # Defense-in-depth: identity проверена resolve_access — пустой user_id
+            # здесь означает подмену каркаса; fail-closed (прецедент generate_sql_node)
+            return _defect(passthrough_flags, tracer, "identity_missing")
+        sql = state.get("sql")
+        if not isinstance(sql, str) or not sql.strip():
+            # execute_sql достигается только от validate_sql (единственное ребро к
+            # исполнению — ADR-002 §5); отсутствие SQL означает подмену каркаса —
+            # fail-closed, не «исполнить пустоту» (S13-сервис оставлен в покое)
+            return _defect(passthrough_flags, tracer, "sql_missing")
+        ctx = RunContext(
+            # trace_id ставит раннер (uuid прогона); fallback — прямые вызовы в тестах
+            trace_id=state.get("trace_id") or uuid4().hex,
+            user_id=user_id,
+        )
+        result = ExecuteSqlNode(executor).run(dict(state), ctx=ctx)
+        update: dict[str, Any] = {
+            key: result[key]
+            for key in (ROWS_KEY, ROW_COUNT_KEY, TRUNCATED_KEY, ERROR_KEY)
+            if key in result
+        }
+        if result.get(ERROR_KEY):
+            # SQL-ошибка → diagnose_error (route_execute_sql); hint добавит
+            # diagnose_error (S14) — здесь только факт сбоя
+            update["route_flags"] = passthrough_flags
+            return update
+
+        # Успех; 0 строк одиночного запроса → probe COUNT (шаговый контур S17 — мимо)
+        if result.get(ROW_COUNT_KEY) == 0 and not (_STEP_LOOP_FLAGS & passthrough_flags.keys()):
+            probe_update = _run_probe(
+                executor,
+                state=state,
+                ctx=ctx,
+                user_id=user_id,
+                passthrough_flags=passthrough_flags,
+                tracer=tracer,
+            )
+            update.update(probe_update)
+            return update
+        update["route_flags"] = passthrough_flags
+        return update
+
+    return node
+
+
+def _run_probe(
+    executor: SQLExecutor,
+    *,
+    state: dict[str, Any],
+    ctx: RunContext,
+    user_id: str,
+    passthrough_flags: dict[str, Any],
+    tracer: Tracer | None,
+) -> dict[str, Any]:
+    """COUNT-проба по таблицам плана: потерянный джойн → diagnose, иначе — пусто.
+
+    Проба — КОД, не LLM (state-agent v1.7); тем же каналом agent_ro с капами
+    S13 (Ловушка 3: это тоже пользовательский SQL, не «служебное» подключение).
+    Вердикт: подозрение на потерянный джойн — строки есть в КАЖДОЙ таблице
+    плана, а джойн вернул 0 (данные по отдельности есть — вместе не сошлись);
+    любая пустая таблица объясняет ноль честно — валидный пустой ответ.
+    Сбой самой пробы — вердикта нет: пустой ответ остаётся валидным (S00-8).
+    """
+    raw_skeleton = state.get("skeleton")
+    try:
+        if not isinstance(raw_skeleton, dict):
+            raise ValueError("skeleton отсутствует")
+        skeleton = Skeleton.model_validate(raw_skeleton)
+    except ValidationError as exc:
+        return _defect(passthrough_flags, tracer, "skeleton_invalid", detail=f"Skeleton: {exc}")
+    except ValueError:
+        return _defect(passthrough_flags, tracer, "skeleton_missing")
+
+    counts: dict[str, int] = {}
+    inconclusive = False
+    for table in skeleton.tables:
+        try:
+            probe_result = executor.execute(
+                QueryRequest(sql=f"SELECT COUNT(*) AS probe_count FROM {table}"), ctx=ctx
+            )
+            row = probe_result.rows[0] if probe_result.rows else {}
+            counts[table] = int(row.get("probe_count", 0))
+        except (SQLExecutionError, IndexError, ValueError, TypeError, KeyError):
+            # Проба не выполнилась — «потерянный джойн» не утверждаём: пустой
+            # ответ остаётся валидным; деталь — оператору в трейс (S9)
+            inconclusive = True
+            if tracer is not None:
+                tracer.record(
+                    Trace(
+                        event=EVENT_EXECUTE_UNAVAILABLE,
+                        payload={"user_id": user_id, "detail": f"probe {table} не выполнилась"},
+                    )
+                )
+            break
+    lost_join = (not inconclusive) and bool(counts) and all(n > 0 for n in counts.values())
+    if tracer is not None:
+        tracer.record(
+            Trace(
+                event=EVENT_EXECUTE_PROBE,
+                payload={
+                    "user_id": user_id,
+                    "tables": sorted(counts),
+                    "counts": counts,
+                    "verdict": "lost_join" if lost_join else "empty",
+                },
+            )
+        )
+    if not lost_join:
+        return {"route_flags": passthrough_flags}
+    # Факты пробы — внутренний ключ error["probe"] (S9-паттерн S11: CLI печатает
+    # только message); diagnose_error передаст их в контекст ретрая (D-016)
+    probe_summary = ", ".join(f"{table}: {count}" for table, count in counts.items())
+    return {
+        "error": {
+            "class": "empty",
+            "message": _PROBE_LOST_JOIN_MESSAGE,
+            "probe": f"проба COUNT по таблицам плана — {probe_summary}; джойн вернул 0 строк",
+        },
+        "route_flags": {**passthrough_flags, PROBE_LOST_JOIN_FLAG: True},
+    }
+
+
+def _defect(
+    passthrough_flags: dict[str, Any],
+    tracer: Tracer | None,
+    defect_class: str,
+    *,
+    detail: str | None = None,
+) -> dict[str, Any]:
+    """Дефект каркаса/стыка: fail-closed в degrade-ветку (FLAG_EXECUTE_DEFECT).
+
+    Ретрай/разбор дефект не чинит (SQL приносит validate_sql, скелет — код) —
+    degrade без diagnose; деталь — оператору в трейс (S9), пользовательский
+    текст фиксированный.
+    """
+    if tracer is not None:
+        tracer.record(
+            Trace(
+                event=EVENT_EXECUTE_UNAVAILABLE,
+                payload={"class": defect_class, "detail": detail or defect_class},
+            )
+        )
+    return {
+        "error": {"class": defect_class, "message": _DEFECT_MESSAGE},
+        "route_flags": {**passthrough_flags, EXECUTE_DEFECT_FLAG: True},
+    }

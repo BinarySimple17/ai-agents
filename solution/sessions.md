@@ -12,7 +12,7 @@
 > В разделе — ТОЛЬКО статус последней закрытой сессии; подробности исполнения —
 > в файле самой сессии (закрытые переносятся `make archive` в sessions/archive/).
 
-- Последняя ✅: S11 — 2026-11-22: feat-011 — закрыто (см. отчёт в sessions/archive/S11_session.md)
+- Последняя ✅: S14 — 2026-11-22: feat-014 — закрыто (см. отчёт в sessions/archive/S14_session.md)
 ## Владельцы треков
 
 | Трек | Владелец | Зона |
@@ -48,7 +48,7 @@
 | S11 | [sessions/S11_session.md](sessions/S11_session.md) | validate_sql: sqlglot AST + ACL + джойны по графу | агент | S05, S07, S10 | feat-011 — закрывает | 1.5 | P0 | ✅ 2026-11-22 |
 | S12 | sessions/S12_session.md | check_cost: EXPLAIN-порог T2 → async / matview / approximate / отказ с рекомендацией (не декомпозиция, ADR-004 v1.2) | агент | S11, S02 | feat-012 — закрывает | 0.5 | P1 | ⬜ |
 | S13 | sessions/S13_session.md | SQLExecutor: тул run_sql (ДЗ-02) + узел execute_sql — agent_ro, LIMIT 1000, timeout 30s | агент | S02 | feat-013 — закрывает | 1 | P0 | ✅ 2026-11-18 |
-| S14 | [sessions/S14_session.md](sessions/S14_session.md) | diagnose_error + ретраи M1 (≤ 3 на узел; попытка 2 — та же модель + ошибка, попытка 3 — эскалация после проверки бюджета с резервом 0,6 ₽) + подключение узла execute_sql (feat-013) в FSM + probe COUNT | агент | S13, S04 | feat-014 — закрывает | 1 | P0 | ⬜ |
+| S14 | [sessions/S14_session.md](sessions/S14_session.md) | diagnose_error + ретраи M1 (≤ 3 на узел; попытка 2 — та же модель + ошибка, попытка 3 — эскалация после проверки бюджета с резервом 0,6 ₽) + подключение узла execute_sql (feat-013) в FSM + probe COUNT | агент | S13, S04 | feat-014 — закрывает | 1 | P0 | ✅ 2026-11-22 |
 | S15 | [sessions/S15_session.md](sessions/S15_session.md) | interpret_result + degrade + incomplete-флаг + BudgetGuard (порт; compact_result — код) | агент | S05, S14 | feat-015 — закрывает | 1 | P0 | ⬜ |
 | S16 | sessions/S16_session.md | Кэш вопросов Valkey (точное совпадение): допущения-сверка, ключ с правами | агент | S05, S10 | feat-016 — закрывает | 1 | P1 | ⬜ |
 | S17 | sessions/S17_session.md | plan_query: декомпозиция T1 (основной путь; на стенде — заглушка), T2 → async/matview/approximate; key-set без LIMIT, кап кардинальности 50 000, флаг approximate (выпускная) | агент | S11, S12 | feat-017 — закрывает | 2 | P2 | ⬜ |

@@ -796,6 +796,21 @@ def _valid_join_plan() -> Any:
     )
 
 
+def _scripted_plan_success() -> Any:
+    """PLAN-исход планера для TestRetryCycle (скелет = _GOOD_SQL/_FOREIGN_SQL)."""
+    from text_to_sql_agent.application.services.plan_joins_service import (
+        PlanJoinsResult,
+        PlanOutcome,
+    )
+
+    return PlanJoinsResult(
+        outcome=PlanOutcome.PLAN,
+        plan=_valid_join_plan(),
+        graph_version=1,
+        llm_calls=2,
+    )
+
+
 class TestGenerateSqlPath:
     """S10/feat-010: содержательные узлы plan_joins → build_skeleton → generate_sql
     в FSM-пути (validate_sql/check_cost/… — заглушки-транзиты S04 до S11/S12)."""
@@ -946,3 +961,292 @@ class TestGenerateSqlPath:
         assert "generate_sql.verdict" in events
         sql_events = [t for t in tracer.records if t.event == "generate_sql.verdict"]
         assert all("sql" not in t.payload for t in sql_events)  # текст SQL не трейсится
+
+
+class TestRetryCycle:
+    """S14/feat-014: цикл самокоррекции ADR-002 §4 внутри машины —
+    generate → validate → execute → diagnose → generate.
+
+    Реальные узлы validate_sql (S11, каталог-фейк), execute_sql (S14, фейк
+    канала) и diagnose_error (S14, скрипт-сервис); plan/generate — скрипт-сервисы
+    под реальными узлами (прецедент TestGenerateSqlPath).
+    """
+
+    _CATALOG = {"orders", "order_items"}
+    _RIGHTS = {"orders": ["*"], "order_items": ["*"]}
+    # Чужая таблица revenue — вне каталога: validate_sql → hallucination → retry
+    _FOREIGN_SQL = (
+        "SELECT count(*)\nFROM orders\n"
+        "INNER JOIN order_items ON orders.order_id = order_items.order_id\n"
+        "INNER JOIN revenue ON orders.order_id = revenue.order_id"
+    )
+    _GOOD_SQL = (
+        "SELECT count(*)\nFROM orders\n"
+        "INNER JOIN order_items ON orders.order_id = order_items.order_id"
+    )
+
+    class _QueueGenerateService:
+        """Генератор-очередь: исход на каждый визит узла (FSM-ретраи)."""
+
+        def __init__(self, results: list[Any]) -> None:
+            self._results = list(results)
+            self.seen_attempts: list[int] = []
+            self.seen_last_sql: list[Any] = []
+            self.seen_last_error: list[Any] = []
+
+        def generate(self, **kwargs: Any) -> Any:
+            if not self._results:
+                raise AssertionError("генератор позван больше числа визитов сценария")
+            self.seen_attempts.append(kwargs.get("start_attempt"))
+            self.seen_last_sql.append(kwargs.get("last_sql"))
+            self.seen_last_error.append(kwargs.get("last_error"))
+            return self._results.pop(0)
+
+    class _AlwaysRetryDiagnoseService:
+        """Диагност-скрипт: класс retryable + подсказка — ретрай всегда оправдан."""
+
+        def diagnose(self, **kwargs: Any) -> Any:
+            from text_to_sql_agent.application.services.diagnose_error_service import (
+                DiagnoseClass,
+                DiagnoseResult,
+                DiagnoseVerdict,
+            )
+
+            return DiagnoseResult(
+                verdict=DiagnoseVerdict(
+                    error_class=DiagnoseClass.SEMANTICS,
+                    regeneration_hint="убери чужую таблицу",
+                ),
+                llm_calls=0,  # скрипт не тратит кап прогона (реальный диагноз — 1)
+            )
+
+    class _PassDiagnoseService:
+        """Диагност-скрипт: разбор не удался — ретрай не назначается (S00-8)."""
+
+        def diagnose(self, **kwargs: Any) -> Any:
+            from text_to_sql_agent.application.services.diagnose_error_service import (
+                DiagnoseResult,
+            )
+
+            return DiagnoseResult(error="шлюз недоступен", llm_calls=0)
+
+    @staticmethod
+    def _scripted_sql(sql: str) -> Any:
+        from text_to_sql_agent.application.services.generate_sql_service import (
+            GenerateSqlOutcome,
+            GenerateSqlResult,
+        )
+
+        return GenerateSqlResult(outcome=GenerateSqlOutcome.SQL, sql=sql, llm_calls=1)
+
+    def _runner(
+        self,
+        generate_results: list[Any],
+        diagnose_service: Any | None = None,
+        executor: Any | None = None,
+        *,
+        recursion_limit: int = 50,
+    ) -> tuple[Any, "TestRetryCycle._QueueGenerateService"]:
+        from tests.unit.fakes import FakeExecutor
+        from text_to_sql_agent.application.services.build_skeleton_node import (
+            make_build_skeleton_node,
+        )
+        from text_to_sql_agent.application.services.diagnose_error_node import (
+            make_diagnose_error_node,
+        )
+        from text_to_sql_agent.application.services.execute_sql_node import (
+            make_execute_sql_node,
+        )
+        from text_to_sql_agent.application.services.generate_sql_node import (
+            make_generate_sql_node,
+        )
+        from text_to_sql_agent.application.services.plan_joins_node import make_plan_joins_node
+        from text_to_sql_agent.application.services.validate_sql_node import (
+            make_validate_sql_node,
+        )
+        from text_to_sql_agent.application.services.validate_sql_service import (
+            ValidateSqlService,
+        )
+
+        generate_service = self._QueueGenerateService(generate_results)
+        rights = dict(self._RIGHTS)
+
+        def _rights_node(state: dict[str, Any]) -> dict[str, Any]:
+            return {"permissions": dict(rights), "graph_version": 1}
+
+        runner = build_fsm_runner(
+            caps=CAPS,
+            checkpointer=MemorySaver(),
+            deadline_s=90.0,
+            recursion_limit=recursion_limit,
+            node_overrides={
+                "resolve_access": _rights_node,
+                "plan_joins": make_plan_joins_node(_ScriptedPlanService(_scripted_plan_success())),
+                "build_skeleton": make_build_skeleton_node(),
+                "generate_sql": make_generate_sql_node(generate_service),
+                "validate_sql": make_validate_sql_node(
+                    ValidateSqlService(),
+                    catalog_provider=lambda: set(self._CATALOG),
+                ),
+                # execute_sql — реальный узел S14: строки есть — probe не запускается
+                "execute_sql": make_execute_sql_node(executor or FakeExecutor()),
+                "diagnose_error": make_diagnose_error_node(
+                    diagnose_service or self._AlwaysRetryDiagnoseService()
+                ),
+            },
+        )
+        return runner, generate_service
+
+    def test_hallucination_retry_succeeds_on_attempt2(self) -> None:
+        """Галлюцинация → diagnose → ретрай (попытка 2 — та же роль + ошибка) → успех."""
+        runner, generate_service = self._runner(
+            [self._scripted_sql(self._FOREIGN_SQL), self._scripted_sql(self._GOOD_SQL)]
+        )
+        final = runner.run(initial_state(QUESTION, user_id="u_analyst"), thread_id="t-cycle1")
+        assert final["outcome"] == "done"
+        assert generate_service.seen_attempts == [1, 2]  # ретраится генератор (M1)
+        assert final["sql"] is not None and "revenue" not in final["sql"]
+        # D-016: в контексте ретрая — последний SQL + разбор ошибки (фиксированный
+        # текст валидатора S9 + подсказка диагностики из state.diagnosis)
+        assert generate_service.seen_last_sql[1] == self._FOREIGN_SQL
+        second_error = generate_service.seen_last_error[1]
+        assert second_error is not None
+        assert "часть данных" in second_error  # фиксированный текст S9
+        assert "убери чужую таблицу" in second_error  # hint диагностики (S14)
+
+    def test_exhaustion_yields_valid_degrade_not_infinite_loop(self) -> None:
+        """Fuse ≤ 3: все попытки галлюцинируют — degrade (валидный payload), 3 визита."""
+        runner, generate_service = self._runner([self._scripted_sql(self._FOREIGN_SQL)] * 5)
+        final = runner.run(initial_state(QUESTION, user_id="u_analyst"), thread_id="t-cycle2")
+        assert final["outcome"] == "degrade"
+        assert generate_service.seen_attempts == [1, 2, 3]  # ≤ 3 попыток на узел
+        assert final["error"] is not None
+
+    def test_diagnose_unavailable_stops_without_retry(self) -> None:
+        """Разбор не удался (шлюз) — ретрай не назначается, degrade (S00-8)."""
+        runner, generate_service = self._runner(
+            [self._scripted_sql(self._FOREIGN_SQL)],
+            diagnose_service=self._PassDiagnoseService(),
+        )
+        final = runner.run(initial_state(QUESTION, user_id="u_analyst"), thread_id="t-cycle3")
+        assert final["outcome"] == "degrade"
+        assert generate_service.seen_attempts == [1]  # ретрая не было
+
+    def test_execute_error_retries_and_succeeds(self) -> None:
+        """SQL-ошибка исполнения (один раз) → diagnose → ретрай → успех — замыкание
+        цикла самокоррекции ADR-002 §4 внутри машины."""
+
+        class _FailOnceExecutor:
+            """Канал: первый запрос падает по таймауту, дальше — успех (фейк S13)."""
+
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def execute(self, request: Any, *, ctx: Any) -> Any:
+                from text_to_sql_agent.application.ports.sql_executor import (
+                    QueryResult,
+                    SQLExecutionError,
+                    SQLFailureClass,
+                )
+
+                self.calls += 1
+                if self.calls == 1:
+                    raise SQLExecutionError("истёк statement_timeout", SQLFailureClass.TIMEOUT)
+                return QueryResult(columns=["count"], rows=[{"count": 400}], row_count=1)
+
+        runner, generate_service = self._runner(
+            [self._scripted_sql(self._GOOD_SQL), self._scripted_sql(self._GOOD_SQL)],
+            executor=_FailOnceExecutor(),
+        )
+        final = runner.run(initial_state(QUESTION, user_id="u_analyst"), thread_id="t-cycle4")
+        assert final["outcome"] == "done"
+        assert generate_service.seen_attempts == [1, 2]
+        # В контексте ретрая — текст ошибки исполнения + подсказка диагностики
+        assert generate_service.seen_last_error[1] is not None
+        assert "timeout" in generate_service.seen_last_error[1]
+
+    def test_diagnose_never_reaches_execution_directly(self) -> None:
+        """Ловушка 1 плана: diagnose не имеет ребра к исполнению — путь к execute_sql
+        только validate_sql → check_cost (ADR-002 §5, свойство структуры графа).
+
+        routing возвращает имена целей литералами — аудит по коду функций: если у
+        diagnose_error появится «execute_sql», тест падает раньше регрессии.
+        """
+        from text_to_sql_agent.orchestration.routing import (
+            CONDITIONAL_ROUTES,
+            route_diagnose_error,
+        )
+
+        # 1) решения diagnose_error — только ретрай-гейты и degrade (никогда execute)
+        cases: list[tuple[dict[str, Any], str]] = [
+            (
+                {
+                    "route_flags": {
+                        "retry_generate_sql": True,
+                        "retry_target": "generate_sql",
+                    },
+                    "retry_count": 0,
+                },
+                "retry_generate_sql",
+            ),
+            (
+                {
+                    "route_flags": {
+                        "retry_generate_sql": True,
+                        "retry_target": "generate_sql",
+                    },
+                    "retry_count": MAX_NODE_RETRIES,
+                },
+                "degrade",  # fuse ≤ 3 исчерпан
+            ),
+            ({"route_flags": {"retry_generate_step_sql": True}}, "retry_generate_step_sql"),
+            ({"route_flags": {}}, "degrade"),
+        ]
+        for state, expected in cases:
+            assert route_diagnose_error(state) == expected
+        # 2) литерал «execute_sql» живёт только в route_check_cost — ребро к
+        # исполнению единственное, из узла после validate_sql
+        execution_sources = {
+            name
+            for name, route in CONDITIONAL_ROUTES.items()
+            if "execute_sql" in route.__code__.co_consts
+        }
+        assert execution_sources == {"check_cost"}
+        # 3) check_cost достижим только из validate_sql (ok-ветка)
+        cost_sources = {
+            name
+            for name, route in CONDITIONAL_ROUTES.items()
+            if "check_cost" in route.__code__.co_consts
+        }
+        assert cost_sources == {"validate_sql"}
+
+    def test_broken_counters_caught_by_recursion_limit(self) -> None:
+        """Второй предохранитель (ADR-002): счётчики сломаны (зацикливающий мок
+        сбрасывает retry_count и бюджет каждый визит) — fuse и гвард капов не
+        срабатывают, recursion_limit ловит → валидный fail (не traceback)."""
+
+        def _looping_generate(state: dict[str, Any]) -> dict[str, Any]:
+            return {
+                "sql": None,
+                "route_flags": {
+                    "generate_sql_failed": True,
+                    "generate_sql_retryable": True,
+                },
+                "error": {"class": "generate_sql_unavailable", "message": "битый выход"},
+                "retry_count": 0,  # дефект: счётчик fuse сбрасывается каждым визитом
+                "budget_used": {"llm_calls": 0, "rub": 0.0},  # и гвард капов слеп
+            }
+
+        runner = build_fsm_runner(
+            caps=CAPS,
+            checkpointer=MemorySaver(),
+            deadline_s=90.0,
+            recursion_limit=25,
+            node_overrides={
+                "resolve_access": lambda state: {"permissions": {}, "graph_version": 0},
+                "generate_sql": _looping_generate,
+            },
+        )
+        final = runner.run(initial_state(QUESTION), thread_id="t-loop")
+        assert final["outcome"] == "fail"
+        assert final["error"]["class"] == RECURSION_LIMIT_ERROR_CLASS

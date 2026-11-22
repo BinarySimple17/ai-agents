@@ -147,7 +147,15 @@ class AgentState(TypedDict, total=False):
     compact           compact_result
     error             diagnose_error / узлы, поймавшие сбой; кодовое поле — читается
                       ребром execute_sql (SQL-ошибка → diagnose_error, routing),
-                      успешный execute_sql ОБЯЗАН очищать его (ревью S04 M2)
+                      успешный execute_sql ОБЯЗАН очищать его (ревью S04 M2);
+                      опциональный внутренний ключ "probe" (execute_sql S14) —
+                      факты COUNT-пробы для контекста diagnose_error (S9: CLI
+                      печатает только message, message фиксированный)
+    diagnosis         diagnose_error (S14): {error_class, hint, retry_futile} —
+                      внутренний контекст ретрая M1 (подсказка регенерации,
+                      D-016); читает generate_sql при FSM-ретрае; пользовательский
+                      текст не смешивается (S9: state.error.message остаётся
+                      фиксированным)
     retry_count       код-обвязка (гейт ребра ретрая; см. политику ниже)
     budget_used       код-обвязка (учёт узлов с LLM; заглушки имитируют — каждый
                       вход в LLM-узел «платит» вызовом, гвард капов живой)
@@ -201,7 +209,8 @@ class AgentState(TypedDict, total=False):
     rows: list[Any] | None
     row_count: int | None
     compact: dict[str, Any] | None  # ResultCompact (pydantic — S15/ADR-008)
-    error: dict[str, Any] | None  # {class, message}
+    error: dict[str, Any] | None  # {class, message, probe? — факты пробы (S14, внутренний)}
+    diagnosis: dict[str, Any] | None  # {error_class, hint, retry_futile} — S14
     retry_count: int
     budget_used: dict[str, Any] | None  # {llm_calls: int, rub: float}
     route_flags: dict[str, Any]

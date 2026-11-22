@@ -1,6 +1,6 @@
 # State Diagram — агент Text-to-SQL (FSM)
 
-- **Статус:** каноническая схема v1.7 (2026-11-22 — ruling R2 ARCH-GATE S10: два ребра отказа генерирующей цепочки — `plan_joins → degrade` («нет активного пути» + заявка владельцу — behavior feat-009, hw-01 §3.1; в v1.6 не рисовалось, диаграмма против канона) и `generate_sql → degrade` (исчерпание M1/бюджет/дефект скелета — носитель отказа генератора — degrade, state-agent: «лимит попыток / бюджет / дедлайн»; терминал `fail` исходит только из plan_joins); подключение plan_joins/build_skeleton/generate_sql — feat-010. **Механика M1 на петлях** (ревью S10 I7): попытки 1–2/3 исполняются ВНУТРИ узлов-сервисов (plan_joins/generate_sql — ruling R7 S10, счётчик не расходует FSM-рёбра); FSM-петли `retry_*` — каркас ретраев ВАЛИДАТОРА и ИСПОЛНЕНИЯ (validate_sql → diagnose_error → generate_sql — S11, execute_sql — S14): реальный узел plan_joins флаг `plan_joins_invalid` не пишет. v1.6 — FIX-009/ruling R1 ARCH-GATE S08: ребро `plan_joins → clarify` (равные кандидаты пути — hw-01 §4.2; в v1.5 ребро не рисовалось, канон-текст против диаграммы); clarify-механика interrupt: само-ребро `clarify → clarify` (вопрос сформулирован → пауза), `clarify → clarification` — отказ при несформулированном вопросе, TTL-истёк — clarification исходом от раннера. v1.5 — FIX-008: входящие рёбра overflow/short_circuit, цикл merge_results → generate_step_sql; v1.4 — 2026-11-18: ретрай шага декомпозиции — явное ребро `diagnose_error → generate_step_sql` (ретраится упавший шаг, не весь план); T2: approximate/matview — через `compact_result → interpret_result` с флагом `approximate`, async/отказ — терминал. v1.3 — состав 15 узлов = hw-01 §2.1, M1, recursion_limit, T2 → degraded_out; v1.2 — валидация JoinPlan; v1.1 — ревизия 02)
+- **Статус:** каноническая схема v1.8 (2026-11-22 — ruling R3 ARCH-GATE S14/BL-016: ребро `generate_sql → generate_sql` (гейт retry_generate_sql) — generation-fail на FSM-ретрай-визите (битый выход модели) при незатраченном fuse → визит 3 — эскалация strong с бюджет-проверкой в сервисе; детур через diagnose_error отвергнут — битый выход генератора самодиагностируем; определение «попытки узла» — ruling R6, раздел «Ретраи»; подключение execute_sql + probe COUNT (код визита, не узел) и diagnose_error — feat-014). v1.7 — ruling R2 ARCH-GATE S10: два ребра отказа генерирующей цепочки — `plan_joins → degrade` («нет активного пути» + заявка владельцу — behavior feat-009, hw-01 §3.1; в v1.6 не рисовалось, диаграмма против канона) и `generate_sql → degrade` (исчерпание M1/бюджет/дефект скелета — носитель отказа генератора — degrade, state-agent: «лимит попыток / бюджет / дедлайн»; терминал `fail` исходит только из plan_joins); подключение plan_joins/build_skeleton/generate_sql — feat-010. **Механика M1 на петлях** (ревью S10 I7): попытки 1–2/3 исполняются ВНУТРИ узлов-сервисов (plan_joins/generate_sql — ruling R7 S10, счётчик не расходует FSM-рёбра); FSM-петли `retry_*` — каркас ретраев ВАЛИДАТОРА и ИСПОЛНЕНИЯ (validate_sql → diagnose_error → generate_sql — S11, execute_sql — S14): реальный узел plan_joins флаг `plan_joins_invalid` не пишет. v1.6 — FIX-009/ruling R1 ARCH-GATE S08: ребро `plan_joins → clarify` (равные кандидаты пути — hw-01 §4.2; в v1.5 ребро не рисовалось, канон-текст против диаграммы); clarify-механика interrupt: само-ребро `clarify → clarify` (вопрос сформулирован → пауза), `clarify → clarification` — отказ при несформулированном вопросе, TTL-истёк — clarification исходом от раннера. v1.5 — FIX-008: входящие рёбра overflow/short_circuit, цикл merge_results → generate_step_sql; v1.4 — 2026-11-18: ретрай шага декомпозиции — явное ребро `diagnose_error → generate_step_sql` (ретраится упавший шаг, не весь план); T2: approximate/matview — через `compact_result → interpret_result` с флагом `approximate`, async/отказ — терминал. v1.3 — состав 15 узлов = hw-01 §2.1, M1, recursion_limit, T2 → degraded_out; v1.2 — валидация JoinPlan; v1.1 — ревизия 02)
 - **Требования prd.md:** FR-1…FR-14; переходы контролирует код — модель не может перепрыгнуть валидацию или уйти из цикла (ADR-002)
 - **Связанные:** ADR-002 (recursion_limit — второй предохранитель), ADR-004 (ветка декомпозиции, T2-исходы), ADR-005 (degrade vs diagnose), ADR-006 (JoinPlan по `edge_id`), ADR-007 (политика ретраев M1), ADR-009 (кэш); c4-l3-agent.md (компоненты узлов), sequence-query.md (интерактивный путь целиком)
 
@@ -30,6 +30,7 @@ stateDiagram-v2
     plan_query --> generate_sql: план невалиден после retry по M1 → откат к одиночному SQL
 
     generate_sql --> validate_sql: наполнение скелета (тул 4 поля: SELECT/WHERE/GROUP BY/ORDER BY — SQL собирает код, R1)
+    generate_sql --> generate_sql: generation-fail на FSM-ретрай-визите (BL-016, R3 S14) при незатраченном fuse — через гейт retry_generate_sql → попытка 3 — эскалация strong с бюджет-проверкой; первый визит — внутренние M1, исчерпание fuse — degrade
     generate_sql --> degrade: исчерпание M1 / бюджет — носитель отказа генератора (S10, R2)
     generate_step_sql --> validate_sql: наполнение шага скелетом
 
@@ -129,6 +130,16 @@ stateDiagram-v2
   только если остатка бюджета хватает (проверка с резервом 0,6 ₽ под
   `interpret_result`). `diagnose_error → generate_sql` несёт эти ветки; назад —
   не откат, а разбор ошибки. Эскалацию назначает код (`retry_count`).
+  **Определение «попытки узла» (ruling R6 ARCH-GATE S14, BL-016 смежное):**
+  попытка M1 = шаг политики ролей (1/2/3); на первом визите шаги крутит
+  внутренний цикл сервиса (≤ 3 вызовов LLM), на FSM-ретрай-визитах — ровно одна
+  попытка (гейт считает визиты, fuse ≤ 3 визитов); потолок генератора — 5
+  LLM-вызовов на прогон, абсолютный рубеж — гвард капов ≤ 8 (llm_guard).
+  **Generation-fail на FSM-ретрай-визите (R3/BL-016)** — ретрай оправдан:
+  ребро `generate_sql → retry_generate_sql` (гейт) → визит 3 — эскалация strong;
+  шлюз/retrieval/бюджет — degrade без ретрая (R2 в своей зоне). Детур через
+  diagnose_error отвергнут: битый выход генератора самодиагностируем (текст
+  ошибки парсинга уже в retry-контексте сервиса, D-016).
 - **Ветка `degrade` vs `diagnose_error` — различение причин** (ADR-005): «таблица не
   существует» — галлюцинация, retry оправдан; «существует, но вне прав» — сигнал
   безопасности, retry не оправдан (модель не должна «уговорить» валидатор) — деградация:
@@ -156,4 +167,4 @@ stateDiagram-v2
 
 ## Трассировка
 
-Ревизии: v1.6 (FIX-009/R1 S08: ребро plan_joins → clarify, clarify-механика interrupt — само-ребро, TTL-истёк через раннер) · v1.5 (FIX-008: входящие рёбра overflow/short_circuit, цикл merge_results → generate_step_sql) · v1.4 (ретрай шага, T2: approximate/matview через interpret_result) · Связанные ADR: ADR-002, ADR-004, ADR-005, ADR-006, ADR-007, ADR-009 · Канон: hw-01/README.md §2, §3.1, §6
+Ревизии: v1.8 (R3 S14/BL-016: ребро generate_sql → generate_sql — generation-fail на FSM-ретрай-визите → гейт retry_generate_sql → попытка 3 strong; execute_sql + probe COUNT и diagnose_error подключены — feat-014; определение «попытки узла» — R6) · v1.6 (FIX-009/R1 S08: ребро plan_joins → clarify, clarify-механика interrupt — само-ребро, TTL-истёк через раннер) · v1.5 (FIX-008: входящие рёбра overflow/short_circuit, цикл merge_results → generate_step_sql) · v1.4 (ретрай шага, T2: approximate/matview через interpret_result) · Связанные ADR: ADR-002, ADR-004, ADR-005, ADR-006, ADR-007, ADR-009 · Канон: hw-01/README.md §2, §3.1, §6

@@ -316,6 +316,7 @@ def initial_state(question: str, user_id: str = "") -> "AgentState":
         "row_count": None,
         "compact": None,
         "error": None,
+        "diagnosis": None,  # разбор ошибки (S14) — пишется diagnose_error
         "retry_count": 0,
         "budget_used": {"llm_calls": 0, "rub": 0.0},
         "route_flags": {},

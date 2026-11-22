@@ -44,10 +44,12 @@ from text_to_sql_agent.application.services.build_skeleton_node import (
 from text_to_sql_agent.application.services.build_skeleton_node import make_build_skeleton_node
 from text_to_sql_agent.application.services.generate_sql_node import (
     GENERATE_SQL_FAILED_FLAG,
+    GENERATE_SQL_RETRYABLE_FLAG,
     RETRY_TARGET_FLAG,
     make_generate_sql_node,
 )
 from text_to_sql_agent.application.services.generate_sql_service import (
+    GenerateFailKind,
     GenerateSqlOutcome,
     GenerateSqlResult,
     GenerateSqlService,
@@ -965,12 +967,18 @@ class TestGenerateSqlNode:
                 "skeleton": build_skeleton(_plan()).model_dump(),
                 "permissions": PERMISSIONS,
                 "budget_used": {"llm_calls": 4},
-                "route_flags": {GENERATE_SQL_FAILED_FLAG: True},  # от дефекта скелета
+                "route_flags": {
+                    GENERATE_SQL_FAILED_FLAG: True,  # от дефекта скелета
+                    GENERATE_SQL_RETRYABLE_FLAG: True,  # stale от ретрай-визита
+                },
                 "trace_id": "t-2",
             }
         )
         assert updated["sql"].startswith("SELECT count(*)")
         assert updated["route_flags"][GENERATE_SQL_FAILED_FLAG] is False
+        # Ревью S14 Minor-2: симметричная очистка — stale RETRYABLE не доживает
+        # до следующего решения ребра (корректность не на fuse-инварианте)
+        assert updated["route_flags"][GENERATE_SQL_RETRYABLE_FLAG] is False
         assert updated["error"] is None
         assert updated["budget_used"]["llm_calls"] == 5  # 4 + 1 (R6)
         verdict = [t for t in tracer.records if t.event == EVENT_GENERATE_SQL_VERDICT]
@@ -1081,6 +1089,72 @@ class TestGenerateSqlNode:
             assert updated["error"]["class"] == expected_class
         assert service.called == 0
 
+    # --- BL-016 / ruling R3 ARCH-GATE S14: generation-fail на ретрай-визите ---
+
+    def _fail_result(self, kind: GenerateFailKind) -> Any:
+        return self._service_result(
+            GenerateSqlOutcome.FAIL,
+            error="наполнение не разобрано",
+            fail_kind=kind,
+            llm_calls=1,
+        )
+
+    def test_retry_visit_generation_fail_sets_retryable(self) -> None:
+        """Попытка 2 дала битый выход — флаг RETRYABLE → ребро эскалации (R3/BL-016)."""
+        service = self._fail_result(GenerateFailKind.GENERATION)
+        updated = make_generate_sql_node(service)(
+            {
+                "question": QUESTION,
+                "user_id": "u_analyst",
+                "skeleton": build_skeleton(_plan()).model_dump(),
+                "permissions": PERMISSIONS,
+                "retry_count": 1,
+                "route_flags": {RETRY_TARGET_FLAG: "generate_sql"},
+                "sql": "SELECT 1",
+                "error": {"class": "validate_hallucination", "message": "галлюцинация"},
+            }
+        )
+        assert updated["route_flags"][GENERATE_SQL_FAILED_FLAG] is True
+        assert updated["route_flags"][GENERATE_SQL_RETRYABLE_FLAG] is True
+
+    def test_first_visit_generation_fail_stays_degrade(self) -> None:
+        """Первый визит: внутренний M1 уже потрачен — RETRYABLE не ставится (R2)."""
+        service = self._fail_result(GenerateFailKind.GENERATION)
+        updated = make_generate_sql_node(service)(
+            {
+                "question": QUESTION,
+                "user_id": "u_analyst",
+                "skeleton": build_skeleton(_plan()).model_dump(),
+                "permissions": PERMISSIONS,
+            }
+        )
+        assert updated["route_flags"][GENERATE_SQL_FAILED_FLAG] is True
+        assert GENERATE_SQL_RETRYABLE_FLAG not in updated["route_flags"]
+
+    def test_unavailable_fail_never_retryable(self) -> None:
+        """Шлюз/retrieval/бюджет — ретрай бессмыслен даже на ретрай-визите (R2)."""
+        service = self._fail_result(GenerateFailKind.UNAVAILABLE)
+        updated = make_generate_sql_node(service)(
+            {
+                "question": QUESTION,
+                "user_id": "u_analyst",
+                "skeleton": build_skeleton(_plan()).model_dump(),
+                "permissions": PERMISSIONS,
+                "retry_count": 1,
+                "route_flags": {RETRY_TARGET_FLAG: "generate_sql"},
+            }
+        )
+        assert GENERATE_SQL_RETRYABLE_FLAG not in updated["route_flags"]
+
+    def test_guard_fail_flags_not_retryable(self) -> None:
+        """Дефекты каркаса (identity/skeleton) — не generation-fail: без RETRYABLE."""
+        service = self._service_result(GenerateSqlOutcome.SQL, sql="SELECT 1")
+        updated = make_generate_sql_node(service)(
+            {"question": QUESTION, "user_id": "", "skeleton": build_skeleton(_plan()).model_dump()}
+        )
+        assert updated["route_flags"][GENERATE_SQL_FAILED_FLAG] is True
+        assert GENERATE_SQL_RETRYABLE_FLAG not in updated["route_flags"]
+
 
 class TestRoutingS10:
     """Новые рёбра отказа (ruling R2 ARCH-GATE): маршрут читает только флаги."""
@@ -1106,6 +1180,52 @@ class TestRoutingS10:
         outcome = self._route("generate_sql", {"route_flags": {"generate_sql_failed": True}})
         assert outcome == "degrade"
 
+    def test_generate_sql_retryable_routes_to_retry_gate(self) -> None:
+        # R3/BL-016: generation-fail на ретрай-визите при незатраченном fuse —
+        # гейт retry_generate_sql (инкремент кодом ребра → визит 3, эскалация)
+        outcome = self._route(
+            "generate_sql",
+            {
+                "route_flags": {
+                    "generate_sql_failed": True,
+                    "generate_sql_retryable": True,
+                    "retry_target": "generate_sql",
+                },
+                "retry_count": 1,
+            },
+        )
+        assert outcome == "retry_generate_sql"
+
+    def test_generate_sql_retryable_with_exhausted_fuse_degrades(self) -> None:
+        # Fuse ≤ 3: визит 3 исчерпан — RETRYABLE бесполезен → degrade (R2)
+        outcome = self._route(
+            "generate_sql",
+            {
+                "route_flags": {
+                    "generate_sql_failed": True,
+                    "generate_sql_retryable": True,
+                    "retry_target": "generate_sql",
+                },
+                "retry_count": 2,
+            },
+        )
+        assert outcome == "degrade"
+
+    def test_generate_sql_retryable_foreign_target_counts_fresh(self) -> None:
+        # Fuse читает attempts_used целевого узла: чужой retry_target — счётчик
+        # с нуля (попытка 1) — fuse не исчерпан, ребро ретрая работает
+        outcome = self._route(
+            "generate_sql",
+            {
+                "route_flags": {
+                    "generate_sql_retryable": True,
+                    "retry_target": "plan_joins",
+                },
+                "retry_count": 2,
+            },
+        )
+        assert outcome == "retry_generate_sql"
+
     def test_generate_sql_default_still_validate(self) -> None:
         # Валидация не перепрыгивается (ADR-002 §5)
         outcome = self._route("generate_sql", {"route_flags": {}})
@@ -1122,6 +1242,7 @@ class TestRoutingS10:
         from text_to_sql_agent.orchestration import routing
 
         assert GENERATE_SQL_FAILED_FLAG == routing.FLAG_GENERATE_SQL_FAILED
+        assert GENERATE_SQL_RETRYABLE_FLAG == routing.FLAG_GENERATE_SQL_RETRYABLE
         assert PLAN_JOINS_NO_PATH_FLAG == routing.FLAG_PLAN_JOINS_NO_PATH
         assert PLAN_JOINS_CLARIFY_FLAG == routing.FLAG_PLAN_JOINS_CLARIFY
         assert PLAN_JOINS_EXHAUSTED_FLAG == routing.FLAG_PLAN_JOINS_EXHAUSTED
@@ -1139,4 +1260,5 @@ class TestRoutingS10:
         from text_to_sql_agent.orchestration.routing import TRANSITION_FLAGS
 
         assert "generate_sql_failed" not in TRANSITION_FLAGS
+        assert "generate_sql_retryable" not in TRANSITION_FLAGS
         assert "plan_joins_no_path" not in TRANSITION_FLAGS

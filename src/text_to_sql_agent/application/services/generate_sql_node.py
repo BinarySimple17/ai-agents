@@ -25,6 +25,7 @@ from text_to_sql_agent.application.ports.tracer import (
     Tracer,
 )
 from text_to_sql_agent.application.services.generate_sql_service import (
+    GenerateFailKind,
     GenerateSqlOutcome,
     GenerateSqlService,
 )
@@ -34,6 +35,11 @@ from text_to_sql_agent.domain.skeleton import Skeleton
 # application не импортирует orchestration — имя флага дублируется из
 # routing.FLAG_*; совпадение строк гвардит тест (прецедент S05/S08)
 GENERATE_SQL_FAILED_FLAG = "generate_sql_failed"
+# BL-016 (ruling R3 ARCH-GATE S14): generation-fail на FSM-ретрай-визите —
+# ретрай оправдан, узел ведёт ребро generate_sql → retry_generate_sql (гейт) →
+# визит 3 (эскалация strong с бюджет-проверкой в сервисе). Только на
+# ретрай-визите: первый визит уже потратил внутренние попытки 1→2→3 (M1)
+GENERATE_SQL_RETRYABLE_FLAG = "generate_sql_retryable"
 # Гейт ретрая пишет имя ретрауемого узла в route_flags (S00 стык 2 — контракт
 # стыка, не orchestration-константа): чтение из state, дублирование имени —
 # гвардится parity-тестом
@@ -100,6 +106,16 @@ def make_generate_sql_node(
         start_attempt = retry_count + 1 if on_fsm_retry else 1
         # Контекст ретрая — только на FSM-ретрае (ревью minor): затерявшийся
         # error другого узла не должен превращаться в «Ошибка предыдущей попытки»
+        # S14 (D-016): разбор ошибки — последний SQL + текст ошибки + подсказка
+        # диагностики (state.diagnosis пишет diagnose_error — S9: hint внутренний,
+        # пользовательский state.error.message не смешивается)
+        last_error = None
+        if on_fsm_retry:
+            raw_error = (state.get("error") or {}).get("message")
+            hint = (state.get("diagnosis") or {}).get("hint")
+            last_error = raw_error
+            if raw_error and hint:
+                last_error = f"{raw_error}\nПодсказка регенерации: {hint}"
         result = service.generate(
             skeleton=skeleton,
             question=question,
@@ -107,7 +123,7 @@ def make_generate_sql_node(
             assumptions=state.get("assumptions") or [],
             permissions=state.get("permissions") or {},
             last_sql=state.get("sql") if on_fsm_retry else None,
-            last_error=(state.get("error") or {}).get("message") if on_fsm_retry else None,
+            last_error=last_error,
             start_attempt=start_attempt,
         )
         if tracer is not None:
@@ -127,15 +143,23 @@ def make_generate_sql_node(
         budget["llm_calls"] = (budget.get("llm_calls") or 0) + result.llm_calls
 
         if result.outcome == GenerateSqlOutcome.SQL:
+            # Симметричная очистка (ревью S14 Minor-2): RETRYABLE не остаётся
+            # stale после успеха ретрай-визита — корректность не держится
+            # на неочевидном fuse-инварианте
             return {
                 "sql": result.sql,
-                "route_flags": {**flags, GENERATE_SQL_FAILED_FLAG: False},
+                "route_flags": {
+                    **flags,
+                    GENERATE_SQL_FAILED_FLAG: False,
+                    GENERATE_SQL_RETRYABLE_FLAG: False,
+                },
                 "error": None,
                 "budget_used": budget,
             }
-        # FAIL: исчерпание M1 / шлюз / retrieval — отказ генератора → degrade;
-        # деталь сбоя — оператору в трейс (S9), пользователю — шаблон отказа
-        # сервиса (код-текст «переформулируйте…» — FR-10, не инфраструктура)
+        # FAIL: исчерпание M1 / шлюз / retrieval — отказ генератора; носитель —
+        # degrade (ruling R2), КРОМЕ generation-fail на FSM-ретрай-визите:
+        # битый выход модели — ретрай оправдан, узел ведёт ребро эскалации
+        # (ruling R3/BL-016: визит 3 — strong при достатке бюджета)
         if tracer is not None and result.error:
             tracer.record(
                 Trace(
@@ -144,7 +168,12 @@ def make_generate_sql_node(
                 )
             )
         message = result.clarifying_question or _GENERATE_UNAVAILABLE_MESSAGE
-        return _fail(flags, "generate_sql_unavailable", message, budget)
+        retryable = (
+            on_fsm_retry
+            and result.outcome == GenerateSqlOutcome.FAIL
+            and result.fail_kind == GenerateFailKind.GENERATION
+        )
+        return _fail(flags, "generate_sql_unavailable", message, budget, retryable=retryable)
 
     return node
 
@@ -154,11 +183,22 @@ def _fail(
     error_class: str,
     message: str,
     budget: dict[str, Any] | None = None,
+    *,
+    retryable: bool = False,
 ) -> dict[str, Any]:
-    """Отказ генератора: FLAG_GENERATE_SQL_FAILED → degrade (ruling R2 ARCH-GATE)."""
+    """Отказ генератора: FLAG_GENERATE_SQL_FAILED → degrade (ruling R2 ARCH-GATE).
+
+    ``retryable`` (ruling R3/BL-016) — generation-fail на FSM-ретрай-визите:
+    дополнительно ставит FLAG_GENERATE_SQL_RETRYABLE — ребро
+    route_generate_sql ведёт в гейт ретрая (fuse проверяет routing); при
+    исчерпании fuse флаг бесполезен — degrade как раньше.
+    """
+    out_flags = {**flags, GENERATE_SQL_FAILED_FLAG: True}
+    if retryable:
+        out_flags[GENERATE_SQL_RETRYABLE_FLAG] = True
     update: dict[str, Any] = {
         "sql": None,
-        "route_flags": {**flags, GENERATE_SQL_FAILED_FLAG: True},
+        "route_flags": out_flags,
         "error": {"class": error_class, "message": message},
     }
     if budget is not None:
