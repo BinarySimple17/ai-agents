@@ -7,9 +7,9 @@
 ## Current State
 
 **Last Updated:** 2026-11-22
-**Session ID:** … → S10 → S11 → **S14 ◐ (diagnose_error + retry-цикл + execute_sql в FSM + probe COUNT — код и тесты собраны [Tasks 1–4, коммиты 338897e/9acb657/516e582/6ccca71/2d956a5], init.sh 817 passed, layer-3 live: happy-path done + полный цикл самокоррекции с budget_stop; REVIEW-GATE ⏳ — диспетчеризация code-reviewer, потом verify-feature + merge)**
-**Active Feature:** feat-014 (active; веха V4: 5/8 фич [feat-004/005/008/010/011] passing, feat-014 — закрывается S14)
-**Last commit:** ветка `feat-014-diagnose-error` (Task 4 2d956a5) — merge в `milestone/v4` после REVIEW-GATE
+**Session ID:** … → S10 → S11 → **S14 ✅ (diagnose_error + retry-цикл + execute_sql в FSM + probe COUNT — feat-014 → passing [verify-feature PASS: 26 test_diagnose; REVIEW-GATE «Ready to merge: Yes» после fix-волны eff8162]; init.sh 818 passed; layer-3 live: happy-path done + полный цикл самокоррекции с budget_stop на капе 8; BL-016 закрыт ruling R3, BL-019 открыт)**
+**Active Feature:** — (feat-014 passing; веха V4: 6/8 фич [feat-004/005/008/010/011/014], следующая — S15 interpret_result + degrade + BudgetGuard)
+**Last commit:** ветка `feat-014-diagnose-error` — merge --no-ff в `milestone/v4` по закрытии сессии
 
 ## Status
 

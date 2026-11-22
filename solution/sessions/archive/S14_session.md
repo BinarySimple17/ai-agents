@@ -1,6 +1,6 @@
 # S14 — diagnose_error + retry-цикл + execute_sql в FSM (веха V4, ДЗ-05)
 
-Этап: Веха V4 (ДЗ-05: цикл самокоррекции в машине) | Владелец: агент | Зависимости: S13, S04 | Оценка: 1 | Статус: ◐ в работе (старт 2026-11-22, ветка feat-014-diagnose-error)
+Этап: Веха V4 (ДЗ-05: цикл самокоррекции в машине) | Владелец: агент | Зависимости: S13, S04 | Оценка: 1 | Статус: ✅ 2026-11-22
 Фичи: feat-014 — diagnose_error + retry-цикл; зависимости feat-013 (passing), feat-004 (закрывается S04 до старта)
 Роль по фиче: закрывает feat-014 — финальная сессия, через make verify-feature
 
@@ -139,7 +139,7 @@ make infra-up && uv run pytest src/tests/integration/test_retry_cycle.py -q   # 
 - [x] Исчерпание — валидный отказ с уточняющим вопросом, не бесконечный цикл; recursion_limit — второй предохранитель (behavior feat-014; FSM test_exhaustion_yields_valid_degrade [3 визита → degrade] + test_broken_counters_caught_by_recursion_limit [сломанные счётчики → GraphRecursionError → fail]; live: budget_stop на капе 8)
 - [x] Узел execute_sql подключён в FSM: SQL-ошибка → diagnose_error, 0 строк → probe COUNT (feat-013 в V4, behavior feat-014; wiring container + route_execute_sql; live done-прогон)
 - [x] Probe: реально пусто — валидный пустой ответ; подозрение на потерянный джойн — в diagnose_error (state-agent v1.5; unit probe-ветки + live test_empty_result_probe_lost_join_retries_to_success)
-- [ ] Фича закрыта: `make verify-feature F=feat-014` → PASS, state=passing с evidence (после REVIEW-GATE — гейт требует заполненного REVIEW-GATE)
+- [x] Фича закрыта: `make verify-feature F=feat-014` → PASS, state=passing с evidence (2026-11-22; verification `uv run pytest src/tests/unit/test_diagnose.py -q` → 26 passed; полный init.sh 817→818 passed)
 
 ## Ловушки
 
