@@ -145,12 +145,12 @@ uv run pytest src/tests/unit/test_graph.py src/tests/unit/test_interpret.py -q  
 
 ## Критерии приёмки
 
-- [ ] Успех: текст + SQL + допущения + флаги усечения/approximate + стоимость; вход interpret — компактный вид ~1150 токенов, не сырые строки (behavior feat-015)
-- [ ] Отказ по правам: «данные премии недоступны» + доступный вариант, без имён недоступных таблиц и без подтверждения наличия данных (behavior feat-015)
-- [ ] Бюджет исчерпан: честный отказ или incomplete-флаг; частичный результат — только с incomplete (behavior feat-015, контракт budget_stop)
-- [ ] BudgetGuard — порт из S00; шов budget_remaining_roubles переведён; резерв 0,6 ₽ сохранён (D-016)
-- [ ] usage_notes рёбер раскрываются в допущениях ответа (преемственность флагмана ДЗ-04)
-- [ ] Фича закрыта: `make verify-feature F=feat-015` → PASS, state=passing с evidence
+- [x] Успех: текст + SQL + допущения + флаги усечения/approximate + стоимость; вход interpret — компактный вид ~1150 токенов, не сырые строки (behavior feat-015) — тест prompt_not_raw_rows (100 строк) + live happy-path
+- [x] Отказ по правам: «данные премии недоступны» + доступный вариант, без имён недоступных таблиц и без подтверждения наличия данных (behavior feat-015) — санитайзер-тесты (регистр/морфология/свои темы) + live degrade (только свои темы)
+- [x] Бюджет исчерпан: честный отказ или incomplete-флаг; частичный результат — только с incomplete (behavior feat-015, контракт budget_stop) — R3: терминал-карта + exception-fallback, тесты обоих путей
+- [x] BudgetGuard — порт из S00; шов budget_remaining_roubles переведён; резерв 0,6 ₽ сохранён (D-016) — ruling R4, wiring-тест 4 сервисов на одном источнике
+- [x] usage_notes рёбер раскрываются в допущениях ответа (преемственность флагмана ДЗ-04) — JoinPlan.assumptions → final_answer.usage_notes (тест + live «агрегация поверх ребра…»)
+- [ ] Фича закрыта: `make verify-feature F=feat-015` → PASS, state=passing with evidence — после REVIEW-GATE
 
 ## Ловушки
 
@@ -187,8 +187,17 @@ uv run pytest src/tests/unit/test_graph.py src/tests/unit/test_interpret.py -q  
 ## Отчёт по сессии (заполняется по факту)
 
 - Сделано:
-  - [Task: что реально сделано, коммиты, число тестов/ассертов, live-прогон]
+  - **ARCH-GATE** (до кода): canon-check architect — needs-decision, rulings R1–R8 записаны до первого код-коммита; blocker (ADR-007:74 «degrade — код, без LLM» против живого ADR-005:171/prd FR-6) закрыт amend'ом ADR-007 v1.3 тем же коммитом с degrade (Task 3). Findings: имена VO по ER (sample/approximate — R2), incomplete в обоих путях budget_stop (R3), реализация порта в infrastructure/token_budget.py (R4), без семьи budget.stop (R5), ₽-снапшот пишут узлы (R6), события R7, вердикт-причина R8.
+  - **Task 1 (коммит 4c…)**: domain/result_compact.py — VO ResultCompact (row_count, sample ≤ MAX_COMPACT_ROWS=20 с fail-closed-валидатором, агрегаты sum/avg/min/max по числовым колонкам: bool не число, смешанные пропускаются, None — пропуск; truncated/approximate) + compact_result_node (код-узел, LLM-бюджет не платит; rows None — валидный T2-путь). 16 тестов.
+  - **Task 2**: InterpretService (strong, тул report_answer, M1 ≤ 3 без эскалации; вход — компакт; INCOMPLETE при M1/шлюзе/BudgetExceededError; finish_reason=length → ANSWER+incomplete) + interpret_result_node (final_answer payload, ₽-снапшот R6); порт LLMResponse + finish_reason (провайдер передаёт, тест-прогонка); порт BudgetGuard (read-side Protocol); AgentState +final_answer (карта владения + CONTRACT_1_FIELDS). 31+1 тестов.
+  - **Task 3**: domain/degradation.py (DegradationCase cause/situation/available/forbidden + fallback_text) + DegradeService (mid, одна попытка, тул report_refusal, санитайзер + шаблон-fallback) + degrade_node (cause-priority, final_answer с sql=None, события) + R3 (TERMINAL_PAYLOADS в make_terminal + exception-fallback answer_question) + amend ADR-007 v1.3. 26 тестов.
+  - **Task 4**: infrastructure/token_budget.py (TokenBudgetGuard: spent-зеркало/remaining floor 0/reset-делегат) + container (4 лямбды → guard.remaining_rub, BL-015 закрыт; Container.budget_guard) + BL-005 закрыт (EVENT_LLM_* в порту tracer; provider/console_tracer импортируют). 6+1 тестов.
+  - **Task 5**: container node_overrides (compact/interpret/degrade + инъекции interpret_service/degrade_service) + FSMResult.answer → final_answer + CLI _print_final_answer. 3 FSM-сценария на реальном графе.
+  - **Тесты**: unit 805 + integration 82 (init.sh baseline 818 → с S15-узлами 887; ruff чист); самопроверки всех задач зелёные.
+  - **Layer-3 live** (локальный шлюз qwen3.8-9b + БД): ① happy-path «Сколько всего заказов в базе?» — 10 узлов → done, ответ «В базе всего 1000 заказов» + исполненный SQL + допущение из usage_notes ребра (fanout_guard ADR-004) + стоимость; ② clarify-цикл u_logist «премии» — права-фильтрованный мир честно не содержит чужих таблиц (уточнение ×3 → clarification по TTL); ③ полный цикл «Сколько клиентов имеет более одной рекламной кампании?» — генерация → SQL-ошибка → diagnose → ретраи ×2 → degrade с честным отказом (только свои темы, без чужих имён и подтверждений существования — санитайзер/S9 в бою).
 - Отклонения от плана:
-  - [что сделали не так, как в задаче, и почему; каждое отклонение — осознанное]
+  - Port — Task 4 планировался после Task 2/3, но порт BudgetGuard понадобился узлам уже в Task 2 (снапшот ₽/cost_rub) — Protocol создан в Task 2, реализация и перевод шва — в Task 4 по плану; поведение не менялось.
+  - EVENT_COMPACT_VERDICT — объявлена и удалена в той же сессии (никем не эмитится; R7 не планировал компакт-событие — честный порт без мёртвых констант).
+  - Живой degrade-сцены «премии» (из prd RBAC №2) в лоб не получилось: права-фильтрованный retrieval выводит таблицу из мира → путь через clarify, не degrade; degrade показан живьём на сцене «нет активного пути customers–campaigns» (перебор → генерация → самокоррекция → degrade) — инварианты текста те же.
 - Перенесено в другие сессии:
-  - [ID сессии — что перенесено и почему; если в беклог — BL-NN-файл в solution/backlog/ (см. backlog/README.md)]
+  - [новых переносов нет; BL-015/BL-005 закрыты в Task 4; BL-019 (шаговые флаги) остаётся на S17; approximate-механика — выпускная feat-012/017]

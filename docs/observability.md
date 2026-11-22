@@ -1,6 +1,6 @@
 # Observability — наблюдаемость Text-to-SQL Agent
 
-- **Статус:** Принято v1.5 (2026-11-19 — консольные этапы CLI: события `agent.*` через порт Tracer, ConsoleTracer/TeeTracer, stderr/stdout-политика — S21/BL-004, D-022. v1.4 — 2026-11-18: синхронизация с ревью-03: OTel-instrumentation fastapi/psycopg/httpx (развёртывание N1 — c4-l2 v1.8); аудит S8 — отдельная append-only таблица `agent_audit`, отдельно от трейсов; PII-редакция. v1.3 — источник `/metrics`: Streamlit-демо; v1.2 — live-стек (ADR-010): Jaeger вместо Tempo, без коллектора)
+- **Статус:** Принято v1.6 (2026-11-22 — S15/feat-015: события финального контура `interpret.*`/`degrade.*` (R7 ARCH-GATE S15) + константы `EVENT_LLM_*` в порту Tracer (BL-005). v1.5 — 2026-11-19: консольные этапы CLI: события `agent.*` через порт Tracer, ConsoleTracer/TeeTracer, stderr/stdout-политика — S21/BL-004, D-022. v1.4 — 2026-11-18: синхронизация с ревью-03: OTel-instrumentation fastapi/psycopg/httpx (развёртывание N1 — c4-l2 v1.8); аудит S8 — отдельная append-only таблица `agent_audit`, отдельно от трейсов; PII-редакция. v1.3 — источник `/metrics`: Streamlit-демо; v1.2 — live-стек (ADR-010): Jaeger вместо Tempo, без коллектора)
 - **Назначение:** операционный уровень поверх prd FR-11 и NFR-1/2/6/8: что собираем,
   где хранится, что считаем, на какие пороги смотрим. Состав стека и его альтернативы —
   ADR-010; здесь — контракты сигналов и реакции. PII-политика телеметрии согласована
@@ -159,6 +159,10 @@ best-effort — сбой приёмника не рвёт запрос). Сбо�
 | `diagnose.unavailable` | user_id или class, detail | FSM (S14/feat-014): разбор не удался (шлюз недоступен/невалидные выходы M1 исчерпаны) или дефект каркаса (identity/error отсутствуют — fail-closed) — ретрай не назначается, деградация — валидный исход (S00-8); деталь оператору в JSONL, не пользователю (S9); константа — порт Tracer (EVENT_DIAGNOSE_UNAVAILABLE) |
 | `execute.probe` | user_id, tables, counts, verdict | FSM (S14/feat-014): факт COUNT-пробы при 0 строк (state-agent v1.7 — probe не узел, код визита execute_sql, канал agent_ro с капами S13); verdict: lost_join → diagnose_error, empty → compact_result (валидный пустой ответ); БЕЗ SQL-текста (D-022-аналог); константа — порт Tracer (EVENT_EXECUTE_PROBE) |
 | `execute.unavailable` | user_id или class, detail | FSM (S14/feat-014): fail-closed дефект каркаса (identity/sql/скелет отсутствуют — подмена, маршрут degrade без diagnose — FLAG_EXECUTE_DEFECT, дефект не чинится разбором) либо сбой самой COUNT-пробы (вердикта нет, пустой ответ остаётся валидным — S00-8); деталь оператору в JSONL, не пользователю (S9); константа — порт Tracer (EVENT_EXECUTE_UNAVAILABLE) |
+| `interpret.verdict` | outcome, incomplete, llm_calls, row_count, cost_rub, truncated, approximate | FSM (S15/feat-015): вердикт финального объяснения (strong, glm — ADR-007 §4.2); БЕЗ текста ответа и БЕЗ строк данных (JSONL-приватность, R7 ARCH-GATE S15); incomplete=true — finish_reason=length (тихая усечённость шлюза, S19-хвост); константа — порт Tracer (EVENT_INTERPRET_VERDICT) |
+| `interpret.unavailable` | reason | FSM (S15/feat-015): объяснение не собрано (M1 исчерпан / шлюз / BudgetExceededError адаптера — «последняя миля не пробивает кап») — узел пишет шаблонный отказ с row_count + state.incomplete (честный частичный ответ, R3); деталь оператору (S9); константа — порт Tracer (EVENT_INTERPRET_UNAVAILABLE) |
+| `degrade.verdict` | cause, has_variant, used_llm, llm_calls | FSM (S15/feat-015): отказ сформулирован (mid + тул report_refusal, одна попытка — ADR-007 v1.3); cause — rights/no_path/generator/technical (верdict-причина собирает код — R8 ARCH-GATE S15); текст отказа в JSONL НЕ дублируется (он в state.final_answer пользователю); константа — порт Tracer (EVENT_DEGRADE_VERDICT) |
+| `degrade.unavailable` | reason | FSM (S15/feat-015): текст модели отклонён санитайзером S9 (чужая тема/подтверждение существования — runtime-гарантия R1) или шлюз/бюджет недоступны — шаблон-fallback (0–1 вызовов); reason — оператору (S9); константа — порт Tracer (EVENT_DEGRADE_UNAVAILABLE) |
 
 S25 (feat-020): mode `agent` — объединённый контур (retrieval + тул run_sql +
 стрим ходов), `tool_loop` — голый тул-контур ДЗ-02 за флагом `--plain`;
@@ -170,7 +174,9 @@ S25 (feat-020): mode `agent` — объединённый контур (retrieva
 провайдера (включая `text_from_reasoning` и `finish_reason` — D-021; стрим S19
 несёт в `llm.complete` поля `stream=true` и `ttft_ms` — NFR-1, время до первого
 чанка; usage-паритет: шлюзы без usage в стриме → `usage_missing=true`,
-стоимость 0 не маскируется). Эскалации M1 (S09/S10/S14) лягут в тот же поток без
+стоимость 0 не маскируется). Имена — константы порта Tracer
+(`EVENT_LLM_*`, BL-005 закрыт S15: единый источник эмиттера и рендерера).
+Эскалации M1 (S09/S10/S14) лягут в тот же поток без
 изменения рендера — события generic, неизвестное имя — generic-строка.
 `rows_preview` — данные БД на экране оператора и в dev-sink `.harness/traces/`
 (исключение к §2.2 оформлено там: локально, вне git, синтетика; триггер

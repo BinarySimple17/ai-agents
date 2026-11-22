@@ -70,10 +70,6 @@ EVENT_EXECUTE_PROBE = "execute.probe"
 # или сбой самой COUNT-пробы — деталь оператору, не пользователю (S9-прецедент
 # skeleton.unavailable); маршрут — degrade без diagnose (FLAG_EXECUTE_DEFECT)
 EVENT_EXECUTE_UNAVAILABLE = "execute.unavailable"
-# FSM compact_result (S15): код-узел компакции — факт свёртки (row_count/сэмпл/
-# агрегаты-счёт) для операторского следа; payload факты, БЕЗ строк данных
-# (JSONL-приватность — R7 ARCH-GATE S15)
-EVENT_COMPACT_VERDICT = "compact.verdict"
 # FSM interpret_result (S15): вердикт финального объяснения (strong) + сбой;
 # payload факты (outcome/flags/cost_rub/row_count), БЕЗ текста ответа и БЕЗ
 # строк данных (R7 ARCH-GATE S15)
