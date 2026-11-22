@@ -277,9 +277,9 @@
         "feat-007",
         "feat-010"
       ],
-      "state": "active",
-      "status": "in-progress",
-      "evidence": "",
+      "state": "passing",
+      "status": "done",
+      "evidence": "command «uv run pytest src/tests/unit/test_validate_sql.py -q» exited 0 at 2026-11-22T19:17:32+03:00 (scripts/verify-feature.sh)",
       "layers": [
         {
           "label": "layer-1-static",
