@@ -4,6 +4,7 @@
 - **Дата:** 2026-11-22
 - **Сессия-источник:** S08 (REVIEW-GATE Minor-7)
 - **Приоритет:** P3
+- **Назначение:** S15 (Task 4 плана — перевод шва budget_remaining_roubles на порт BudgetGuard; там же закрыть запись; распределение backlog-триажа 2026-11-22)
 
 ## Что обнаружено
 
@@ -26,6 +27,17 @@ S08 не рефакторит S09-код (карта владения файла
 `ROLE_UP`, `MAX_NODE_ATTEMPTS` + хелпер `escalation_role(role, attempt, budget_remaining)` —
 один источник для plan_joins/generate_sql/diagnose_error/clarify. При третьем потребителе
 (S10) — не откладывать: расхождение значений (0.6 vs иное) сломало бы экономику E1–E6.
+
+## Ход решения
+
+- **S10 (2026-11-22, feat-010):** модуль создан — `application/services/m1_policy.py`
+  (MAX_ATTEMPTS=3, ESCALATION_ATTEMPT=3, ESCALATION_RESERVE_ROUBLES=0.6, ROLE_UP);
+  потребители: clarify (S08), plan_joins (S09), generate_sql (S10) и
+  routing.MAX_NODE_RETRIES (паритет I4). Четвёртый (diagnose_error, S14) — импорт
+  из того же модуля.
+- **Остаток → S15 (Task 4):** шов `budget_remaining_roubles` — три одинаковые
+  лямбды в `composition/container.py` (144/153/169) — переводится на порт
+  BudgetGuard; там же закрыть эту запись (статус → закрыт).
 
 ## Закрытие (заполняется при закрытии)
 
