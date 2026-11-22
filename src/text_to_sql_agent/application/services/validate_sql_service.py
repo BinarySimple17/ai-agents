@@ -149,8 +149,16 @@ _NODE_WHITELIST: frozenset[type[exp.Expression]] = frozenset(
 )
 
 # Структурные наследники exp.Func, которые функциями по смыслу не являются
-# (имя попало бы в allow-list-проверку ложно): CASE/WHEN, EXISTS, конструктор массива.
-_STRUCTURAL_FUNCS: tuple[type[exp.Expression], ...] = (exp.Case, exp.If, exp.Array, exp.Exists)
+# (имя попало бы в allow-list-проверку ложно): CASE/WHEN, EXISTS, конструктор
+# массива, логические коннекторы (And/Or — наследники Func в sqlglot 30.x).
+_STRUCTURAL_FUNCS: tuple[type[exp.Expression], ...] = (
+    exp.Case,
+    exp.If,
+    exp.Array,
+    exp.Exists,
+    exp.And,
+    exp.Or,
+)
 
 # Маркер пары ON, которую извлекатель не свёл к равенству колонок (OR, литералы,
 # USING) — сверка со скелетом равенством даст mismatch: ON фиксирован скелетом.
@@ -226,13 +234,14 @@ def _build_audit(tree: exp.Expression) -> SqlAudit:
         ):
             star_sources.append(tuple(SqlSource(name=s.name, kind=s.kind) for s in sources))
 
+    root_maps = maps_by_scope.get(id(root_select), []) if root_select is not None else []
     return SqlAudit(
         from_table=_from_table(root_select, cte_names),
         tables=_collect_tables(tree, cte_names),
         cte_names=tuple(sorted(cte_names)),
         columns=tuple(columns),
         joins=_collect_joins(root_select, maps_by_scope, cte_names),
-        where_conjuncts=_collect_where(root_select),
+        where_conjuncts=_collect_where(root_select, root_maps),
         outer_limit=_collect_outer_limit(tree),
         functions=_collect_functions(tree),
         star_sources=tuple(star_sources),
@@ -458,16 +467,47 @@ def _flatten_and(node: exp.Expression) -> Iterator[exp.Expression]:
         yield node
 
 
-def _collect_where(root_select: exp.Select | None) -> tuple[str, ...]:
-    """Конъюнкты WHERE внешнего запроса — нормализованные тексты (сверка
-    mandatory_predicates — Task 3; нормализация — единая с S10, ruling R3 S10)."""
+def _resolve_column_tables(node: exp.Expression, maps: list[dict[str, _Source]]) -> exp.Expression:
+    """Копия конъюнкта с квалификаторами колонок КОРНЕВОГО скоупа, переписанными
+    на реальные имена источников (алиасы SQL → имена таблиц/CTE).
+    mandatory_predicates скелета рендерятся реальными именами таблиц, модель
+    пишет алиасами — сверка нормализованным равенством без ложных срабатываний
+    (дерево не мутируется — исходный SQL остаётся без изменений). Колонки
+    вложенных скоупов (подзапросы/EXISTS внутри конъюнкта) не трогаются — они
+    резолвятся своими скоуп-мапами при извлечении IR."""
+    clone = node.copy()
+    nested = {id(s) for s in clone.find_all(exp.Select)}
+    for column in clone.find_all(exp.Column):
+        parent = column.parent
+        inside_nested = False
+        while parent is not None and parent is not clone:
+            if id(parent) in nested:
+                inside_nested = True
+                break
+            parent = parent.parent
+        if inside_nested:
+            continue
+        qualifier = (column.table or "").lower()
+        if not qualifier:
+            continue
+        column.set("table", exp.to_identifier(_resolve_qualifier(qualifier, maps).name))
+    return clone
+
+
+def _collect_where(
+    root_select: exp.Select | None, maps: list[dict[str, _Source]]
+) -> tuple[str, ...]:
+    """Конъюнкты WHERE внешнего запроса — нормализованные тексты с квалификаторами,
+    переписанными на реальные имена источников (сверка mandatory_predicates —
+    Task 3; нормализация — единая с S10, ruling R3 S10)."""
     if root_select is None:
         return ()
     where = root_select.args.get("where")
     if where is None:
         return ()
     return tuple(
-        normalize_sql_fragment(part.sql(dialect="postgres")) for part in _flatten_and(where.this)
+        normalize_sql_fragment(_resolve_column_tables(part, maps).sql(dialect="postgres"))
+        for part in _flatten_and(where.this)
     )
 
 

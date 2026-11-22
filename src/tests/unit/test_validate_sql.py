@@ -212,7 +212,10 @@ class TestFunctionAllowList:
         assert result.verdict.outcome is ValidationOutcome.OK
 
     def test_cast_is_allowed(self):
-        result = _validate("SELECT o.total::text FROM orders o LIMIT 10")
+        result = _validate(
+            "SELECT o.total::text FROM orders o INNER JOIN customers c "
+            "ON o.customer_id = c.id LIMIT 10"
+        )
         assert result.verdict.outcome is ValidationOutcome.OK
 
 
@@ -220,16 +223,31 @@ class TestNestedTraversal:
     """Обход вложенности: CTE/UNION/подзапросы/LATERAL — те же правила (план Task 1)."""
 
     def test_cte_reference_is_not_a_table(self):
+        # CTE-референс — не таблица мира (тело проверено на своём скоупе), но
+        # КОРНЕВОЙ WITH — изменённый скелет (assemble_sql его не производит):
+        # структура отклоняется, тело при этом проверено теми же правилами
         result = _validate(
             "WITH top AS (SELECT o.id, o.customer_id FROM orders o) "
             "SELECT t.id FROM top t INNER JOIN customers c ON t.customer_id = c.id LIMIT 10"
         )
+        assert result.verdict.outcome is ValidationOutcome.HALLUCINATION
+
+    def test_cte_body_checked_when_root_structure_intact(self):
+        # CTE ВНУТРИ подзапроса не трогает корень: тело (orders) проверено ACL,
+        # CTE-референс — не таблица мира, структура скелета сохранена
+        result = _validate(
+            "SELECT o.id FROM orders o INNER JOIN customers c ON o.customer_id = c.id "
+            "WHERE EXISTS (WITH top AS (SELECT o2.id AS id FROM orders o2) "
+            "SELECT 1 FROM top WHERE top.id = c.id) LIMIT 10"
+        )
         assert result.verdict.outcome is ValidationOutcome.OK
 
     def test_exists_subquery_checked(self):
+        # EXISTS-подзапрос не трогает корень скелета; колонки тела (c2/c) — те же
+        # правила ACL (корреляция через скоуп-цепочку)
         result = _validate(
-            "SELECT o.id FROM orders o WHERE EXISTS "
-            "(SELECT 1 FROM customers c WHERE c.id = o.customer_id) LIMIT 10"
+            "SELECT o.id FROM orders o INNER JOIN customers c ON o.customer_id = c.id "
+            "WHERE EXISTS (SELECT 1 FROM customers c2 WHERE c2.region = c.region) LIMIT 10"
         )
         assert result.verdict.outcome is ValidationOutcome.OK
 
@@ -241,8 +259,11 @@ class TestNestedTraversal:
         assert result.verdict.outcome is ValidationOutcome.OK
 
     def test_lateral_subquery_checked(self):
+        # LATERAL внутри EXISTS: тело (orders) проверено ACL, корень скелета цел
         result = _validate(
-            "SELECT o.id, l.x FROM orders o, LATERAL (SELECT o.customer_id AS x) l LIMIT 10"
+            "SELECT o.id FROM orders o INNER JOIN customers c ON o.customer_id = c.id "
+            "WHERE EXISTS (SELECT l.x FROM orders o2, LATERAL (SELECT o2.customer_id AS x) l "
+            "WHERE l.x = c.id) LIMIT 10"
         )
         assert result.verdict.outcome is ValidationOutcome.OK
 
@@ -261,9 +282,6 @@ class TestNestedTraversal:
         )
         assert result.verdict.outcome is ValidationOutcome.OK
 
-    @pytest.mark.skip(
-        reason="Task 3 (скелет) — следующая итерация: UNION-корень противоречит скелету плана"
-    )
     def test_union_root_structure_change_detected(self):
         # UNION-корень легален парсеру, но противоречит скелету плана — hallucination
         result = _validate(
@@ -339,7 +357,9 @@ class TestColumnAcl:
         assert result.verdict.outcome is ValidationOutcome.DENIED
 
     def test_unknown_alias_rejected(self):
-        result = _validate("SELECT x.id FROM orders o LIMIT 10")
+        result = _validate(
+            "SELECT x.id FROM orders o INNER JOIN customers c ON o.customer_id = c.id LIMIT 10"
+        )
         assert result.verdict.outcome is ValidationOutcome.HALLUCINATION
 
     def test_unqualified_column_resolved(self):
@@ -376,7 +396,9 @@ class TestStarExpansion:
     """ADR-005 §4 п.2 (ruling R2): '*' разворачивается в разрешённые колонки."""
 
     def test_star_expands_to_permitted_columns(self):
-        result = _validate("SELECT * FROM orders o LIMIT 10")
+        result = _validate(
+            "SELECT * FROM orders o INNER JOIN customers c ON o.customer_id = c.id LIMIT 10"
+        )
         assert result.verdict.outcome is ValidationOutcome.OK
         for column in ORDERS_COLUMNS:
             assert f"o.{column}" in result.sql
@@ -384,7 +406,10 @@ class TestStarExpansion:
 
     def test_star_all_permitted_stays_literal(self):
         perms = {"orders": ["*"], "customers": ["*"]}
-        result = _validate("SELECT * FROM orders o LIMIT 10", permissions=perms)
+        result = _validate(
+            "SELECT * FROM orders o INNER JOIN customers c ON o.customer_id = c.id LIMIT 10",
+            permissions=perms,
+        )
         assert result.verdict.outcome is ValidationOutcome.OK
         assert "*" in result.sql  # все колонки разрешены — разворот не нужен
 
@@ -399,8 +424,12 @@ class TestStarExpansion:
         assert "c.*" not in result.sql
 
     def test_star_over_table_without_permitted_columns_denied(self):
-        perms = {"orders": []}
-        result = _validate("SELECT * FROM orders o LIMIT 10", permissions=perms)
+        # обе таблицы в правах (таблица-уровень чист) — отказ именно за звезду
+        perms = {"orders": [], "customers": list(CUSTOMERS_COLUMNS)}
+        result = _validate(
+            "SELECT * FROM orders o INNER JOIN customers c ON o.customer_id = c.id LIMIT 10",
+            permissions=perms,
+        )
         assert result.verdict.outcome is ValidationOutcome.DENIED
 
     def test_star_in_count_is_not_a_column(self):
@@ -433,8 +462,13 @@ def _canonical_sql() -> str:
     )
 
 
-@pytest.mark.skip(reason="Task 3 (скелет) — следующий инкремент; контракт поведения зафиксирован")
 class TestSkeletonIntegrity:
+    # Все таблицы галереи в правах: отказ за СТРУКТУРУ, не за ACL (изоляция concern'а)
+    _THREE_TABLE_PERMS = {
+        **{k: list(v) for k, v in PERMISSIONS.items()},
+        "order_items": ["id", "order_id", "quantity"],
+    }
+
     def test_canonical_sql_passes(self):
         plan = _plan(mandatory_predicates={"rel-orders-customers": {"orders.status": "active"}})
         result = _validate(_canonical_sql(), plan=plan)
@@ -448,9 +482,14 @@ class TestSkeletonIntegrity:
         assert result.verdict.outcome is ValidationOutcome.HALLUCINATION
 
     def test_extra_table_rejected(self):
+        # bonuses разрешён (таблица/колонки в правах) — отказ именно за ЛИШНИЙ
+        # JOIN вне рёбер плана, не за ACL (ruling: denied доминирует, поэтому
+        # структурную сверку изолируем разрешённой таблицей)
+        perms = {**{k: list(v) for k, v in PERMISSIONS.items()}, "bonuses": ["id", "customer_id"]}
         result = _validate(
             "SELECT o.id FROM orders o INNER JOIN customers c ON o.customer_id = c.id "
-            "INNER JOIN campaigns m ON o.campaign_id = m.id LIMIT 10"
+            "INNER JOIN bonuses b ON o.customer_id = b.customer_id LIMIT 10",
+            permissions=perms,
         )
         assert result.verdict.outcome is ValidationOutcome.HALLUCINATION
 
@@ -467,7 +506,8 @@ class TestSkeletonIntegrity:
         # модель может ДОБАВлять фильтры (пользовательский WHERE) — только не убирать
         plan = _plan(mandatory_predicates={"rel-orders-customers": {"orders.status": "active"}})
         result = _validate(
-            _canonical_sql() + " AND o.total > 100",
+            "SELECT o.id, c.name FROM orders o INNER JOIN customers c "
+            "ON o.customer_id = c.id WHERE o.status = 'active' AND o.total > 100 LIMIT 10",
             plan=plan,
         )
         assert result.verdict.outcome is ValidationOutcome.OK
@@ -478,7 +518,21 @@ class TestSkeletonIntegrity:
         assert result.verdict.outcome is ValidationOutcome.HALLUCINATION
 
     def test_from_table_changed_rejected(self):
-        plan = _plan(tables=["customers", "orders"])
+        # Валидный реверс-план (FROM customers JOIN orders): SQL с FROM orders
+        # не соответствует скелету — from_table фиксирован планом
+        plan = _plan(
+            tables=["customers", "orders"],
+            edges=[
+                JoinPlanEdge(
+                    rel_id="rel-customers-orders",
+                    from_table="customers",
+                    to_table="orders",
+                    from_columns=("id",),
+                    to_columns=("customer_id",),
+                    join_type="inner",
+                )
+            ],
+        )
         result = _validate(
             "SELECT o.id FROM orders o INNER JOIN customers c ON o.customer_id = c.id LIMIT 10",
             plan=plan,
@@ -511,6 +565,7 @@ class TestSkeletonIntegrity:
             "SELECT o.id FROM orders o INNER JOIN order_items i ON o.id = i.order_id "
             "INNER JOIN customers c ON o.customer_id = c.id LIMIT 10",
             plan=plan,
+            permissions=self._THREE_TABLE_PERMS,
         )
         assert result.verdict.outcome is ValidationOutcome.HALLUCINATION
 
@@ -540,6 +595,7 @@ class TestSkeletonIntegrity:
             "SELECT o.id, i.order_id FROM orders o INNER JOIN customers c "
             "ON o.customer_id = c.id INNER JOIN order_items i ON o.id = i.order_id LIMIT 10",
             plan=plan,
+            permissions=self._THREE_TABLE_PERMS,
         )
         assert result.verdict.outcome is ValidationOutcome.OK
 

@@ -19,8 +19,10 @@ fail-closed в обходе services). Три исхода (ADR-005 §4): ``ok``
   «несуществующее» vs «вне прав», план правило 4), разворот ``*`` в разрешённые
   колонки (ADR-005 §4 п.2, ruling R2); контракт прав BL-014 — значения строго
   «список колонок», CSV-строка → ValueError (свой CSV-парсер валидатор не заводит);
-- Task 3 — скелет: skeleton_hash (state ↔ VO), структура джойнов = JoinPlan
-  (тип/таблица/пары ON/порядок), mandatory_predicates в WHERE внешнего запроса.
+- Task 3 (этот коммит) — скелет: skeleton_hash (state ↔ VO), структура джойнов =
+  JoinPlan (тип/таблица/пары ON/порядок), mandatory_predicates в WHERE внешнего
+  запроса; корневая структура (FROM/JOIN) фиксирована скелетом — CTE/UNION/LATERAL
+  в корне = изменённый скелет (вложенные — тело проверяется теми же правилами).
 
 Параметры API полны с первого коммита (контракт wiring Task 4): узел FSM всегда
 передаёт skeleton/join_plan/permissions/data_catalog — непроимплементированные
@@ -34,8 +36,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from text_to_sql_agent.domain.join_plan import JoinPlan
-from text_to_sql_agent.domain.skeleton import Skeleton
+from text_to_sql_agent.domain.join_plan import JoinPlan, JoinPlanEdge
+from text_to_sql_agent.domain.skeleton import Skeleton, normalize_sql_fragment
 
 # Allow-list функций (план S11 правило 2): аналитический минимум демо-корпуса —
 # агрегаты, строки, даты, приведение типов. Опасные функции (dblink, pg_read_file,
@@ -135,7 +137,8 @@ class SqlAudit(BaseModel):
     ``tables`` — все relation-ссылки как написано (``schema.table``/``table``,
     включая тела CTE; ссылки на CTE-имена — не таблицы и не входят).
     ``where_conjuncts`` — конъюнкты WHERE внешнего запроса, нормализованные
-    тексты (единый источник нормализации — ``normalize_sql_fragment`` S10).
+    тексты с квалификаторами, переписанными на реальные имена источников
+    (единый источник нормализации — ``normalize_sql_fragment`` S10).
     """
 
     model_config = ConfigDict(frozen=True)
@@ -184,9 +187,10 @@ def validate_sql(
     Task 2 (реализовано): ACL — схемы/таблицы/колонки/литеральные звёзды;
     классификация «несуществующее» vs «вне прав» по каталогу мира (план правило 4);
     контракт прав BL-014 (str-value → ValueError).
-    Task 3 (следующий коммит этой сессии): скелет — параметры приняты контрактом
-    API, проверка добавляется в своей задаче; до wiring (Task 4) в FSM работает
-    заглушка S04, поэтому «недо-валидатор» недостижим.
+    Task 3 (реализовано): «скелет не изменён» — skeleton_hash (state ↔ VO),
+    структура джойнов = рёбра JoinPlan, mandatory_predicates в WHERE внешнего
+    запроса. До wiring (Task 4) в FSM работает заглушка S04 — «недо-валидатор»
+    недостижим из графа.
     """
     if row_limit <= 0:
         raise ValueError(f"row_limit должен быть положительным, получен {row_limit}")
@@ -197,6 +201,7 @@ def validate_sql(
     _check_tables(audit, permissions, data_catalog, issues_denied, issues_hallucination)
     _check_columns(audit, permissions, data_catalog, issues_denied, issues_hallucination)
     _check_stars(audit, permissions, issues_denied)
+    _check_skeleton(audit, skeleton, join_plan, skeleton_hash, issues_hallucination)
     enforced = _enforced_limit(audit.outer_limit, row_limit)
     return ValidationVerdict(
         outcome=_merge_outcome(issues_denied, issues_hallucination),
@@ -363,6 +368,68 @@ def star_expansion_columns(
     if permitted is None or "*" in permitted:
         return None
     return tuple(permitted)
+
+
+def _check_skeleton(
+    audit: SqlAudit,
+    skeleton: Skeleton,
+    join_plan: JoinPlan,
+    skeleton_hash: str,
+    issues: list[str],
+) -> None:
+    """«Скелет не изменён» (hw-01 §2.1, Task 3 плана): нарушения — hallucination.
+
+    Модель, переписавшая структуру (тип джойна, лишняя/переставленная таблица,
+    выкинутый mandatory_predicate), — не «вне прав», а выдумка: diagnose_error
+    с ретраем оправдан. Корневая структура (FROM/джойны) фиксирована скелетом —
+    CTE/UNION/LATERAL в корне assemble_sql не производит (модель наполняет только
+    4 поля, ruling R1 S10). skeleton_hash — defense-in-depth: state (чекпоинт)
+    обязан соответствовать VO, собранному из того же плана; расхождение —
+    подмена чекпоинта, дальнейшая сверка лишена основания (ранний выход).
+    mandatory_predicates сверяются нормализованным вхождением (единый источник
+    нормализации — ``normalize_sql_fragment`` S10; алиасы SQL резолвятся
+    services к реальным именам — скелет рендерит предикаты именами таблиц).
+    """
+    if skeleton_hash != skeleton.skeleton_hash:
+        issues.append(
+            "skeleton_hash в state не соответствует скелету плана — сверка структуры "
+            "на подменённом чекпоинте невозможна"
+        )
+        return
+    if audit.from_table != skeleton.from_table:
+        issues.append(
+            f"FROM-источник {audit.from_table or '«нет»'} не соответствует скелету "
+            f"(ожидался {skeleton.from_table}) — структура запроса изменена"
+        )
+    if audit.joins != _expected_joins(join_plan):
+        issues.append(
+            "структура джойнов не соответствует плану (тип/таблица/пары ON/порядок) — "
+            "скелет рендерит рёбра JoinPlan, модель их не пишет"
+        )
+    conjuncts = set(audit.where_conjuncts)
+    for predicate in skeleton.mandatory_predicates:
+        if normalize_sql_fragment(predicate) not in conjuncts:
+            issues.append(f"обязательный предикат ребра отсутствует в WHERE: {predicate}")
+
+
+def _expected_joins(plan: JoinPlan) -> tuple[SqlJoin, ...]:
+    """Эталон джойнов из рёбер плана: порядок = порядок рёбер (скелет рендерит
+    рёбра по цепочке); пары ON — реальными именами таблиц, каждая пара
+    отсортирована (направление равенства не семантично) — тот же канон, что
+    в извлечении IR (services._on_pairs)."""
+
+    def edge_pairs(edge: JoinPlanEdge) -> tuple[tuple[str, str], ...]:
+        return tuple(
+            sorted(
+                tuple(sorted((f"{edge.from_table}.{fc}", f"{edge.to_table}.{tc}")))
+                for fc, tc in zip(edge.from_columns, edge.to_columns, strict=True)
+            )
+        )
+
+    return tuple(
+        SqlJoin(join_type=edge.join_type, table=edge.to_table, on_pairs=edge_pairs(edge))
+        for edge in plan.edges
+    )
 
 
 def _enforced_limit(original: int | None, row_limit: int) -> int:
