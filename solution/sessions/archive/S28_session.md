@@ -1,6 +1,6 @@
 # S28 — harness: контекстная гигиена — скрипты ритуалов
 
-Этап: harness (между вехами, по директиве владельца) | Владелец: агент | Зависимости: S22, S23 | Оценка: 0.5 | Статус: ◐ в работе
+Этап: harness (между вехами, по директиве владельца) | Владелец: агент | Зависимости: S22, S23 | Оценка: 0.5 | Статус: ✅ 2026-11-22
 Фичи: — (сессия без фичи, states не меняются)
 Роль по фиче: — (сессия без фичи, states не меняются)
 
@@ -87,7 +87,7 @@ make check                                  # EXIT=0
 - [x] `make check` зелёный: 625 passed, self-test гварда 85 assert-ов, self-test ритуальных скриптов 20 assert-ов
 - [x] Полный цикл close-session проверен end-to-end в одноразовом worktree: гейты → статус ◐→✅ → реестр → «Текущее состояние» (одна строка) → archive → clean-state 7/7 → commit
 - [x] Fail-closed подтверждён: planned-сессия, грязь вне allowlist, красный clean-state, пустой MSG — отказы ДО мутаций (self-test + ручной прогон)
-- [x] Ревью code-reviewer: 1C/7I закрыты фикс-волной с регрессионными кейсами в self-test (re-review — перед закрытием сессии, вердикт в REVIEW-GATE)
+- [x] Ревью code-reviewer закрыто: ревью-1 1C/7I → фикс-волна dc6dbe6 → re-review-2 0C/3I → fix-волна-2 49503bf → re-review-3 «Ready to merge: Yes» (регрессионные кейсы в self-test, bite-проверки)
 - [x] Фичи: сессия без фич — states feature_list.json не меняются (clean-check без allowlist)
 
 ## Ловушки
@@ -101,7 +101,7 @@ make check                                  # EXIT=0
 ## Гейты субагентов (заполняется по факту, до закрытия сессии)
 
 - ARCH-GATE: N/A — harness-скрипты и docs: границы модулей продукта (src/ слои/порты/узлы), зависимости, схема/ER и дизайн-решения продукта не затрагиваются; новый тул-код — вне код-архитектуры (scripts/, прецедент S22/S23), решение владельца
-- REVIEW-GATE: [✅ <Ready to merge? вердикт> + <BASE7>..<HEAD7> | N/A — <причина>]
+- REVIEW-GATE: ✅ Ready to merge: Yes + dc6dbe6..49503bf (история: ревью-1 «With fixes» 1C/7I → fix-волна dc6dbe6 [C1 регресс в self-test; I1–I7] → re-review-2 «With fixes» 0C/3I [I-1 I3-регресс ложноположительный — bite-check ревьюера; I-2 латентная рекурсия self-test; I-3 S27 не закрывался бы] → fix-волна-2 49503bf [честные кейсы + сентинел RITUAL_SELFTEST + «— …»-роли] → re-review-3 **«Ready to merge: Yes»** [все три закрыты независимыми bite/сценарными проверками, включая реальный S27 в dry-run])
 
 ## Отчёт по сессии (заполняется по факту)
 
@@ -110,7 +110,8 @@ make check                                  # EXIT=0
   - Task 2 — определения агентов (~/.zcode/agents/, вне репо): цитата ≤ 1 строки в находках, пункт без evidence не принят.
   - Task 3 — AGENTS.md ужат (Branch Hygiene, End of Session → docs/AGENT-OPERATIONS.md); синхрон ссылок: guard-subagents.sh, docs/README.md, docs/quality-document.md, solution/README.md, Makefile, scripts/README.md.
   - Task 4 — scripts/new-session.sh + scripts/close-session.sh (pre-flight fail-closed) + Makefile targets + scripts/tests/test-ritual-scripts.sh (20 assert-ов, в init.sh); BL-017 (EOL archive.sh — вне скоупа).
-  - Верификация: make check EXIT=0 (625 passed + 85 + 20 assert-ов); e2e полного цикла close-session в worktree — чисто.
+  - Fix-волны ревью: dc6dbe6 (C1/I1–I7 + minors) → 49503bf (I-1 честный I3-регресс с bite-check + I1-причина текстом вывода; I-2 сентинел RITUAL_SELFTEST против рекурсии; I-3 «— …»-роли как no-feature [S27-совместимость]; minors) — 23 assert-а.
+  - Верификация: make check EXIT=0 (625 passed + 85 + 23 assert-ов); e2e полного цикла close-session в worktree — чисто; закрытие самой S28 — через make close-session (dogfood).
 - Отклонения от плана:
   - Файл сессии создан post-factum (работа велась в консультационном контуре с владельцем, не в трекаемой сессии) — замечание ревью I7; ARCH-GATE зафиксирован задним числом как N/A с основанием (harness-скрипты, границы продукта не тронуты). Прецедент учтён: следующие harness-работы стартуют с файлом сессии ДО кода.
   - Механика End of Session переехала в make close-session в процессе сессии (изначально — ручные шаги) — осознанное расширение по директиве владельца «сделай всё».
