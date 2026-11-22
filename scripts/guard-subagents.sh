@@ -4,9 +4,9 @@
 #
 # Проверяет (а в start-фазе дозаполняет) раздел «Гейты субагентов» в файлах сессий:
 #   - ARCH-GATE:   canon-check сабагента architect ДО старта работ
-#                  (AGENTS.md Startup Workflow, шаг 8)
+#                  (AGENTS.md Startup Workflow, ARCH-GATE-ритуал)
 #   - REVIEW-GATE: ревью code-reviewer после зелёного make check, до коммита
-#                  (AGENTS.md End of Session, шаг 8)
+#                  (AGENTS.md End of Session)
 # Каждая строка — ✅ + evidence, либо N/A — причина. Пустые/шаблонные строки = FAIL:
 # гейт нельзя пропустить незаметно.
 #
@@ -492,14 +492,14 @@ if [ "$PHASE" = "start" ]; then
   echo "Session start gate: FAIL ($FAIL) — ARCH-GATE не резолвлен в:$FAILED_SESSIONS"
   echo "  Стартованная (◐) сессия не может работать с незаполненным ARCH-GATE:"
   echo "  1. Сессия трогает архитектуру → диспетчеризуйте architect (canon-check) по плану сессии"
-  echo "     ДО кода (AGENTS.md Startup Workflow, шаг 8), вердикт — в строку ARCH-GATE."
+  echo "     ДО кода (AGENTS.md Startup Workflow, ARCH-GATE-ритуал), вердикт — в строку ARCH-GATE."
   echo "  2. Иначе → впишите обоснованный N/A с причиной (например: границы модулей/зависимости/"
   echo "     схема/ER не затрагиваются). «N/A — сессия не начата» не проходит (D-027): сессия в статусе"
   echo "     «◐ в работе» уже стартовала; make check зеленеет сразу после заполнения строки."
 else
   echo "Subagent gates: FAIL ($FAIL) — пропускать гейты нельзя:"
-  echo "  - ARCH-GATE:   architect (canon-check) по плану сессии ДО старта работ — AGENTS.md Startup Workflow, шаг 8"
-  echo "  - REVIEW-GATE: code-reviewer по диапазону BASE..HEAD после зелёного make check, до коммита — AGENTS.md End of Session, шаг 8"
+  echo "  - ARCH-GATE:   architect (canon-check) по плану сессии ДО старта работ — AGENTS.md Startup Workflow, ARCH-GATE-ритуал"
+  echo "  - REVIEW-GATE: code-reviewer по диапазону BASE..HEAD после зелёного make check, до коммита — AGENTS.md End of Session"
 fi
 echo "  Формат: «- ARCH-GATE: ✅ <verdict> <evidence>» или «- ARCH-GATE: N/A — <причина>»;"
 echo "  шаблон раздела — solution/sessions/TEMPLATE_session.md; диспетчеризация — skill requesting-code-review."

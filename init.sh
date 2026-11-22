@@ -51,9 +51,15 @@ if [ -f pyproject.toml ]; then
   uv run python -m compileall -q src
 
   # Self-test гварда субагентов: он — гейт в этой цепочке, поэтому верифицируется
-  # на каждом прогоне (фикстурные кейсы обеих фаз, см. шапку теста)
+  # на каждом прогоне (фикстурные прогонки обеих фаз, см. шапку теста)
   if [ -f scripts/tests/test-guard-subagents.sh ]; then
     bash scripts/tests/test-guard-subagents.sh
+  fi
+
+  # Self-test ритуальных скриптов (new-session/close-session): мутации git-состояния
+  # в песочнице-worktree, см. шапку scripts/tests/test-ritual-scripts.sh (S28)
+  if [ -f scripts/tests/test-ritual-scripts.sh ]; then
+    bash scripts/tests/test-ritual-scripts.sh
   fi
 else
   echo "No recognized package manifest detected."
