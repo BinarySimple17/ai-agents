@@ -458,6 +458,18 @@ class TestClarifyNode:
         )
         assert "127.0.0.1" in detail_payload["detail"]  # оператору — для диагностики
 
+    def test_empty_question_is_fail_closed_before_legs(self) -> None:
+        # Ревью S08 Minor-6b: пустой вопрос дошёл бы до VectorStore.search
+        # (ValueError "query пуст" наружу графа) — fail-closed до retrieval-ноги
+        service = self._scripted_service(self._service_result(ClarifyOutcome.UNAMBIGUOUS))
+        node = make_clarify_node(service, _RecordingGate("ответ"))
+        for question in ("", "   "):
+            updated = node({"question": question, "user_id": "u_analyst", "trace_id": "t-1"})
+            assert updated["route_flags"][CLARIFICATION_NEEDED_FLAG] is True
+            assert updated["clarify_question"] is None
+            assert updated["error"]["class"] == "clarify_empty_question"
+            assert service.called == 0
+
     def test_missing_identity_is_fail_closed_without_service_call(self) -> None:
         # Defense-in-depth: resolve_access отклоняет пустую identity раньше —
         # clarify с пустым user_id означает подмену каркаса; не RunContext-crash

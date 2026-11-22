@@ -20,7 +20,8 @@ clarification-терминал (ruling R3 ARCH-GATE S08 — валидный и�
 """
 
 import random
-from collections.abc import AsyncIterator, Iterator, Sequence
+from collections.abc import AsyncIterator, Callable, Iterator, Sequence
+from functools import wraps
 from typing import Any
 
 from langgraph.checkpoint.base import (
@@ -35,6 +36,9 @@ from langgraph.checkpoint.base import (
     writes_sort_key,
 )
 from redis import Redis
+from redis.exceptions import RedisError
+
+from text_to_sql_agent.application.ports.checkpointer import CheckpointStoreError
 
 # Префикс ключей в Valkey: пространство имён чекпоинтов агента (клиент кэша
 # вопросов S16 и прочие потребители живут в других префиксах)
@@ -51,6 +55,24 @@ def _pack(typed: tuple[str, bytes]) -> bytes:
 def _unpack(raw: bytes) -> tuple[str, bytes]:
     kind, _, data = raw.partition(_KIND_SEP)
     return kind.decode("ascii"), data
+
+
+def _store_guard(method: Callable[..., Any]) -> Callable[..., Any]:
+    """Граница ошибок хранилища: сырые redis-сбои → CheckpointStoreError (стык).
+
+    S00 правило 8 + ревью S08 Important-2: сбой Valkey не должен выходить из
+    FSM traceback-ом — раннер ловит типизированную ошибку стыка и переводит
+    в валидный fail-исход (деталь — операторскому трейсу, S9).
+    """
+
+    @wraps(method)
+    def wrapper(self: "ValkeyCheckpointer", *args: Any, **kwargs: Any) -> Any:
+        try:
+            return method(self, *args, **kwargs)
+        except RedisError as exc:
+            raise CheckpointStoreError(f"хранилище сессий недоступно: {exc}") from exc
+
+    return wrapper
 
 
 class ValkeyCheckpointer(BaseCheckpointSaver[str]):
@@ -80,6 +102,7 @@ class ValkeyCheckpointer(BaseCheckpointSaver[str]):
 
     # --- контракт BaseCheckpointSaver ---
 
+    @_store_guard
     def put(
         self,
         config: dict[str, Any],
@@ -112,6 +135,7 @@ class ValkeyCheckpointer(BaseCheckpointSaver[str]):
             }
         }
 
+    @_store_guard
     def get_tuple(self, config: dict[str, Any]) -> CheckpointTuple | None:
         thread_id = config["configurable"]["thread_id"]
         checkpoint_ns = config["configurable"].get("checkpoint_ns", "")
@@ -150,6 +174,7 @@ class ValkeyCheckpointer(BaseCheckpointSaver[str]):
             pending_writes=self._pending_writes(thread_id, checkpoint_ns, checkpoint_id),
         )
 
+    @_store_guard
     def put_writes(
         self,
         config: dict[str, Any],
@@ -176,6 +201,7 @@ class ValkeyCheckpointer(BaseCheckpointSaver[str]):
                 ex=self._ttl_s,
             )
 
+    @_store_guard
     def _pending_writes(
         self, thread_id: str, checkpoint_ns: str, checkpoint_id: str
     ) -> list[tuple[str, str, Any]]:
@@ -192,6 +218,7 @@ class ValkeyCheckpointer(BaseCheckpointSaver[str]):
         entries.sort(key=lambda e: writes_sort_key(e[0], e[1], e[2]))
         return [entry[3] for entry in entries]
 
+    @_store_guard
     def list(
         self,
         config: dict[str, Any] | None,
@@ -200,8 +227,10 @@ class ValkeyCheckpointer(BaseCheckpointSaver[str]):
         before: dict[str, Any] | None = None,
         limit: int | None = None,
     ) -> Iterator[CheckpointTuple]:
+        # Материализация (не генератор): guard-декоратор ловит redis-сбои тела,
+        # а тело генератора исполняется лениво — мимо try/except обёртки
         if config is None:
-            return  # по-потоковая история вне скоупа (MVP — один thread за прогон)
+            return iter(())  # по-потоковая история вне скоупа (MVP — один thread)
         thread_id = config["configurable"]["thread_id"]
         checkpoint_ns = config["configurable"].get("checkpoint_ns", "")
         pattern = f"{self._base(thread_id, checkpoint_ns)}:ckpt:*"
@@ -209,6 +238,7 @@ class ValkeyCheckpointer(BaseCheckpointSaver[str]):
             key.decode("ascii").rsplit(":", 1)[1] for key in self._client.scan_iter(match=pattern)
         ]
         before_id = get_checkpoint_id(before) if before else None
+        tuples: list[CheckpointTuple] = []
         remaining = limit
         for checkpoint_id in sorted(ids, reverse=True):
             if before_id and checkpoint_id >= before_id:
@@ -224,8 +254,10 @@ class ValkeyCheckpointer(BaseCheckpointSaver[str]):
                 if remaining <= 0:
                     break
                 remaining -= 1
-            yield tuple_
+            tuples.append(tuple_)
+        return iter(tuples)
 
+    @_store_guard
     def delete_thread(self, thread_id: str) -> None:
         pattern = f"{_KEY_PREFIX}:{thread_id}:*"
         keys = list(self._client.scan_iter(match=pattern))
@@ -282,4 +314,7 @@ class ValkeyCheckpointer(BaseCheckpointSaver[str]):
 
     def close(self) -> None:
         """Закрыть пул соединений (CLI вызывает в finally — гигиена ресурсов)."""
-        self._client.close()
+        try:
+            self._client.close()
+        except RedisError:  # гигиена: сбой закрытия не роняет процесс
+            pass

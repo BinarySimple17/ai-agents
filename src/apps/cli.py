@@ -761,7 +761,14 @@ def _run_fsm(container: Container, question: str, *, token: str) -> int:
         if not result.paused:
             break
         print("Уточнение: " + (result.clarify_question or "(уточняющий вопрос)"))
-        answer = input("Ответ: ")
+        try:
+            answer = input("Ответ: ")
+        except (EOFError, KeyboardInterrupt):
+            # Ревью S08 Minor-6a: закрытый stdin/Ctrl+C при ожидании ответа —
+            # валидный отказ презентационного слоя, не traceback (S00-8)
+            print("Исход: clarification")
+            print("Ошибка: ответ на уточняющий вопрос не получен — сессия истечёт по TTL")
+            return 0
         result = container.answer_question.resume(answer, thread_id=thread_id, question=question)
     else:
         # Защита презентационного слоя (FSM сам ограничен recursion_limit):

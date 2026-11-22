@@ -50,6 +50,7 @@ _CLARIFY_UNAVAILABLE_MESSAGE = (
 )
 _EMPTY_ANSWER_MESSAGE = "ответ на уточняющий вопрос пуст — запрос отклонён (fail-closed)"
 _IDENTITY_MISSING_MESSAGE = "идентификация не пройдена — запрос отклонён (fail-closed)"
+_EMPTY_QUESTION_MESSAGE = "вопрос пуст — сформулируйте его подробнее"
 
 State = dict[str, Any]
 
@@ -100,6 +101,15 @@ def make_clarify_node(
                 "route_flags": {**flags, CLARIFICATION_NEEDED_FLAG: True},
                 "error": {"class": "identity_missing", "message": _IDENTITY_MISSING_MESSAGE},
             }
+        question = (state.get("question") or "").strip()
+        if not question:
+            # Ревью S08 Minor-6b: пустой вопрос дошёл бы до VectorStore.search
+            # (ValueError "query пуст" наружу графа) — fail-closed до ног
+            return {
+                "clarify_question": None,
+                "route_flags": {**flags, CLARIFICATION_NEEDED_FLAG: True},
+                "error": {"class": "clarify_empty_question", "message": _EMPTY_QUESTION_MESSAGE},
+            }
         ctx = RunContext(
             # trace_id ставит раннер (uuid прогона, корреляция ADR-010); fallback —
             # прямые вызовы узла в юнит-тестах мимо раннера
@@ -107,7 +117,7 @@ def make_clarify_node(
             user_id=user_id,
         )
         result = service.clarify(
-            state.get("question") or "",
+            question,
             ctx=ctx,
             permissions=state.get("permissions") or {},
         )

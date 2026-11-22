@@ -21,6 +21,7 @@ FSM, не провайдер).
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
+from uuid import uuid4
 
 from text_to_sql_agent.application.ports.graph_runner import GraphRunner
 from text_to_sql_agent.application.ports.llm_provider import (
@@ -41,11 +42,13 @@ class FSMResult:
 
     ``outcome=None`` — прогон приостановлен interrupt()-ом (ruling R3 ARCH-GATE
     S08): вопрос в state.clarify_question, продолжение — ``resume`` тем же
-    thread_id.
+    ``thread_id`` (поле непусто всегда — use case генерирует его сам, ревью
+    S08 Important-1: пауза без возвращённого id — тупик, resume нечем вызвать).
     """
 
     outcome: TerminalOutcome | None
     state: dict[str, Any]
+    thread_id: str = ""
 
     @property
     def paused(self) -> bool:
@@ -78,16 +81,17 @@ class AnswerQuestion:
         ``user_id`` — verified identity (ruling R4 ARCH-GATE S05): точка входа
         проверяет токен через `AuthProvider.verify` ДО прогона; пусто — узел
         resolve_access fail-closed → rejected (прогон не начинается без identity).
-        ``thread_id`` — сессия checkpointer'а (interrupt/resume); None — раннер
-        генерирует сам (одноразовый прогон без продолжения).
+        ``thread_id`` — сессия checkpointer'а (interrupt/resume); None —
+        генерируется здесь и ВОЗВРАЩАЕТСЯ в FSMResult.thread_id (пауза с
+        ненаружным id непродолжаема — ревью S08 Important-1).
         """
         # Обязательство S03: прогон начинает запрос с нуля — аккумулятор прошлого
         # прогона ложно уменьшил бы остаток для эскалаций M1 (ruling Q7 S09)
         self._llm.reset_request_budget()
         state: AgentState = initial_state(question, user_id)
-        return self._invoke(
-            lambda: self._runner.run(state, thread_id=thread_id), fallback_state=state
-        )
+        tid = thread_id or uuid4().hex
+        result = self._invoke(lambda: self._runner.run(state, thread_id=tid), fallback_state=state)
+        return FSMResult(outcome=result.outcome, state=result.state, thread_id=tid)
 
     def resume(self, answer: str, *, thread_id: str, question: str | None = None) -> FSMResult:
         """Продолжить приостановленный прогон ответом (тот же thread — тот же прогон).

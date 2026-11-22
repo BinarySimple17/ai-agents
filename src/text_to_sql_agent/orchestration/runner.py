@@ -25,7 +25,11 @@ from uuid import uuid4
 from langgraph.errors import GraphInterrupt, GraphRecursionError
 from langgraph.types import Command
 
-from text_to_sql_agent.application.ports.tracer import EVENT_CLARIFY_INTERRUPT
+from text_to_sql_agent.application.ports.checkpointer import CheckpointStoreError
+from text_to_sql_agent.application.ports.tracer import (
+    EVENT_CHECKPOINT_UNAVAILABLE,
+    EVENT_CLARIFY_INTERRUPT,
+)
 from text_to_sql_agent.domain.entities import Trace
 from text_to_sql_agent.orchestration.graph import build_fsm_app
 from text_to_sql_agent.orchestration.routing import FSMGuardCaps
@@ -49,6 +53,14 @@ RESUME_NO_INTERRUPT_CLASS = "resume_without_interrupt"
 RESUME_NO_INTERRUPT_MESSAGE = (
     "resume по thread_id без активной приостановки — прогон не прерывался или уже завершён"
 )
+# Остаточный ValueError от движка на resume (ревью S08 Minor-8): misuse
+# приостановки отловлен гвардом tasks выше — это уже не «resume без interrupt»,
+# а реальная ошибка/несогласованность движка; честный класс с деталью
+ENGINE_ERROR_CLASS = "engine_error"
+# Сбой хранилища сессий (CheckpointStoreError — ревью S08 Important-2): валидный
+# fail-исход, не traceback (S00-8); деталь сбоя — операторскому трейсу (S9)
+CHECKPOINT_UNAVAILABLE_CLASS = "checkpoint_unavailable"
+CHECKPOINT_UNAVAILABLE_MESSAGE = "хранилище сессий недоступно — повторите запрос позже"
 # TTL-исход (ruling R3 ARCH-GATE S08): сессия уточнения истекла — валидный
 # clarification-терминал, не исключение; вопрос не доходит до ответа
 CLARIFY_SESSION_EXPIRED_CLASS = "clarify_session_expired"
@@ -102,6 +114,7 @@ class LangGraphRunner:
                     event=EVENT_CLARIFY_INTERRUPT,
                     payload={
                         "thread_id": thread_id,
+                        "user_id": final.get("user_id"),
                         "question": final.get("clarify_question"),
                     },
                 )
@@ -135,6 +148,10 @@ class LangGraphRunner:
             started["trace_id"] = uuid4().hex
         try:
             final = self._app.invoke(started, config=self._config(tid))
+        except CheckpointStoreError as exc:
+            # Ревью S08 Important-2: сбой Valkey (put/get сессии) — валидный
+            # fail-исход, не traceback (S00-8); деталь — операторскому трейсу
+            return self._store_fail(started, exc)
         except GraphRecursionError:
             # Второй предохранитель (ADR-002 §4): валидный отказ с уточняющим
             # вопросом — различимый payload, не traceback
@@ -151,6 +168,25 @@ class LangGraphRunner:
             # непродолжаемой паузой — обман протокола: fail, не пауза
             return self._interrupt_no_checkpoint_fail(started)
         return self._as_result(final, thread_id=tid)
+
+    def _store_fail(self, state: Mapping[str, Any], exc: Exception) -> dict[str, Any]:
+        """Сбой хранилища сессий → валидный fail-исход (S00-8); деталь — трейсу."""
+        if self._tracer is not None:
+            self._tracer.record(
+                Trace(
+                    event=EVENT_CHECKPOINT_UNAVAILABLE,
+                    payload={"detail": str(exc)},
+                )
+            )
+        return {
+            **state,
+            "outcome": "fail",
+            "interrupted": False,
+            "error": {
+                "class": CHECKPOINT_UNAVAILABLE_CLASS,
+                "message": CHECKPOINT_UNAVAILABLE_MESSAGE,
+            },
+        }
 
     def _interrupt_no_checkpoint_fail(self, state: Mapping[str, Any]) -> dict[str, Any]:
         return {
@@ -174,7 +210,10 @@ class LangGraphRunner:
         потерялись бы).
         """
         config = self._config(thread_id)
-        snapshot = self._app.get_state(config)
+        try:
+            snapshot = self._app.get_state(config)
+        except CheckpointStoreError as exc:  # ревью S08 Important-2 — не traceback
+            return self._store_fail({"question": question or ""}, exc)
         base = dict(snapshot.values or {})
         if not base:
             # TTL истёк — чекпоинта нет (ruling R3): валидный clarification-исход,
@@ -209,6 +248,8 @@ class LangGraphRunner:
                 ),
                 config=config,
             )
+        except CheckpointStoreError as exc:  # ревью S08 Important-2 — не traceback
+            return self._store_fail(base, exc)
         except GraphRecursionError:
             # Перевзвод дедлайна не восстанавливает счётчик супер-шагов: resume
             # продолжает шаги графа — лимит может кончиться на продолжении

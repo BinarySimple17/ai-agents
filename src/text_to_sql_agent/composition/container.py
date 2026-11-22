@@ -6,6 +6,7 @@
 """
 
 from dataclasses import dataclass
+from typing import Any
 
 from text_to_sql_agent.application.ports.auth_provider import AuthProvider
 from text_to_sql_agent.application.ports.llm_provider import LLMProvider
@@ -51,7 +52,9 @@ class Container:
     clarify_service: ClarifyService
     auth_provider: AuthProvider
     resolve_access_service: ResolveAccessService
-    checkpointer: ValkeyCheckpointer | object  # сессии interrupt (S08; фейк в тестах)
+    # Сессии interrupt (S08, ruling R2): ValkeyCheckpointer в проде;
+    # MemorySaver/фейк в тестах — контракт сейвера задан LangGraph (Any)
+    checkpointer: Any
     fsm_runner: LangGraphRunner
     answer_question: AnswerQuestion
 

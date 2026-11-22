@@ -157,6 +157,19 @@ class TestInterruptResumeFlow:
         )
         assert final.outcome == "clarification"
 
+    def test_run_without_thread_id_returns_resumable_id(self, container) -> None:
+        # Ревью S08 Important-1 (live): пауза с ненаружным id — тупик; use case
+        # генерирует thread_id сам и возвращает его в FSMResult.thread_id
+        ck, _ = container
+        user_id = ck.auth_provider.verify("dev-analyst-token")
+        paused = ck.answer_question.run("Заказы", user_id=user_id)  # thread_id не задан
+        assert paused.paused is True
+        assert paused.thread_id
+        final = ck.answer_question.resume(
+            _SCRIPTED_ANSWER, thread_id=paused.thread_id, question="Заказы"
+        )
+        assert final.outcome == "done"
+
     def test_fsm_through_container_full_path(self, container) -> None:
         # Полный контур: verify → resolve_access (БД, сиды 0003) → clarify
         # interrupt (Valkey-сессия) → resume → done с правами и допущениями

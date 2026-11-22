@@ -13,6 +13,7 @@ import pytest
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.errors import GraphRecursionError
 
+from text_to_sql_agent.application.ports.checkpointer import CheckpointStoreError
 from text_to_sql_agent.application.ports.llm_provider import BudgetExceededError, LLMRequestError
 from text_to_sql_agent.application.services.clarify_node import make_clarify_node
 from text_to_sql_agent.application.services.clarify_service import (
@@ -490,6 +491,106 @@ class TestInterruptFlow:
         assert final["interrupted"] is False
         assert [a.text for a in final["assumptions"]] == ["период — 2026"]
 
+    def test_resume_rewinds_deadline(self, monkeypatch) -> None:
+        # Ruling R6 (ревью S08 Important-3a): дедлайн 90 s — кап ОБРАБОТКИ, не
+        # ожидания пользователя; раннер перевзводит deadline_at при resume.
+        # Управляемые часы: пауза при t=100 (дедлайн 190), «ожидание» до t=200 —
+        # без перевзвода гвард капов остановил бы продолжение budget_stop-ом
+        clock = _FakeClock(100.0)
+        monkeypatch.setattr("text_to_sql_agent.orchestration.runner.time.monotonic", clock)
+        runner, _ = self._runner(ClarifyResult(outcome=ClarifyOutcome.CLARIFY, question="Уточните"))
+        paused = runner.run(initial_state(QUESTION, user_id="u_analyst"), thread_id="t-dl")
+        assert paused["interrupted"] is True
+        assert paused["deadline_at"] == 190.0
+        clock.t = 200.0  # старый дедлайн (190) истёк за время «ожидания»
+        final = runner.resume("ответ", thread_id="t-dl")
+        assert final["outcome"] == "done"  # перевзвод: дедлайн 290, гвард пропускает
+        assert final["deadline_at"] == 290.0
+
+    def test_resume_keeps_budget_counters(self) -> None:
+        # Ruling R6 (ревью S08 Important-3b): капы персистятся в checkpointer'е —
+        # resume НЕ сбрасывает budget_used; исчерпанный кап останавливает
+        # продолжение budget_stop-ом, а не начинает «свежий» прогон
+        runner, _ = self._runner(
+            ClarifyResult(outcome=ClarifyOutcome.CLARIFY, question="Уточните", llm_calls=0)
+        )
+        state = initial_state(QUESTION, user_id="u_analyst")
+        state["budget_used"] = {"llm_calls": CAPS.max_llm_calls - 1, "rub": 0.0}
+        paused = runner.run(state, thread_id="t-cap")
+        assert paused["interrupted"] is True
+        final = runner.resume("ответ", thread_id="t-cap")
+        # plan_joins-заглушка платит вызов (7→8), гвард на ребре в generate_sql
+        # останавливает прогон: счётчик пережил паузу
+        assert final["outcome"] == "budget_stop"
+        assert final["budget_used"]["llm_calls"] == CAPS.max_llm_calls
+
+
+class _FakeClock:
+    """Управляемые часы (детерминизм тестов R6): runner/routing читают monotonic."""
+
+    def __init__(self, start: float) -> None:
+        self.t = float(start)
+
+    def __call__(self) -> float:
+        return self.t
+
+
+class _BrokenPutSaver(MemorySaver):
+    """Хранилище сессий недоступно на записи (Valkey упал) — I2."""
+
+    def put(self, *args: Any, **kwargs: Any) -> Any:
+        raise CheckpointStoreError(
+            "хранилище сессий недоступно: 127.0.0.1:6379 соединение разорвано"
+        )
+
+
+class TestInterruptStoreFailure:
+    """I2 (ревью S08): сбой Valkey в FSM-пути — валидный fail-исход, не traceback
+    (S00-8); пользовательский текст фиксированный, деталь — операторскому трейсу."""
+
+    def _runner(self, checkpointer: Any, tracer: Any | None = None) -> Any:
+        service = _ScriptedClarifyService(
+            ClarifyResult(outcome=ClarifyOutcome.CLARIFY, question="Уточните")
+        )
+        return build_fsm_runner(
+            tracer=tracer,
+            caps=CAPS,
+            checkpointer=checkpointer,
+            deadline_s=90.0,
+            recursion_limit=50,
+            node_overrides={
+                "resolve_access": _rights_passing_node,
+                "clarify": make_clarify_node(service, LangGraphInterruptGate()),
+            },
+        )
+
+    def test_store_failure_on_run_is_valid_fail(self) -> None:
+        tracer = _RecordingTracer()
+        runner = self._runner(_BrokenPutSaver(), tracer=tracer)
+        final = runner.run(initial_state(QUESTION, user_id="u_analyst"), thread_id="t-broken")
+        assert final["outcome"] == "fail"
+        assert final["error"]["class"] == "checkpoint_unavailable"
+        assert final["error"]["message"] == "хранилище сессий недоступно — повторите запрос позже"
+        assert "127.0.0.1" not in final["error"]["message"]  # S9: деталь не пользователю
+        store_events = [e for e in tracer.records if e.event == "checkpoint.unavailable"]
+        assert len(store_events) == 1
+        assert "127.0.0.1" in store_events[0].payload["detail"]  # оператору — диагностика
+
+    def test_store_failure_on_resume_is_valid_fail(self, monkeypatch) -> None:
+        runner = self._runner(MemorySaver())
+        paused = runner.run(initial_state(QUESTION, user_id="u_analyst"), thread_id="t-b2")
+        assert paused["interrupted"] is True
+        saver = runner._app.checkpointer
+
+        def broken(*args: Any, **kwargs: Any) -> Any:
+            raise CheckpointStoreError("соединение разорвано при чтении сессии")
+
+        monkeypatch.setattr(saver, "get_tuple", broken)
+        final = runner.resume("ответ", thread_id="t-b2", question=QUESTION)
+        assert final["outcome"] == "fail"
+        assert final["error"]["class"] == "checkpoint_unavailable"
+        assert "127.0.0.1" not in final["error"]["message"]
+
 
 class TestRunner:
     def test_recursion_limit_becomes_fail_outcome(self) -> None:
@@ -542,11 +643,18 @@ class _StubRunner:
 
     def __init__(self, outcome_state: dict[str, Any] | None = None, error: Exception | None = None):
         self.seen: list[dict[str, Any]] = []
+        self.resumed: list[tuple[str, str, str | None]] = []
         self.outcome_state = outcome_state
         self.error = error
 
     def run(self, state: dict[str, Any], *, thread_id: str | None = None) -> dict[str, Any]:
         self.seen.append(dict(state))
+        if self.error is not None:
+            raise self.error
+        return dict(self.outcome_state or {})
+
+    def resume(self, answer: str, *, thread_id: str, question: str | None = None) -> dict[str, Any]:
+        self.resumed.append((answer, thread_id, question))
         if self.error is not None:
             raise self.error
         return dict(self.outcome_state or {})
@@ -594,3 +702,16 @@ class TestAnswerQuestion:
     def test_fsm_result_answer_property(self) -> None:
         result = FSMResult(outcome="done", state={"compact": {"row_count": 5}})
         assert result.answer == {"row_count": 5}
+
+    def test_paused_result_carries_thread_id_for_resume(self) -> None:
+        # Ревью S08 Important-1: пауза с ненаружным thread_id — тупик (resume
+        # нечем вызвать); use case генерирует id сам и ВОЗВРАЩАЕТ его
+        llm = _StubLLM()
+        use_case = AnswerQuestion(runner=_StubRunner(), llm=llm)
+        result = use_case.run(QUESTION)  # thread_id не передан
+        assert result.thread_id, "FSMResult.thread_id пуст — resume нечем вызвать"
+        runner = use_case._runner  # noqa: SLF001
+        assert isinstance(runner, _StubRunner)
+        assert runner.resumed == []  # сам resume не вызывался
+        use_case.resume("ответ", thread_id=result.thread_id)
+        assert runner.resumed[0][1] == result.thread_id  # тот же id — тот же прогон

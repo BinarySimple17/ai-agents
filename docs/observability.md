@@ -145,7 +145,7 @@ best-effort — сбой приёмника не рвёт запрос). Сбо�
 | `graph.node` | node | FSM (S04/feat-004): содержательный узел вошёл — трейс-спан узла (ADR-002 §2), порядок сцены читается из trace 1:1; константа — порт Tracer (EVENT_GRAPH_NODE) |
 | `resolve.rights_unavailable` | user_id, detail | FSM (S05/feat-005): сбой чтения прав в resolve_access — деталь сбоя (psycopg) оператору в JSONL, не пользователю; отказ в state — фиксированный текст (S9, ревью I1); константа — порт Tracer (EVENT_RESOLVE_RIGHTS_UNAVAILABLE) |
 | `clarify.verdict` | user_id, outcome, assumptions | FSM (S08/feat-008): вердикт классификатора однозначности (unambiguous/clarify/fail) + число допущений — сцена «как вопрос был классифицирован»; константа — порт Tracer (EVENT_CLARIFY_VERDICT) |
-| `clarify.interrupt` | user_id, question | FSM (S08/feat-008): прогон приостановлен уточняющим вопросом (interrupt + checkpointer Valkey TTL 10 мин) — сцена «вопрос ждёт ответа» для разбора интеракций; константа — порт Tracer (EVENT_CLARIFY_INTERRUPT) |
+| `clarify.interrupt` | thread_id, user_id, question | FSM (S08/feat-008): прогон приостановлен уточняющим вопросом (interrupt + checkpointer Valkey TTL 10 мин) — сцена «вопрос ждёт ответа» для разбора интеракций; пишет РАННЕР (факт паузы — один на приостановку; resume-визит узла ре-исполняется); константа — порт Tracer (EVENT_CLARIFY_INTERRUPT) |
 | `clarify.unavailable` | user_id, detail | FSM (S08/feat-008): сбой классификации (LLM/retrieval) — деталь оператору в JSONL, не пользователю; отказ в state — фиксированный текст (S9 — прецедент resolve.rights_unavailable); константа — порт Tracer (EVENT_CLARIFY_UNAVAILABLE) |
 
 S25 (feat-020): mode `agent` — объединённый контур (retrieval + тул run_sql +

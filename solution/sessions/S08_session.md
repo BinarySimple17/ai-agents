@@ -61,7 +61,7 @@ ADR-007; эскалация попытки 3 — mid при достатке б�
 **✅ Самопроверка:**
 
 ```bash
-uv run pytest src/tests/unit/test_clarify.py -q   # однозначный → допущения; неоднозначный → 1 вопрос; невалидный выход LLM → ретрай M1
+uv run pytest src/tests/unit/test_clarify.py -q   # ✅ 26 passed (однозначный → допущения; неоднозначный → 1 вопрос; невалидный выход → ретрай M1)
 ```
 
 ---
@@ -82,8 +82,8 @@ TTL-истёк синтезирует раннер (граница движка,
 **✅ Самопроверка:**
 
 ```bash
-uv run pytest src/tests/unit/test_clarify.py -q                          # фейк-checkpointer: interrupt → resume того же state
-make infra-up && uv run pytest src/tests/integration/test_clarify_resume.py -q   # живой Valkey: resume после TTL-окна; истёкший TTL → clarification-терминал
+uv run pytest src/tests/unit/test_clarify.py src/tests/unit/test_graph.py -q   # ✅ 445 unit (MemorySaver: пауза → resume того же thread; TTL-истёк → clarification)
+make infra-up && uv run pytest src/tests/integration/test_clarify_resume.py -q   # ✅ 5 passed (живой Valkey: сессия в ключах ckptr:*, resume, TTL-истёк 1.6s)
 ```
 
 ---
@@ -103,16 +103,16 @@ FLAG_PLAN_JOINS_CLARIFY (владение — планер, ruling R1); диаг
 **✅ Самопроверка:**
 
 ```bash
-uv run pytest src/tests/unit/test_graph.py src/tests/unit/test_clarify.py -q   # ветвление после clarify; ребро plan_joins→clarify живо
+uv run pytest src/tests/unit/test_graph.py src/tests/unit/test_clarify.py -q   # ✅ ветвление после clarify; ребро plan_joins→clarify живо (TestClarifyRouting + TestInterruptFlow)
 ```
 
 ## Критерии приёмки
 
-- [ ] Однозначный вопрос проходит дальше с зафиксированными допущениями (behavior feat-008)
-- [ ] Неоднозначный — приостанавливает граф interrupt()-ом (checkpointer, TTL 10 мин), ответ пользователя резюмирует тот же прогон (behavior feat-008)
-- [ ] Допущения попадают в state (и далее — в финальный ответ, поле готово для S15) (behavior feat-008)
-- [ ] TTL истёк → clarification-терминал — валидный исход, не traceback (S00 правило 8)
-- [ ] Уточняющий вопрос — ровно один (behavior feat-008), формулировка без раскрытия недоступной схемы
+- [x] Однозначный вопрос проходит дальше с зафиксированными допущениями (behavior feat-008)
+- [x] Неоднозначный — приостанавливает граф interrupt()-ом (checkpointer, TTL 10 мин), ответ пользователя резюмирует тот же прогон (behavior feat-008)
+- [x] Допущения попадают в state (и далее — в финальный ответ, поле готово для S15) (behavior feat-008)
+- [x] TTL истёк → clarification-терминал — валидный исход, не traceback (S00 правило 8)
+- [x] Уточняющий вопрос — ровно один (behavior feat-008), формулировка без раскрытия недоступной схемы
 - [ ] Фича закрыта: `make verify-feature F=feat-008` → PASS, state=passing с evidence
 
 ## Ловушки
