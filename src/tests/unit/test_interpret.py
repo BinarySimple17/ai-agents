@@ -432,7 +432,49 @@ class TestInterpretNode:
         verdict = next(t for t in tracer.events if t.event == EVENT_INTERPRET_VERDICT)
         assert "СЕКРЕТНЫЙ-ТЕКСТ" not in json.dumps(verdict.payload, ensure_ascii=False)
         assert verdict.payload["row_count"] == 2
-        assert verdict.payload["cost_rub"] == 0.42
+        assert verdict.payload["cost_rub"] == 0.42  # _StaticGuard: снапшот после вызова
+
+    def test_cost_snapshot_after_llm_call(self) -> None:
+        # I1 fix-волны (регрессия: падала на до-фиксовом коде): payload и трейс —
+        # снапшот ПОСЛЕ вызова strong-модели (стоимость самого дорогого вызова
+        # входит в пользовательский контракт), промпт — снапшот ДО (стоимость
+        # на момент объяснения); guard растёт между вызовом сервиса и снапшотом
+        class _GrowingGuard:
+            def __init__(self) -> None:
+                self.spent = 0.1
+
+            def spent_rub(self) -> float:
+                return self.spent
+
+            def remaining_rub(self) -> float:
+                return 2.0 - self.spent
+
+            def reset(self) -> None:
+                return None
+
+        guard = _GrowingGuard()
+
+        class _ChargingService:
+            def __init__(self) -> None:
+                self.prompt_cost: float | None = None
+
+            def interpret(self, **kwargs):
+                from text_to_sql_agent.application.services.interpret_result_service import (
+                    InterpretOutcome,
+                    InterpretResult,
+                )
+
+                self.prompt_cost = kwargs["cost_rub"]
+                guard.spent = 0.7  # strong-вызов «стоил» и учтён аккумулятором
+                return InterpretResult(outcome=InterpretOutcome.ANSWER, text="ок", llm_calls=1)
+
+        service = _ChargingService()
+        node = make_interpret_result_node(service, budget_guard=guard)
+        updated = node(self._state())
+        assert service.prompt_cost == pytest.approx(0.1)  # промпт — до вызова
+        answer = updated[FINAL_ANSWER_KEY]
+        assert answer["cost_rub"] == pytest.approx(0.7)  # payload — факт после вызова
+        assert updated["budget_used"]["rub"] == pytest.approx(0.7)  # единый снапшот
 
 
 # --- Task 3: degrade — отказ бизнес-понятиями (mid, санитайзер R1, вердикт R8) ---
@@ -522,6 +564,8 @@ class TestDegradeSanitizer:
             "В базе есть строки с премиями.",
             "Таблица содержит данные, недоступные вам.",
             "Премии присутствуют в системе.",
+            "В системе содержатся данные о премиях.",  # M1 fix-волны: стем «содерж»
+            "У нас имеются записи о бонусах.",  # M1 fix-волны: стем «имеютс»
         ):
             assert self._sanitize(text) is not None, text
 
@@ -588,7 +632,7 @@ class TestDegradeService:
 
     def test_prompt_has_no_forbidden_topics(self) -> None:
         # R8: сырые «чужие» имена в промпт не идут — модель не может их «спросить»
-        service, llm = self._service([_tool_answer("ок")])
+        service, llm = self._service([_tool_refusal("ок")])  # тул сервиса — report_refusal (M3)
         self._formulate(service)
         prompt = json.dumps(llm.calls[0][1], ensure_ascii=False)
         assert "bonuses" not in prompt and "salaries" not in prompt
@@ -672,6 +716,29 @@ class TestDegradeNode:
         verdict = next(t for t in tracer.events if t.event == EVENT_DEGRADE_VERDICT)
         assert verdict.payload["cause"] == "rights"
         assert verdict.payload["has_variant"] is True
+
+    def test_flag_literals_parity_with_routing(self) -> None:
+        # I2 fix-волны (прецедент test_generate_sql): degrade_node дублирует имена
+        # флагов routing литералами (application не импортирует orchestration) —
+        # совпадение строк гвардит тест, переименование в routing не пройдёт
+        # молча (иначе причина отказа классифицируется неверно: NO_PATH → TECHNICAL)
+        from text_to_sql_agent.application.services.degrade_node import (
+            _DENIED_OUTCOME,
+            _EXECUTE_DEFECT_FLAG,
+            _GENERATOR_FAILED_FLAG,
+            _NO_PATH_FLAG,
+        )
+        from text_to_sql_agent.domain.sql_validation import ValidationOutcome
+        from text_to_sql_agent.orchestration.routing import (
+            FLAG_EXECUTE_DEFECT,
+            FLAG_GENERATE_SQL_FAILED,
+            FLAG_PLAN_JOINS_NO_PATH,
+        )
+
+        assert _EXECUTE_DEFECT_FLAG == FLAG_EXECUTE_DEFECT
+        assert _NO_PATH_FLAG == FLAG_PLAN_JOINS_NO_PATH
+        assert _GENERATOR_FAILED_FLAG == FLAG_GENERATE_SQL_FAILED
+        assert _DENIED_OUTCOME == ValidationOutcome.DENIED.value
 
     def test_llm_unavailable_still_answers_by_template(self) -> None:
         # NFR-8: degrade не падает — шаблон без LLM, событие unavailable

@@ -66,7 +66,10 @@ def make_interpret_result_node(
             if isinstance(item, dict)
         ]
         usage_notes = list((state.get("join_plan") or {}).get("assumptions") or [])
-        cost_rub = round(budget_guard.spent_rub(), 6) if budget_guard is not None else None
+        # Стоимость в промпт — снапшот ДО вызова (цена на момент объяснения);
+        # payload/трейс — ПОСЛЕ (пользовательский контракт включает стоимость
+        # самого дорогого вызова — ревью S15 I1: разница ~0,58 ₽ из капа 2 ₽)
+        prompt_cost = round(budget_guard.spent_rub(), 6) if budget_guard is not None else None
 
         result = service.interpret(
             question=(state.get("question") or "").strip(),
@@ -74,7 +77,7 @@ def make_interpret_result_node(
             compact=compact,
             assumptions=assumptions,
             usage_notes=usage_notes,
-            cost_rub=cost_rub,
+            cost_rub=prompt_cost,
             truncated=truncated,
             approximate=approximate,
             incomplete=incomplete_before,
@@ -82,9 +85,11 @@ def make_interpret_result_node(
 
         budget = dict(state.get("budget_used") or {})
         budget["llm_calls"] = (budget.get("llm_calls") or 0) + result.llm_calls
+        cost_rub = prompt_cost
         if budget_guard is not None:
             # Снапшот ПОСЛЕ вызова сервиса — факт прогона по usage (R6), не 0 ₽
-            budget["rub"] = round(budget_guard.spent_rub(), 6)
+            cost_rub = round(budget_guard.spent_rub(), 6)
+            budget["rub"] = cost_rub
 
         incomplete = (
             incomplete_before
