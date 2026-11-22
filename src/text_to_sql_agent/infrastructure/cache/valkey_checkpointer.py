@@ -50,10 +50,15 @@ _KIND_SEP = b"\x1f"
 # Явный allowlist доменных типов state в чекпоинте — deny-by-default канона
 # (S27, находка живого resume: дефолтный JsonPlusSerializer пропускает
 # незарегистрированные типы с deprecation-warning «will be blocked in a
-# future version»; с явным списком — восстанавливаются только свои VO,
-# чужой/забытый тип отказывает громко, не молча деградирует). (module, name)
-# — формат ключа реестра LangGraph; новый VO в AgentState (S00 контракт 1)
-# добавляется сюда осознанно, тем же коммитом с правкой state.
+# future version»; с явным списком чужой тип на LOAD получает «Blocked
+# deserialization» и сырой dict вместо VO — семантика ревью S27 I1: dump
+# pydantic-VO список НЕ гейтит, гейтится загрузка; dict-дрейф на resume —
+# тихий, поэтому новый VO в AgentState (S00 контракт 1) добавляется сюда
+# осознанно, тем же коммитом с правкой state, иначе поля молча станут dict).
+# Ревью S27 I2: живое VO в state сейчас одно — Assumption; остальные записи —
+# проактивная авторизация (join_plan/skeleton/compact/validation пишутся
+# model_dump()-dict; при переводе поля на живой VO — регресс roundtrip).
+# (module, name) — формат ключа реестра LangGraph.
 _CHECKPOINT_MSGPACK_TYPES: tuple[tuple[str, str], ...] = (
     ("text_to_sql_agent.domain.entities", "Assumption"),
     ("text_to_sql_agent.domain.join_plan", "JoinPlan"),
