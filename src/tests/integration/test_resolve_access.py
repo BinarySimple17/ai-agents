@@ -266,7 +266,9 @@ class _ScriptedPlanJoins:
 
 
 class _ScriptedGenerateSql:
-    """Генератор — мок (S00-7): SQL достаточен, чтобы happy path дошёл до done."""
+    """Генератор — мок (S00-7): SQL достаточен, чтобы happy path дошёл до done.
+    S11: SQL соответствует скелету плана — реальный валидатор сверяет структуру
+    (однотабличный SELECT дал бы hallucination-маршрут вместо done)."""
 
     def generate(self, **kwargs: object) -> object:
         from text_to_sql_agent.application.services.generate_sql_service import (
@@ -274,7 +276,12 @@ class _ScriptedGenerateSql:
             GenerateSqlResult,
         )
 
-        return GenerateSqlResult(outcome=GenerateSqlOutcome.SQL, sql="SELECT count(*) FROM orders")
+        return GenerateSqlResult(
+            outcome=GenerateSqlOutcome.SQL,
+            sql=(
+                "SELECT count(*) FROM orders o INNER JOIN order_items i ON o.order_id = i.order_id"
+            ),
+        )
 
 
 class TestFSMThroughContainer:

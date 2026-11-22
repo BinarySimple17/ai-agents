@@ -12,7 +12,7 @@
 > В разделе — ТОЛЬКО статус последней закрытой сессии; подробности исполнения —
 > в файле самой сессии (закрытые переносятся `make archive` в sessions/archive/).
 
-- Последняя ✅: S28 — 2026-11-22: harness: механика ритуалов в скриптах (new-session/close-session + self-test), ужатие AGENTS.md
+- Последняя ✅: S11 — 2026-11-22: feat-011 — закрыто (см. отчёт в sessions/archive/S11_session.md)
 ## Владельцы треков
 
 | Трек | Владелец | Зона |
@@ -45,7 +45,7 @@
 | S08 | [sessions/S08_session.md](sessions/archive/S08_session.md) | clarify: классификация однозначности, фиксация допущений; уточнение — interrupt() + checkpointer (Valkey, TTL 10 мин) | агент | S04, S03 | feat-008 — закрывает | 1 | P0 | ✅ 2026-11-22 (feat-008 passing; ARCH-GATE needs-decision → rulings R1–R7 ДО кода [ложная посылка ребра plan_joins→clarify — FIX-009, диаграмма v1.6]; REVIEW-GATE «With fixes» 0C/3I/8M → fix-волна fdc65e0 [I1 thread_id, I2 CheckpointStoreError-граница, I3 R6-регрессы bite-проверены] → re-review «Yes» 0C/0I/4M → доводка be01f32; interrupt-механика: само-ребро clarify, ValkeyCheckpointer [custom saver, TTL 10 мин], resume тот же прогон без повторного LLM, TTL-истёк → clarification синтез раннера; 465 unit + 18 integration; layer-3 live: уточняющий вопрос → stdin → тот же прогон done) |
 | S09 | sessions/S09_session.md | plan_joins: JoinPlan ≤ 4 таблиц по edge_id активных рёбер; валидация плана + ретраи M1 (D-016: попытка 2 — та же модель + текст ошибки, попытка 3 — уровень вверх) | агент | S06, S07 | feat-009 — закрывает | 1.5 | P0 | ✅ 2026-11-21 (feat-009 passing; ARCH-GATE rulings Q1/Q7; REVIEW-GATE 2 fix-волны 7bb4285/62f4c3e; 329 passed; D-030, BL-003 п.2 закрыт) |
 | S10 | sessions/archive/S10_session.md | generate_sql: наполнение скелета (build_skeleton — код, skeleton_hash) по JoinPlan; ретраи M1: попытка 2 — та же модель + текст ошибки, попытка 3 — эскалация на флагман | агент | S09, S04 | feat-010 — закрывает | 1 | P0 | ✅ |
-| S11 | [sessions/S11_session.md](sessions/S11_session.md) | validate_sql: sqlglot AST + ACL + джойны по графу | агент | S05, S07, S10 | feat-011 — закрывает | 1.5 | P0 | ⬜ |
+| S11 | [sessions/S11_session.md](sessions/S11_session.md) | validate_sql: sqlglot AST + ACL + джойны по графу | агент | S05, S07, S10 | feat-011 — закрывает | 1.5 | P0 | ✅ 2026-11-22 |
 | S12 | sessions/S12_session.md | check_cost: EXPLAIN-порог T2 → async / matview / approximate / отказ с рекомендацией (не декомпозиция, ADR-004 v1.2) | агент | S11, S02 | feat-012 — закрывает | 0.5 | P1 | ⬜ |
 | S13 | sessions/S13_session.md | SQLExecutor: тул run_sql (ДЗ-02) + узел execute_sql — agent_ro, LIMIT 1000, timeout 30s | агент | S02 | feat-013 — закрывает | 1 | P0 | ✅ 2026-11-18 |
 | S14 | [sessions/S14_session.md](sessions/S14_session.md) | diagnose_error + ретраи M1 (≤ 3 на узел; попытка 2 — та же модель + ошибка, попытка 3 — эскалация после проверки бюджета с резервом 0,6 ₽) + подключение узла execute_sql (feat-013) в FSM + probe COUNT | агент | S13, S04 | feat-014 — закрывает | 1 | P0 | ⬜ |

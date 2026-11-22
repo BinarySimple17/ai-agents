@@ -63,3 +63,12 @@ class PermissionStore(Protocol):
     def fetch_rights(self, user_id: str) -> UserRights:
         """Роли + слияние прав по ролям + версии одним снапшотом (user_id непустой)."""
         ...
+
+    def data_catalog(self) -> frozenset[str]:
+        """Каталог мира агента: bare-имена таблиц `agent_data_sources` (SoT
+        существования, BL-009). Различение исходов валидатора S11 (ADR-005 §4,
+        plan правило 4): таблица вне каталога — «не существует» (hallucination,
+        retry оправдан); в каталоге, но вне прав — «вне прав» (denied, degrade
+        без retry). Грант SELECT agent_planner — миграция 0002:81; сбой чтения —
+        `RightsUnavailableError` (fail-closed, не «пустой мир»)."""
+        ...

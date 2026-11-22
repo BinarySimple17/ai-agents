@@ -31,6 +31,9 @@ _PERMISSIONS_SQL = (
     "SELECT table_name, columns FROM agent_permissions "
     "WHERE schema_name = 'public' AND role = ANY(%s) ORDER BY table_name"
 )
+# SoT существования (BL-009): «что вообще есть в мире агента» — различение
+# «не существует» (hallucination) от «вне прав» (denied) в валидаторе S11
+_CATALOG_SQL = "SELECT table_name FROM agent_data_sources"
 
 
 def _shorten(message: str) -> str:
@@ -119,3 +122,16 @@ class PgPermissionStore:
             tables=tables,
             versions=versions,
         )
+
+    def data_catalog(self) -> frozenset[str]:
+        """Каталог мира агента одним SELECT (bare-имена, нижний регистр — ключи
+        сравнения валидатора S11 нормализуются так же)."""
+        try:
+            with psycopg.connect(self._planner_dsn, connect_timeout=_CONNECT_TIMEOUT_S) as conn:
+                rows = conn.execute(_CATALOG_SQL).fetchall()
+        except psycopg.Error as exc:
+            raise RightsUnavailableError(
+                f"каталог agent_data_sources недоступен: {_shorten(exc)}"
+            ) from exc
+        names = {str(row[0]).strip().lower() for row in rows}
+        return frozenset(name for name in names if name)

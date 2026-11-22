@@ -22,6 +22,8 @@ from text_to_sql_agent.application.services.plan_joins_service import PlanJoinsS
 from text_to_sql_agent.application.services.resolve_access_node import make_resolve_access_node
 from text_to_sql_agent.application.services.resolve_access_service import ResolveAccessService
 from text_to_sql_agent.application.services.run_sql_tool import RunSqlTool
+from text_to_sql_agent.application.services.validate_sql_node import make_validate_sql_node
+from text_to_sql_agent.application.services.validate_sql_service import ValidateSqlService
 from text_to_sql_agent.application.use_cases.answer_question import AnswerQuestion
 from text_to_sql_agent.config.settings import Settings, load_settings
 from text_to_sql_agent.infrastructure.cache.valkey_checkpointer import ValkeyCheckpointer
@@ -54,6 +56,7 @@ class Container:
     edge_proposal_store: PgEdgeProposalStore
     plan_joins_service: PlanJoinsService
     generate_sql_service: GenerateSqlService
+    validate_sql_service: ValidateSqlService
     clarify_service: ClarifyService
     auth_provider: AuthProvider
     resolve_access_service: ResolveAccessService
@@ -75,6 +78,7 @@ def build_container(
     clarify_service: ClarifyService | None = None,
     plan_joins_service: PlanJoinsService | None = None,
     generate_sql_service: GenerateSqlService | None = None,
+    validate_sql_service: ValidateSqlService | None = None,
 ) -> Container:
     """Дефолтная сборка; `settings=None` → fail-fast чтение окружения.
 
@@ -85,9 +89,10 @@ def build_container(
     `checkpointer` — сессии interrupt-механики (S08/feat-008, ruling R2 ARCH-GATE):
     None → ValkeyCheckpointer (TTL из Settings); инъекция фейка — юнит-тесты без
     инфры (S00 правило 7, прецедент permission_store). `clarify_service` /
-    `plan_joins_service` / `generate_sql_service` — инъекции скриптовых сервисов
-    юнит-тестов wiring и integration-прогонов без LLM (S00 правило 7 — LLM в
-    тестах только моки; реальный контур собирает сервисы со швом бюджета Q7).
+    `plan_joins_service` / `generate_sql_service` / `validate_sql_service` —
+    инъекции скриптовых сервисов юнит-тестов wiring и integration-прогонов без
+    LLM (S00 правило 7 — LLM в тестах только моки; реальный контур собирает
+    сервисы со швом бюджета Q7).
     """
     settings = settings or load_settings()
     tracer: Tracer = JsonlTracer(settings.trace_jsonl_path)
@@ -159,6 +164,11 @@ def build_container(
     permission_store = permission_store or PgPermissionStore(settings.agent_planner_dsn)
     resolve_access_service = ResolveAccessService(permission_store)
     auth_provider: AuthProvider = DevTokenAuth(settings.dev_token_map)
+    # Рубеж безопасности (S11/feat-011): валидация детерминированная (БЕЗ LLM);
+    # каталог мира — тот же PermissionStore (data_catalog, SoT agent_data_sources
+    # — BL-009) на каждый запрос, инъекция фейка — юнит-тесты wiring
+    if validate_sql_service is None:
+        validate_sql_service = ValidateSqlService()
     # Узел clarify (S08/feat-008): классификация однозначности + interrupt-
     # механика. Шов бюджета — ruling Q7 (тот же, что у plan_joins: остаток =
     # кап запроса − резидентный аккумулятор адаптера; FSM замена — S15 BudgetGuard).
@@ -190,14 +200,20 @@ def build_container(
         # S05/feat-005: resolve_access — содержательный узел (права из настроек);
         # S08/feat-008: clarify — классификация + interrupt (шлюз-адаптер —
         # orchestration, ruling R2); S10/feat-010: plan_joins (сервис S09) →
-        # build_skeleton (код) → generate_sql (наполнение mid); заглушки остаются
-        # для юнит-тестов каркаса (test_graph строит граф сам)
+        # build_skeleton (код) → generate_sql (наполнение mid); S11/feat-011:
+        # validate_sql — рубеж безопасности (детерминированный, без LLM);
+        # заглушки остаются для юнит-тестов каркаса (test_graph строит граф сам)
         node_overrides={
             "resolve_access": make_resolve_access_node(resolve_access_service, tracer=tracer),
             "clarify": make_clarify_node(clarify_service, LangGraphInterruptGate(), tracer=tracer),
             "plan_joins": make_plan_joins_node(plan_joins_service, tracer=tracer),
             "build_skeleton": make_build_skeleton_node(tracer=tracer),
             "generate_sql": make_generate_sql_node(generate_sql_service, tracer=tracer),
+            "validate_sql": make_validate_sql_node(
+                validate_sql_service,
+                catalog_provider=permission_store.data_catalog,
+                tracer=tracer,
+            ),
         },
     )
     answer_question = AnswerQuestion(runner=fsm_runner, llm=llm)
@@ -212,6 +228,7 @@ def build_container(
         edge_proposal_store=edge_proposal_store,
         plan_joins_service=plan_joins_service,
         generate_sql_service=generate_sql_service,
+        validate_sql_service=validate_sql_service,
         clarify_service=clarify_service,
         auth_provider=auth_provider,
         resolve_access_service=resolve_access_service,
