@@ -578,7 +578,10 @@ class PlanJoinsService:
             },
         ]
         if error_text is not None:
-            messages.append({"role": "assistant", "content": last_output or ""})
+            # Пустой assistant-ход часть шлюзов отвергает (ревью S10 minor) —
+            # добавляем только непустой последний выход
+            if last_output:
+                messages.append({"role": "assistant", "content": last_output})
             messages.append(
                 {
                     "role": "user",

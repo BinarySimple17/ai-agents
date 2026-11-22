@@ -125,7 +125,8 @@ def make_plan_joins_node(
             }
         if result.outcome == PlanOutcome.NO_PATH:
             # Behavior feat-009: «нет активного пути» → degrade + заявка (заявку
-            # записал сервис); отказ формулирует S15, деталь — оператору (S9)
+            # записал сервис); отказ формулирует S15, деталь — оператору (S9);
+            # пользовательский текст — шаблон сервиса (код-текст о заявке, не инфраструктура)
             if tracer is not None and result.error:
                 tracer.record(
                     Trace(
@@ -133,13 +134,16 @@ def make_plan_joins_node(
                         payload={"user_id": user_id, "detail": result.error},
                     )
                 )
+            message = result.clarifying_question or _PLAN_UNAVAILABLE_MESSAGE
             return {
                 "route_flags": {**flags, **_ZONE_FLAGS, PLAN_JOINS_NO_PATH_FLAG: True},
-                "error": {"class": "plan_no_path", "message": _PLAN_UNAVAILABLE_MESSAGE},
+                "error": {"class": "plan_no_path", "message": message},
                 "budget_used": budget,
             }
         # FAIL: исчерпание ретраев / сбой инфраструктуры — честный отказ
-        # (terminal_fail); деталь — оператору в трейс, не пользователю (S9)
+        # (terminal_fail); деталь — оператору в трейс, не пользователю (S9);
+        # пользовательский текст — шаблон отказа сервиса (FR-10 «отказ с
+        # уточняющим вопросом» — код-текст, не инфраструктура)
         if tracer is not None and result.error:
             tracer.record(
                 Trace(
@@ -147,7 +151,8 @@ def make_plan_joins_node(
                     payload={"user_id": user_id, "detail": result.error},
                 )
             )
-        return _fail_verdict(flags, "plan_failed", _PLAN_UNAVAILABLE_MESSAGE, budget)
+        message = result.clarifying_question or _PLAN_UNAVAILABLE_MESSAGE
+        return _fail_verdict(flags, "plan_failed", message, budget)
 
     return node
 

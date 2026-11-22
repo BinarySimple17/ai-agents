@@ -83,6 +83,16 @@ def test_plan_joins_budget_shlew_wired_to_adapter(tmp_path) -> None:
     assert container.edge_proposal_store is not None  # очередь заявок собрана (миграция 0009)
 
 
+def test_generate_sql_budget_selew_wired_to_adapter(tmp_path) -> None:
+    # Шов бюджета узла generate_sql (ruling Q7 — тот же, что plan_joins/clarify):
+    # эскалация mid→strong проверяет остаток = кап − аккумулятор адаптера
+    # (ревью S10 minor — без wiring-теста регресс молча отключил бы резерв)
+    container = build_container(_settings(tmp_path), checkpointer=_mem_ckpt())
+    assert type(container.generate_sql_service).__name__ == "GenerateSqlService"
+    assert container.generate_sql_service._budget_remaining_roubles is not None  # noqa: SLF001
+    assert container.generate_sql_service._budget_remaining_roubles() == pytest.approx(2.0)  # noqa: SLF001
+
+
 def test_build_container_respects_rrf_alpha_dense(tmp_path) -> None:
     # I3 ревью S26: измерительный контур (bench dense-only α=1.0) собирается
     # ТОЛЬКО через build_container — сборка адаптера вне composition запрещена

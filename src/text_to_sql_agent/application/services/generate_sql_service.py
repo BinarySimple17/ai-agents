@@ -30,7 +30,11 @@ import re
 from collections.abc import Callable, Mapping, Sequence
 from enum import StrEnum
 
+import sqlglot
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from sqlglot import exp as sql_exp
+from sqlglot.errors import ParseError as SqlParseError
+from sqlglot.errors import TokenError as SqlTokenError
 
 from text_to_sql_agent.application.ports.llm_provider import (
     LLMProvider,
@@ -115,8 +119,10 @@ _GENERATE_SQL_SYSTEM_PROMPT = (
     "связей и ИЗМЕНЯТЬ ИХ НЕЛЬЗЯ. Вызови тул fill_skeleton ровно один раз: "
     "select_list — выражения SELECT; where — условия вопроса (обязательные "
     "предикаты уже включены, их не повторяй); group_by/order_by — при "
-    "необходимости. Не добавляй FROM/JOIN/ON; не упоминай таблицы, которых нет "
-    "в скелете; не выдумывай колонки. Учитывай допущения, принятые ранее."
+    "необходимости. Не добавляй FROM/JOIN/ON/подзапросы; не упоминай таблицы, "
+    "которых нет в скелете; не выдумывай колонки; не используй алиасы таблиц — "
+    "алиасы скелетом не объявлены, обращайся к таблицам по полным именам. "
+    "Учитывай допущения, принятые ранее."
 )
 
 # Честный отказ с уточняющим вопросом (Task 3: исчерпание → fail-вердикт с
@@ -207,8 +213,9 @@ def _ensure_tables_from_skeleton(
 
     world_tables — права пользователя (мир агента, S00 контракт 3): таблица из
     прав, но не из плана, в наполнении — выдуманная для этого запроса → ретрай
-    (таблицы вне прав и так не существуют в мире агента). Скелет собирает код —
-    FROM/JOIN проверять не нужно.
+    (таблицы вне прав и так не существуют в мире агента). Структурную
+    невозможность чужого FROM/JOIN даёт _validate_fill_structure (ревью C1) —
+    эта проверка ловит упоминания ИЗВЕСТНЫХ агенту таблиц мимо плана.
     """
     foreign = sorted(world_tables - set(skeleton_tables))
     if not foreign:
@@ -229,6 +236,44 @@ def _ensure_tables_from_skeleton(
                 f"наполнение упоминает таблицу {table}, которой нет в скелете — "
                 "модель не выбирает таблицы (только SELECT/WHERE/GROUP BY/ORDER BY)"
             )
+
+
+def _validate_fill_structure(field: str, text: str) -> None:
+    """Структурная проверка поля наполнения sqlglot-ом (ревью S10 C1).
+
+    Текст модели — НЕ доверенный: парсим поле в контексте пробного SELECT
+    (диалект postgres) и отклоняем → ретрай M1: ошибки парсинга, JOIN,
+    подзапросы, UNION/INTERSECT/EXCEPT (модель не пишет структуры SQL — только
+    содержимое 4 секций). Лексический барьер (комментарии/«;»/скобки) —
+    ``domain.skeleton.validate_fill_text``, вызывается assemble_sql; здесь —
+    структурный уровень, полная валидация — S11.
+    """
+    if not text.strip():
+        return
+    probes = {
+        "select_list": f"SELECT {text}",
+        "where": f"SELECT 1 WHERE {text}",
+        "group_by": f"SELECT 1 GROUP BY {text}",
+        "order_by": f"SELECT 1 ORDER BY {text}",
+    }
+    try:
+        tree = sqlglot.parse_one(probes[field], read="postgres")
+    except (SqlParseError, SqlTokenError) as exc:
+        # TokenError — токенизатор шлюза sqlglot (незакрытый «/*»): не наследует
+        # ParseError, но тот же исход — отклонение поля (ревью C1-регресс)
+        raise ValueError(f"поле {field} — не валидный SQL-фрагмент: {exc}") from None
+    nested = [node for node in tree.find_all(sql_exp.Select) if node is not tree]
+    forbidden = [
+        node.sql()
+        for node in tree.find_all(
+            sql_exp.Join, sql_exp.Subquery, sql_exp.Union, sql_exp.Intersect, sql_exp.Except
+        )
+    ]
+    if nested or forbidden:
+        raise ValueError(
+            f"поле {field} содержит структуру SQL (подзапрос/JOIN/UNION) — модель "
+            "наполняет только содержимое секций; FROM/JOIN/ON фиксированы скелетом"
+        )
 
 
 def _last_output_text(response: LLMResponse) -> str:
@@ -354,24 +399,30 @@ class GenerateSqlService:
             calls += 1
             try:
                 fields = _parse_fill(response)
+                _validate_fill_structure("select_list", fields.select_list)
+                for optional_field in ("where", "group_by", "order_by"):
+                    _validate_fill_structure(optional_field, getattr(fields, optional_field) or "")
                 _ensure_tables_from_skeleton(
                     fields,
                     skeleton_tables=skeleton.tables,
                     world_tables=world_tables,
                 )
-            except ValueError as exc:
-                error_text = str(exc)
-                last_output = _last_output_text(response)
-                continue
-            return GenerateSqlResult(
-                outcome=GenerateSqlOutcome.SQL,
-                sql=assemble_sql(
+                sql = assemble_sql(
                     skeleton,
                     select_list=fields.select_list,
                     where=fields.where,
                     group_by=fields.group_by,
                     order_by=fields.order_by,
-                ),
+                )
+            except ValueError as exc:
+                # Сюда же попадает лексический барьер assemble_sql (ревью C1:
+                # комментарии/«;»/скобки — assemble «заряжен» ни для кого)
+                error_text = str(exc)
+                last_output = _last_output_text(response)
+                continue
+            return GenerateSqlResult(
+                outcome=GenerateSqlOutcome.SQL,
+                sql=sql,
                 llm_calls=calls,
                 escalated=escalated,
             )
@@ -412,7 +463,10 @@ class GenerateSqlService:
             },
         ]
         if error_text is not None:
-            messages.append({"role": "assistant", "content": last_output or ""})
+            # Пустой assistant-ход часть шлюзов отвергает (ревью S10 minor) —
+            # добавляем только непустой последний выход
+            if last_output:
+                messages.append({"role": "assistant", "content": last_output})
             messages.append(
                 {
                     "role": "user",

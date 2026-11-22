@@ -135,21 +135,23 @@ def build_container(
     # Узел plan_joins (S09 сервис, подключение к FSM — S10/feat-010): retrieval +
     # граф + ранжирование. Шов бюджета (ruling Q7): остаток = кап запроса −
     # резидентный аккумулятор адаптера; FSM (V4) заменит на порт BudgetGuard.
-    plan_joins_service = plan_joins_service or PlanJoinsService(
-        llm=llm,
-        vector_store=vector_store,
-        graph_store=graph_store,
-        edge_proposals=edge_proposal_store,
-        budget_remaining_roubles=lambda: settings.budget_per_request_rub - llm.budget_used_rub,
-    )
+    if plan_joins_service is None:
+        plan_joins_service = PlanJoinsService(
+            llm=llm,
+            vector_store=vector_store,
+            graph_store=graph_store,
+            edge_proposals=edge_proposal_store,
+            budget_remaining_roubles=lambda: settings.budget_per_request_rub - llm.budget_used_rub,
+        )
     # Узел generate_sql (S10/feat-010): наполнение скелета deepseek/mid; ретраи
     # M1 с эскалацией mid→strong при остатке с резервом (ruling R7 ARCH-GATE —
     # тот же шов бюджета, что у plan_joins/clarify)
-    generate_sql_service = generate_sql_service or GenerateSqlService(
-        llm=llm,
-        vector_store=vector_store,
-        budget_remaining_roubles=lambda: settings.budget_per_request_rub - llm.budget_used_rub,
-    )
+    if generate_sql_service is None:
+        generate_sql_service = GenerateSqlService(
+            llm=llm,
+            vector_store=vector_store,
+            budget_remaining_roubles=lambda: settings.budget_per_request_rub - llm.budget_used_rub,
+        )
     # Права и identity (S05/feat-005): чтение настроек — agent_planner (гранты
     # SELECT 0002:80-83, ruling R1 ARCH-GATE S05); инъекция фейка — юнит-тесты
     # wiring (прецедент rrf_alpha_dense). Identity — DevTokenAuth из Settings
@@ -160,11 +162,12 @@ def build_container(
     # Узел clarify (S08/feat-008): классификация однозначности + interrupt-
     # механика. Шов бюджета — ruling Q7 (тот же, что у plan_joins: остаток =
     # кап запроса − резидентный аккумулятор адаптера; FSM замена — S15 BudgetGuard).
-    clarify_service = clarify_service or ClarifyService(
-        llm=llm,
-        vector_store=vector_store,
-        budget_remaining_roubles=lambda: settings.budget_per_request_rub - llm.budget_used_rub,
-    )
+    if clarify_service is None:
+        clarify_service = ClarifyService(
+            llm=llm,
+            vector_store=vector_store,
+            budget_remaining_roubles=lambda: settings.budget_per_request_rub - llm.budget_used_rub,
+        )
     # Сессии interrupt (S08, ruling R2 ARCH-GATE): Valkey + TTL из Settings;
     # инъекция фейка/MemorySaver — юнит-тесты без инфры (S00 правило 7)
     checkpointer = checkpointer or ValkeyCheckpointer(

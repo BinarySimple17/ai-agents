@@ -20,6 +20,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from text_to_sql_agent.application.services.m1_policy import MAX_ATTEMPTS
 from text_to_sql_agent.domain.entities import TERMINAL_OUTCOMES, TerminalOutcome
 
 State = Mapping[str, Any]
@@ -69,8 +70,10 @@ TRANSITION_FLAGS: frozenset[str] = frozenset(
 # --- Предохранители (оба уровня — код; ADR-002 §4) ---
 # Per-node ≤ 3: попытка 1 + та же модель + эскалация уровнем вверх — политика M1
 # (D-016, ADR-007 §4.1); почему 3 — канонная конвенция «≤ 3 попыток на узел»
-# (S00 стык 1, hw-01 §6), не конфигурируется моделью.
-MAX_NODE_RETRIES = 3
+# (S00 стык 1, hw-01 §6), не конфигурируется моделью. Единый источник значения —
+# m1_policy (ревью S10 I4: расхождение с сервисными ретраями молча сломало бы
+# «≤ 3 на узел» — fuse FSM и внутренние ретраи сервисов считают общую политику).
+MAX_NODE_RETRIES = MAX_ATTEMPTS
 
 # Бюджетный учёт прогона в state.budget_used
 BUDGET_LLM_CALLS_KEY = "llm_calls"

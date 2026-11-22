@@ -44,6 +44,7 @@ from text_to_sql_agent.application.services.build_skeleton_node import (
 from text_to_sql_agent.application.services.build_skeleton_node import make_build_skeleton_node
 from text_to_sql_agent.application.services.generate_sql_node import (
     GENERATE_SQL_FAILED_FLAG,
+    RETRY_TARGET_FLAG,
     make_generate_sql_node,
 )
 from text_to_sql_agent.application.services.generate_sql_service import (
@@ -63,7 +64,12 @@ from text_to_sql_agent.application.services.plan_joins_service import (
 )
 from text_to_sql_agent.domain.entities import Assumption, RunContext
 from text_to_sql_agent.domain.join_plan import JoinPlan, JoinPlanEdge
-from text_to_sql_agent.domain.skeleton import assemble_sql, build_skeleton, skeleton_digest
+from text_to_sql_agent.domain.skeleton import (
+    assemble_sql,
+    build_skeleton,
+    skeleton_digest,
+    validate_fill_text,
+)
 
 QUESTION = "Сколько позиций в каждом заказе?"
 CTX = RunContext(trace_id="t-trace", user_id="u_analyst")
@@ -152,10 +158,67 @@ class TestBuildSkeleton:
         # та же топология под другой версией снапшота — тот же скелет
         assert other.skeleton_hash == skeleton.skeleton_hash
 
+    def test_hash_preserves_case_inside_string_literals(self) -> None:
+        # I2 (ревью S10): lowercase НЕ трогает литералы — 'EN' и 'en' в
+        # case-sensitive коллации разные значения; хэш обязан их различать
+        a = build_skeleton(_plan(mandatory_predicates={"e_orders_items": {"orders.lang": "EN"}}))
+        b = build_skeleton(_plan(mandatory_predicates={"e_orders_items": {"orders.lang": "en"}}))
+        assert a.skeleton_hash != b.skeleton_hash
+
+    def test_hash_normalizes_before_sorting(self) -> None:
+        # I2 (ревью S10): предикаты сортируются ПОСЛЕ нормализации — регистр
+        # не меняет порядок сортировки и не порождает фантомный хэш
+        set_a = {"mandt": "100", "orders.lang": "EN"}
+        # другой порядок dict + регистр КЛЮЧА (ключ вне кавычек — нормализуется);
+        # значения-литералы одинаковы (их регистр — реальное изменение, см. выше)
+        set_b = {"orders.lang": "EN", "MANDT": "100"}
+        a = build_skeleton(_plan(mandatory_predicates={"e_orders_items": set_a}))
+        b = build_skeleton(_plan(mandatory_predicates={"e_orders_items": set_b}))
+        assert a.skeleton_hash == b.skeleton_hash  # регистр-шум не меняет дайджест
+
     def test_first_table_outside_first_edge_is_defect(self) -> None:
-        # Дрейф плана: первая таблица не задействована в первом ребре — fail-closed
-        with pytest.raises(ValueError, match="не задействована в первом ребре"):
+        # I1 (ревью S10): первая таблица плана ≠ начало первого ребра — fail-closed
+        # (иначе FROM orders при ребре order_items→orders дал бы дубль FROM)
+        with pytest.raises(ValueError, match="не совпадает с началом первого ребра"):
             build_skeleton(_plan(tables=["customers", "orders", "order_items"]))
+
+    def test_reversed_first_edge_is_defect(self) -> None:
+        # I1: развёрнутое первое ребро (order_items→orders при FROM orders) —
+        # не «FROM orders INNER JOIN orders», а честный ValueError
+        reversed_edge = JoinPlanEdge(
+            rel_id="e_orders_items",
+            from_table="order_items",
+            to_table="orders",
+            from_columns=("order_id",),
+            to_columns=("order_id",),
+            join_type="inner",
+        )
+        with pytest.raises(ValueError, match="не совпадает с началом первого ребра"):
+            build_skeleton(_plan(tables=["orders", "order_items"], edges=[reversed_edge]))
+
+    def test_broken_chain_is_defect(self) -> None:
+        # I1: второе ребро начинается с не введённой таблицы (план — не цепочка):
+        # два JOIN одной таблицы вместо цепочки — fail-closed на дрейф сборки
+        first = JoinPlanEdge(
+            rel_id="r1",
+            from_table="a",
+            to_table="b",
+            from_columns=("k",),
+            to_columns=("k",),
+            join_type="inner",
+        )
+        second = JoinPlanEdge(
+            rel_id="r2",
+            from_table="c",
+            to_table="b",
+            from_columns=("k",),
+            to_columns=("k",),
+            join_type="inner",
+        )
+        with pytest.raises(ValueError, match="не является цепочкой"):
+            build_skeleton(
+                _plan(tables=["a", "b", "c"], edges=[first, second]),
+            )
 
 
 class TestMandatoryPredicates:
@@ -189,6 +252,40 @@ class TestMandatoryPredicates:
         with pytest.raises(ValueError, match="вне ребра"):
             build_skeleton(self._plan_with_predicates({"customers.mandt": "100"}))
 
+    def test_shared_table_predicate_is_deduped(self) -> None:
+        # Ревью S10 minor: неквалифицированный предикат рендерится на ОБЕ таблицы
+        # КАЖДОГО ребра — общая таблица двух рёбер не должна дать дубль
+        first = JoinPlanEdge(
+            rel_id="e_orders_items",
+            from_table="orders",
+            to_table="order_items",
+            from_columns=("order_id",),
+            to_columns=("order_id",),
+            join_type="inner",
+        )
+        second = JoinPlanEdge(
+            rel_id="e_customers_orders",
+            from_table="orders",
+            to_table="customers",
+            from_columns=("customer_id",),
+            to_columns=("customer_id",),
+            join_type="inner",
+        )
+        plan = _plan(
+            tables=["orders", "order_items", "customers"],
+            edges=[first, second],
+            mandatory_predicates={
+                "e_orders_items": {"mandt": "100"},
+                "e_customers_orders": {"mandt": "100"},
+            },
+        )
+        skeleton = build_skeleton(plan)
+        assert skeleton.mandatory_predicates == (
+            "orders.mandt = '100'",
+            "order_items.mandt = '100'",
+            "customers.mandt = '100'",
+        )
+
     def test_hash_covers_predicates_sorted(self) -> None:
         # Сортировка предикатов: порядок dict реестра не должен менять хэш
         a = build_skeleton(self._plan_with_predicates({"mandt": "100", "orders.deleted": False}))
@@ -200,21 +297,54 @@ class TestMandatoryPredicates:
         assert c.skeleton_hash != a.skeleton_hash
 
 
+class TestFillBarrier:
+    """C1 (ревью S10): текст модели — НЕ доверенный; лексический барьер в DOMAIN —
+    assemble_sql «заряжен» ни для кого (комментарий закрывает скелет, дисбаланс
+    скобок выносит обязательные предикаты из-под AND, «;» — вторая инструкция)."""
+
+    def test_comments_are_rejected(self) -> None:
+        for fragment in ("count(*) /*", "*/ count(*)", "x -- 注", "a /* inline */"):
+            with pytest.raises(ValueError, match="комментарий"):
+                validate_fill_text(fragment, field="select_list")
+
+    def test_semicolon_is_rejected(self) -> None:
+        with pytest.raises(ValueError, match=";"):
+            validate_fill_text("1; DROP TABLE orders", field="where")
+
+    def test_unbalanced_parens_are_rejected(self) -> None:
+        # Ровно вектор ревью C1: (A AND B) OR TRUE обнуляет mandatory-предикаты
+        with pytest.raises(ValueError, match="не сбалансированы"):
+            validate_fill_text("1=1) OR (1=1", field="where")
+        with pytest.raises(ValueError, match="не сбалансированы"):
+            validate_fill_text("(a AND (b", field="group_by")
+
+    def test_balanced_parens_pass(self) -> None:
+        validate_fill_text("(a AND b) OR c", field="where")  # не бросает
+
+    def test_assemble_sql_raises_on_hostile_fill(self) -> None:
+        # Барьер стоит В assemble_sql — доменная функция не собирает враждебный SQL
+        skeleton = build_skeleton(_plan())
+        with pytest.raises(ValueError, match="комментарий"):
+            assemble_sql(skeleton, select_list="count(*) /*", order_by="*/")
+        with pytest.raises(ValueError, match="не сбалансированы"):
+            assemble_sql(skeleton, select_list="count(*)", where="1=1) OR (1=1")
+
+
 class TestAssembleSql:
     def test_assembles_skeleton_with_fill(self) -> None:
         skeleton = build_skeleton(_plan())
         sql = assemble_sql(
             skeleton,
-            select_list="o.order_id, count(*)",
-            where="o.created_at >= '2026-01-01'",
-            group_by="o.order_id",
+            select_list="orders.order_id, count(*)",
+            where="orders.created_at >= '2026-01-01'",
+            group_by="orders.order_id",
             order_by="count(*) DESC",
         )
-        assert sql.splitlines()[0] == "SELECT o.order_id, count(*)"
+        assert sql.splitlines()[0] == "SELECT orders.order_id, count(*)"
         assert "FROM orders" in sql
         assert "INNER JOIN order_items ON orders.order_id = order_items.order_id" in sql
-        assert "WHERE (o.created_at >= '2026-01-01')" in sql
-        assert "GROUP BY o.order_id" in sql
+        assert "WHERE (orders.created_at >= '2026-01-01')" in sql
+        assert "GROUP BY orders.order_id" in sql
         assert "ORDER BY count(*) DESC" in sql
 
     def test_user_where_parenthesised_around_mandatory(self) -> None:
@@ -487,6 +617,70 @@ class TestGenerateSqlService:
         assert any("SELECT broken" in m["content"] for m in messages)
         assert any("колонка broken" in m["content"] for m in messages)
 
+    def test_comment_skeleton_split_is_rejected_never_sql(self) -> None:
+        # Регресс C1: «/*» в select_list + «*/» в order_by комментировали бы весь
+        # скелет (FROM/JOIN/WHERE mandatory) и собирали валидный чужой SQL.
+        # До-фикс: outcome=SQL; пост-фикс: барьер → ретрай × 3 → FAIL
+        hostile = _tool_response(select="count(*) /*", order_by="*/")
+        llm = _ScriptedLLM([hostile, hostile, hostile])
+        result = _service(llm).generate(
+            skeleton=build_skeleton(_plan()), question=QUESTION, ctx=CTX, permissions=PERMISSIONS
+        )
+        assert result.outcome == GenerateSqlOutcome.FAIL
+        # Слой отклонения не важен (sqlglot-токенизатор или доменный барьер —
+        # «/*» ловят оба): важно, что враждебный наполнение НИКОГДА не становится SQL
+        assert "select_list" in result.error
+        assert all(role in ("mid", "strong") for role, _ in llm.calls)
+
+    def test_join_in_select_list_is_rejected(self) -> None:
+        # Регресс C1 (Ловушка 1 плана): модель дописывает JOIN с собственным ON —
+        # «галлюцинация связи» возвращается; до-фикс собрал бы мусорный SQL
+        hostile = _tool_response(
+            select="count(*) FROM orders x JOIN order_items y ON x.order_id = y.order_id"
+        )
+        llm = _ScriptedLLM([hostile, hostile, hostile])
+        result = _service(llm).generate(
+            skeleton=build_skeleton(_plan()), question=QUESTION, ctx=CTX, permissions=PERMISSIONS
+        )
+        assert result.outcome == GenerateSqlOutcome.FAIL
+        assert "структуру SQL" in result.error
+
+    def test_subquery_in_where_is_rejected(self) -> None:
+        # Регресс C1: подзапрос в WHERE — та же «структура SQL от модели»
+        hostile = _tool_response(
+            select="count(*)", where="customer_id IN (SELECT id FROM customers)"
+        )
+        llm = _ScriptedLLM([hostile, hostile, hostile])
+        result = _service(llm).generate(
+            skeleton=build_skeleton(_plan()), question=QUESTION, ctx=CTX, permissions=PERMISSIONS
+        )
+        assert result.outcome == GenerateSqlOutcome.FAIL
+        assert "структуру SQL" in result.error
+
+    def test_unbalanced_parens_in_where_is_rejected(self) -> None:
+        # Регресс C1: несбалансированная скобка выносит mandatory-предикаты
+        # из-под AND ((A AND B) OR TRUE); до-фикс собрал бы такой SQL
+        hostile = _tool_response(select="count(*)", where="1=1) OR (1=1")
+        llm = _ScriptedLLM([hostile, hostile, hostile])
+        result = _service(llm).generate(
+            skeleton=build_skeleton(_plan()), question=QUESTION, ctx=CTX, permissions=PERMISSIONS
+        )
+        assert result.outcome == GenerateSqlOutcome.FAIL
+
+    def test_valid_fill_with_function_calls_still_passes(self) -> None:
+        # Уровень строгости: агрегаты/выражения/скобки валидны — барьер не
+        # душит нормальное наполнение
+        good = _tool_response(
+            select="orders.customer_id, count(*)",
+            where="orders.total > 100",
+            group_by="orders.customer_id",
+        )
+        llm = _ScriptedLLM([good])
+        result = _service(llm).generate(
+            skeleton=build_skeleton(_plan()), question=QUESTION, ctx=CTX, permissions=PERMISSIONS
+        )
+        assert result.outcome == GenerateSqlOutcome.SQL
+
     def test_start_attempt_beyond_cap_is_honest_fail(self) -> None:
         llm = _ScriptedLLM([_tool_response(select="count(*)")])
         result = _service(llm).generate(
@@ -500,12 +694,18 @@ class TestGenerateSqlService:
 
 
 class _ScriptedPlanJoins:
+    """Скриптовый планер с записью входов (ревью S10 I6): узел обязан передать
+    question/ctx/permissions из state — молчаливая потеря permissions отключила бы
+    defense-in-depth (ruling R5)."""
+
     def __init__(self, result: PlanJoinsResult) -> None:
         self._result = result
         self.called = 0
+        self.seen: list[dict[str, Any]] = []
 
     def plan(self, question: str, *, ctx: Any, permissions: Any) -> PlanJoinsResult:
         self.called += 1
+        self.seen.append({"question": question, "ctx": ctx, "permissions": permissions})
         return self._result
 
 
@@ -547,6 +747,10 @@ class TestPlanJoinsNode:
         assert len(verdict) == 1
         assert verdict[0].payload["outcome"] == "plan"
         assert verdict[0].payload["graph_version"] == 3
+        # I6 (ревью S10): входы дошли до сервиса из state
+        assert service.seen[0]["question"] == QUESTION
+        assert service.seen[0]["permissions"] == PERMISSIONS
+        assert service.seen[0]["ctx"].user_id == "u_analyst"
 
     def test_clarify_outcome_writes_question_with_flag(self) -> None:
         # Правило карты владения S08: планер пишет clarify_question ВМЕСТЕ
@@ -627,12 +831,16 @@ class TestBuildSkeletonNode:
 class TestGenerateSqlNode:
     def _service_result(self, outcome: GenerateSqlOutcome, **kwargs: Any) -> Any:
         class _Scripted:
+            """Скриптовый генератор с записью входов (ревью S10 I6)."""
+
             def __init__(self, result: GenerateSqlResult) -> None:
                 self._result = result
                 self.called = 0
+                self.seen: list[dict[str, Any]] = []
 
             def generate(self, **kwargs: Any) -> GenerateSqlResult:
                 self.called += 1
+                self.seen.append(dict(kwargs))
                 return self._result
 
         return _Scripted(GenerateSqlResult(outcome=outcome, **kwargs))
@@ -683,6 +891,68 @@ class TestGenerateSqlNode:
         events = [t for t in tracer.records if t.event == EVENT_GENERATE_SQL_UNAVAILABLE]
         assert len(events) == 1
         assert "не удалось" in events[0].payload["detail"]
+
+    def test_state_inputs_reach_the_service(self) -> None:
+        # I6 (ревью S10): молчаливая потеря inputs отключила бы R5 — узел
+        # обязан передать skeleton/permissions/assumptions/question из state
+        service = self._service_result(GenerateSqlOutcome.SQL, sql="SELECT 1")
+        assumptions = [Assumption(source="classifier", text="период — 2026")]
+        make_generate_sql_node(service)(
+            {
+                "question": QUESTION,
+                "user_id": "u_analyst",
+                "skeleton": build_skeleton(_plan()).model_dump(),
+                "permissions": PERMISSIONS,
+                "assumptions": assumptions,
+            }
+        )
+        seen = service.seen[0]
+        assert seen["question"] == QUESTION
+        assert seen["permissions"] == PERMISSIONS
+        assert seen["assumptions"] == assumptions
+        assert seen["skeleton"].from_table == "orders"
+        assert seen["start_attempt"] == 1  # попытка 1 — вне FSM-ретрая
+        assert seen["last_sql"] is None
+
+    def test_fsm_retry_context_is_seeded_from_state(self) -> None:
+        # I3 (ревью S10): FSM-ретрай (гейт S14) инкрементирует retry_count —
+        # визит продолжения должен стартовать с попытки 2 + контекст ошибки,
+        # иначе per-node кап стал бы 3×3 (ревью Important-3)
+        service = self._service_result(GenerateSqlOutcome.SQL, sql="SELECT 1")
+        make_generate_sql_node(service)(
+            {
+                "question": QUESTION,
+                "user_id": "u_analyst",
+                "skeleton": build_skeleton(_plan()).model_dump(),
+                "permissions": PERMISSIONS,
+                "retry_count": 1,
+                "route_flags": {RETRY_TARGET_FLAG: "generate_sql"},
+                "sql": "SELECT broken_column FROM orders",
+                "error": {
+                    "class": "hallucination",
+                    "message": "колонка broken_column не существует",
+                },
+            }
+        )
+        seen = service.seen[0]
+        assert seen["start_attempt"] == 2
+        assert seen["last_sql"] == "SELECT broken_column FROM orders"
+        assert seen["last_error"] == "колонка broken_column не существует"
+
+    def test_retry_counter_of_other_node_does_not_seed(self) -> None:
+        # Счётчик валиден только для активного ретрая (routing.attempts_used):
+        # чужой retry_target — попытка 1, без контекста ретрая
+        service = self._service_result(GenerateSqlOutcome.SQL, sql="SELECT 1")
+        make_generate_sql_node(service)(
+            {
+                "question": QUESTION,
+                "user_id": "u_analyst",
+                "skeleton": build_skeleton(_plan()).model_dump(),
+                "retry_count": 2,
+                "route_flags": {RETRY_TARGET_FLAG: "plan_joins"},
+            }
+        )
+        assert service.seen[0]["start_attempt"] == 1
 
     def test_guards_without_service_call(self) -> None:
         service = self._service_result(GenerateSqlOutcome.SQL, sql="SELECT 1")
@@ -736,6 +1006,25 @@ class TestRoutingS10:
     def test_build_skeleton_defect_routes_to_degrade_node(self) -> None:
         outcome = self._route("build_skeleton", {"route_flags": {"generate_sql_failed": True}})
         assert outcome == "degrade"
+
+    def test_flag_constants_match_routing(self) -> None:
+        # I5 (ревью S10): имена флагов дублируются application↔orchestration
+        # (application не импортирует orchestration) — parity-гвард, иначе
+        # расхождение строк молча ломает рёбра отказа
+        from text_to_sql_agent.orchestration import routing
+
+        assert GENERATE_SQL_FAILED_FLAG == routing.FLAG_GENERATE_SQL_FAILED
+        assert PLAN_JOINS_NO_PATH_FLAG == routing.FLAG_PLAN_JOINS_NO_PATH
+        assert PLAN_JOINS_CLARIFY_FLAG == routing.FLAG_PLAN_JOINS_CLARIFY
+        assert PLAN_JOINS_EXHAUSTED_FLAG == routing.FLAG_PLAN_JOINS_EXHAUSTED
+        assert RETRY_TARGET_FLAG == routing.FLAG_RETRY_TARGET
+
+    def test_max_retries_parity_routing_and_policy(self) -> None:
+        # I4 (ревью S10): fuse FSM и внутренние ретраи сервисов — одна константа
+        from text_to_sql_agent.application.services.m1_policy import MAX_ATTEMPTS
+        from text_to_sql_agent.orchestration.routing import MAX_NODE_RETRIES
+
+        assert MAX_NODE_RETRIES == MAX_ATTEMPTS
 
     def test_flags_not_in_transition_set(self) -> None:
         # Решенческие флаги не гасятся биндером — узел перерешает сам

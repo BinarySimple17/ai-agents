@@ -32,8 +32,12 @@ from text_to_sql_agent.domain.entities import RunContext, Trace
 from text_to_sql_agent.domain.skeleton import Skeleton
 
 # application не импортирует orchestration — имя флага дублируется из
-# routing.FLAG_GENERATE_SQL_FAILED; совпадение строк гвардит тест (прецедент S08)
+# routing.FLAG_*; совпадение строк гвардит тест (прецедент S05/S08)
 GENERATE_SQL_FAILED_FLAG = "generate_sql_failed"
+# Гейт ретрая пишет имя ретрауемого узла в route_flags (S00 стык 2 — контракт
+# стыка, не orchestration-константа): чтение из state, дублирование имени —
+# гвардится parity-тестом
+RETRY_TARGET_FLAG = "retry_target"
 
 # Фиксированные сообщения отказов (S9-политика: без деталей инфраструктуры)
 _GENERATE_UNAVAILABLE_MESSAGE = (
@@ -73,8 +77,10 @@ def make_generate_sql_node(
             return _fail(flags, "skeleton_missing", _EMPTY_SKELETON_MESSAGE)
         try:
             skeleton = Skeleton.model_validate(raw_skeleton)
-        except ValidationError as exc:
-            return _fail(flags, "skeleton_invalid", _EMPTY_SKELETON_MESSAGE, detail=str(exc))
+        except ValidationError:
+            # Деталь ValidationError — в трейс не идёт (defect-ветка, класс ошибки
+            # достаточен для триажа); контракт state.error — {class, message}
+            return _fail(flags, "skeleton_invalid", _EMPTY_SKELETON_MESSAGE)
 
         ctx = RunContext(
             # trace_id ставит раннер (uuid прогона, корреляция ADR-010); fallback —
@@ -82,12 +88,25 @@ def make_generate_sql_node(
             trace_id=state.get("trace_id") or uuid4().hex,
             user_id=user_id,
         )
+        # FSM-ретрай (ревью S10 I3): контекст последней попытки — из state
+        # (S00 стык 2: счётчик/цель ретрая пишет код-гейт retry_generate_sql —
+        # S14 активирует рёбра diagnose_error → generate_sql; попытка 1 —
+        # состояние «вне ретрая»). Сервис нумерует попытки непрерывно:
+        # визит FSM-ретрая стартует с попытки 2 (та же роль + ошибка) или 3
+        # (эскалация) — суммарно ≤ 3 на узел, не 3×3.
+        flags_map = flags
+        retry_target = flags_map.get(RETRY_TARGET_FLAG)
+        retry_count = state.get("retry_count") or 0
+        start_attempt = retry_count + 1 if retry_target == "generate_sql" else 1
         result = service.generate(
             skeleton=skeleton,
             question=question,
             ctx=ctx,
             assumptions=state.get("assumptions") or [],
             permissions=state.get("permissions") or {},
+            last_sql=state.get("sql"),
+            last_error=(state.get("error") or {}).get("message"),
+            start_attempt=start_attempt,
         )
         if tracer is not None:
             tracer.record(
@@ -113,7 +132,8 @@ def make_generate_sql_node(
                 "budget_used": budget,
             }
         # FAIL: исчерпание M1 / шлюз / retrieval — отказ генератора → degrade;
-        # деталь сбоя — оператору в трейс (S9), пользователю — фиксированный текст
+        # деталь сбоя — оператору в трейс (S9), пользователю — шаблон отказа
+        # сервиса (код-текст «переформулируйте…» — FR-10, не инфраструктура)
         if tracer is not None and result.error:
             tracer.record(
                 Trace(
@@ -121,7 +141,8 @@ def make_generate_sql_node(
                     payload={"user_id": user_id, "detail": result.error},
                 )
             )
-        return _fail(flags, "generate_sql_unavailable", _GENERATE_UNAVAILABLE_MESSAGE, budget)
+        message = result.clarifying_question or _GENERATE_UNAVAILABLE_MESSAGE
+        return _fail(flags, "generate_sql_unavailable", message, budget)
 
     return node
 
@@ -131,7 +152,6 @@ def _fail(
     error_class: str,
     message: str,
     budget: dict[str, Any] | None = None,
-    detail: str | None = None,
 ) -> dict[str, Any]:
     """Отказ генератора: FLAG_GENERATE_SQL_FAILED → degrade (ruling R2 ARCH-GATE)."""
     update: dict[str, Any] = {
@@ -139,8 +159,6 @@ def _fail(
         "route_flags": {**flags, GENERATE_SQL_FAILED_FLAG: True},
         "error": {"class": error_class, "message": message},
     }
-    if detail is not None:
-        update["error"]["detail"] = detail  # операторская деталь (пользователь видит message)
     if budget is not None:
         update["budget_used"] = budget
     return update
