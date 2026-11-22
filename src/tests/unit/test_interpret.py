@@ -192,6 +192,15 @@ def _tool_answer(text: str, *, finish_reason: str | None = "stop") -> LLMRespons
     )
 
 
+def _tool_refusal(text: str) -> LLMResponse:
+    return LLMResponse(
+        tool_calls=[ToolCall(id="1", name=_REFUSAL_TOOL, arguments=json.dumps({"text": text}))],
+        usage=Usage(tokens_in=80, tokens_out=40),
+        model="deepseek-v4.1-flash",
+        finish_reason="stop",
+    )
+
+
 def _compact_dict() -> dict:
     return compact_rows(
         [{"amount": 10}, {"amount": 20}], truncated=False, approximate=False
@@ -423,3 +432,306 @@ class TestInterpretNode:
         assert "СЕКРЕТНЫЙ-ТЕКСТ" not in json.dumps(verdict.payload, ensure_ascii=False)
         assert verdict.payload["row_count"] == 2
         assert verdict.payload["cost_rub"] == 0.42
+
+
+# --- Task 3: degrade — отказ бизнес-понятиями (mid, санитайзер R1, вердикт R8) ---
+
+from text_to_sql_agent.application.ports.tracer import (  # noqa: E402
+    EVENT_DEGRADE_UNAVAILABLE,
+    EVENT_DEGRADE_VERDICT,
+)
+from text_to_sql_agent.application.services.degrade_node import (  # noqa: E402
+    make_degrade_node,
+)
+from text_to_sql_agent.application.services.degrade_service import (  # noqa: E402
+    DegradeService,
+)
+from text_to_sql_agent.domain.degradation import (  # noqa: E402
+    DegradationCase,
+    DegradationCause,
+    fallback_text,
+)
+
+_REFUSAL_TOOL = "report_refusal"
+
+
+def _rights_case() -> DegradationCase:
+    return DegradationCase(
+        cause=DegradationCause.RIGHTS,
+        situation="вопрос затрагивает данные, недоступные вашей роли",
+        available_topics=("orders", "customers"),
+        forbidden_topics=("bonuses", "salaries"),
+    )
+
+
+class TestDegradationCase:
+    """Домен отказа: типизированный вердикт-причина (R8) + код-шаблоны (R1)."""
+
+    def test_fallback_rights_lists_available_only(self) -> None:
+        text = fallback_text(_rights_case())
+        assert "orders" in text and "customers" in text
+        assert "bonuses" not in text and "salaries" not in text
+
+    def test_fallback_no_existence_markers(self) -> None:
+        # S9: шаблон не подтверждает существование недоступных данных
+        text = fallback_text(_rights_case()).lower()
+        for marker in ("существ", "есть строки", "есть данные", "содержит строки"):
+            assert marker not in text
+
+    def test_fallback_no_path_mentions_reformulation(self) -> None:
+        case = DegradationCase(
+            cause=DegradationCause.NO_PATH,
+            situation="данные вопроса не связаны в базе",
+            available_topics=("orders",),
+            forbidden_topics=(),
+        )
+        assert "order" in fallback_text(case)
+
+    def test_fallback_technical_without_details(self) -> None:
+        # S9: детали инфраструктуры — не пользователю (Ловушка 4)
+        case = DegradationCase(
+            cause=DegradationCause.TECHNICAL,
+            situation="запрос не подготовлен",
+            available_topics=(),
+            forbidden_topics=(),
+        )
+        text = fallback_text(case)
+        assert "технич" in text  # честная категория, без деталей (S9)
+        assert "база данных" not in text.lower()
+
+
+class TestDegradeSanitizer:
+    """Санитайзер — runtime-гарантия S9 (ruling R1): LLM-текст не доверенный."""
+
+    def _sanitize(self, text: str, case: DegradationCase | None = None):
+        from text_to_sql_agent.application.services.degrade_service import sanitize_refusal
+
+        return sanitize_refusal(text, case or _rights_case())
+
+    def test_forbidden_table_name_rejected(self) -> None:
+        violation = self._sanitize("Таблица bonuses вам недоступна.")
+        assert violation is not None and "bonuses" in violation
+
+    def test_forbidden_name_case_insensitive(self) -> None:
+        assert self._sanitize("Данные BONUSES скрыты.") is not None
+
+    def test_existence_confirmation_rejected(self) -> None:
+        for text in (
+            "В bonuses существуют записи, но они скрыты.",
+            "В базе есть строки с премиями.",
+            "Таблица содержит данные, недоступные вам.",
+            "Премии присутствуют в системе.",
+        ):
+            assert self._sanitize(text) is not None, text
+
+    def test_clean_refusal_passes(self) -> None:
+        assert (
+            self._sanitize("Часть данных по этому вопросу недоступна. Могу показать заказы.")
+            is None
+        )
+
+    def test_own_topics_allowed(self) -> None:
+        # «своё упоминать можно» (ADR-005:78): доступные темы — не нарушение
+        assert self._sanitize("Доступны заказы (orders) и клиенты (customers).") is None
+
+
+class TestDegradeService:
+    """Формулировка отказа: mid, одна попытка без эскалации/ретрая (R1)."""
+
+    def _service(self, script: list[LLMResponse | Exception]) -> tuple[DegradeService, ScriptedLLM]:
+        llm = ScriptedLLM(script)
+        return DegradeService(llm=llm), llm
+
+    def _formulate(self, service: DegradeService):
+        return service.formulate(case=_rights_case())
+
+    def test_refusal_via_tool(self) -> None:
+        service, _ = self._service([_tool_refusal("Часть данных недоступна.")])
+        result = self._formulate(service)
+        assert result.text == "Часть данных недоступна."
+        assert result.used_llm is True
+        assert result.llm_calls == 1
+        assert result.error is None
+
+    def test_role_is_mid_single_attempt(self) -> None:
+        service, llm = self._service([LLMResponse(text="не тул", model="m")])
+        result = self._formulate(service)
+        assert result.used_llm is True
+        assert [role for role, _, _ in llm.calls] == ["mid"]  # одна попытка, без ретрая
+
+    def test_parse_failure_falls_back_to_template(self) -> None:
+        service, _ = self._service([LLMResponse(text="не тул", model="m")])
+        result = self._formulate(service)
+        assert result.text == fallback_text(_rights_case())
+        assert result.error is not None
+
+    def test_sanitizer_violation_falls_back_to_template(self) -> None:
+        # модель назвала чужую таблицу — шаблон, не текст модели (runtime-гарантия)
+        service, _ = self._service([_tool_refusal("Таблица bonuses скрыта от вас.")])
+        result = self._formulate(service)
+        assert result.text == fallback_text(_rights_case())
+        assert "bonuses" in (result.error or "")
+
+    def test_llm_unavailable_falls_back_to_template(self) -> None:
+        # NFR-8: недоступность шлюза — деградация шаблоном (0 вызовов)
+        service, _ = self._service([LLMProviderError("breaker открыт")])
+        result = self._formulate(service)
+        assert result.text == fallback_text(_rights_case())
+        assert result.used_llm is False
+        assert result.llm_calls == 0
+
+    def test_budget_exceeded_falls_back_to_template(self) -> None:
+        service, _ = self._service([BudgetExceededError("кап")])
+        result = self._formulate(service)
+        assert result.text == fallback_text(_rights_case())
+
+    def test_prompt_has_no_forbidden_topics(self) -> None:
+        # R8: сырые «чужие» имена в промпт не идут — модель не может их «спросить»
+        service, llm = self._service([_tool_answer("ок")])
+        self._formulate(service)
+        prompt = json.dumps(llm.calls[0][1], ensure_ascii=False)
+        assert "bonuses" not in prompt and "salaries" not in prompt
+        assert "orders" in prompt  # доступные темы — можно
+
+
+class TestDegradeNode:
+    """Узел degrade: вердикт-причина из кодовых каналов state (R8) + final_answer."""
+
+    def _state(self, **extra) -> dict:
+        state = {
+            "question": "Покажи премии Анны",
+            "permissions": {"orders": ["*"], "customers": ["*"]},
+            "join_plan": {"tables": ["orders", "bonuses"], "assumptions": []},
+            "validation": {"outcome": "ok", "issues": []},
+            "route_flags": {},
+            "budget_used": {"llm_calls": 3, "rub": 0.5},
+            "truncated": False,
+            "approximate": False,
+            "incomplete": False,
+            "user_id": "anna",
+        }
+        state.update(extra)
+        return state
+
+    def _service(self, text: str = "Часть данных недоступна."):
+        return _ScriptedDegradeService(text)
+
+    def test_rights_cause_from_validation_denied(self) -> None:
+        service = self._service()
+        node = make_degrade_node(service, budget_guard=_StaticGuard())
+        updated = node(self._state(validation={"outcome": "denied", "issues": []}))
+        case = service.kwargs["case"]
+        assert case.cause is DegradationCause.RIGHTS
+        assert set(case.available_topics) == {"orders", "customers"}
+        assert case.forbidden_topics == ("bonuses",)  # план − права
+        answer = updated[FINAL_ANSWER_KEY]
+        assert answer["cause"] == "rights"
+        assert answer["sql"] is None  # SQL недоступной выборки не показывается (S9)
+
+    def test_no_path_cause_priority_over_generator_flag(self) -> None:
+        # порядок причин: дефект → права → нет пути → генератор → техника
+        service = self._service()
+        node = make_degrade_node(service)
+        node(self._state(route_flags={"plan_joins_no_path": True, "generate_sql_failed": True}))
+        assert service.kwargs["case"].cause is DegradationCause.NO_PATH
+
+    def test_execute_defect_is_top_priority(self) -> None:
+        service = self._service()
+        node = make_degrade_node(service)
+        node(self._state(route_flags={"execute_defect": True, "plan_joins_no_path": True}))
+        assert service.kwargs["case"].cause is DegradationCause.TECHNICAL
+
+    def test_generator_cause_from_flag(self) -> None:
+        service = self._service()
+        node = make_degrade_node(service)
+        node(self._state(route_flags={"generate_sql_failed": True}))
+        assert service.kwargs["case"].cause is DegradationCause.GENERATOR
+
+    def test_default_cause_is_technical(self) -> None:
+        service = self._service()
+        node = make_degrade_node(service)
+        node(self._state())  # futile-разбор diagnose без флагов — техника
+        assert service.kwargs["case"].cause is DegradationCause.TECHNICAL
+
+    def test_writes_final_answer_and_budget(self) -> None:
+        service = self._service()
+        node = make_degrade_node(service, budget_guard=_StaticGuard())
+        updated = node(self._state(validation={"outcome": "denied", "issues": []}))
+        answer = updated[FINAL_ANSWER_KEY]
+        assert answer["text"] == "Часть данных недоступна."
+        assert answer["cause"] == "rights"
+        assert answer["cost_rub"] == 0.42
+        assert updated["budget_used"]["llm_calls"] == 4  # 3 + 1 вызов формулировки
+        assert updated["budget_used"]["rub"] == 0.42
+
+    def test_events(self) -> None:
+        tracer = RecordingTracer()
+        node = make_degrade_node(self._service(), tracer=tracer)
+        node(self._state(validation={"outcome": "denied", "issues": []}))
+        verdict = next(t for t in tracer.events if t.event == EVENT_DEGRADE_VERDICT)
+        assert verdict.payload["cause"] == "rights"
+        assert verdict.payload["has_variant"] is True
+
+    def test_llm_unavailable_still_answers_by_template(self) -> None:
+        # NFR-8: degrade не падает — шаблон без LLM, событие unavailable
+        class _BrokenService:
+            def formulate(self, *, case):
+                from text_to_sql_agent.application.services.degrade_service import DegradeResult
+
+                return DegradeResult(
+                    text=fallback_text(case), used_llm=False, llm_calls=0, error="breaker"
+                )
+
+        tracer = RecordingTracer()
+        node = make_degrade_node(_BrokenService(), tracer=tracer)
+        updated = node(self._state(validation={"outcome": "denied", "issues": []}))
+        assert FINAL_ANSWER_KEY in updated
+        assert EVENT_DEGRADE_UNAVAILABLE in tracer.names()
+
+
+class _ScriptedDegradeService:
+    """Двойник DegradeService: фиксированный текст + запись kwargs узла."""
+
+    def __init__(self, text: str) -> None:
+        self.text = text
+        self.kwargs: dict | None = None
+
+    def formulate(self, *, case):
+        from text_to_sql_agent.application.services.degrade_service import DegradeResult
+
+        self.kwargs = {"case": case}
+        return DegradeResult(text=self.text, used_llm=True, llm_calls=1, error=None)
+
+
+# --- R3: incomplete при budget_stop (терминальная карта + exception-fallback) ---
+
+
+class TestBudgetStopIncomplete:
+    def test_terminal_budget_stop_carries_incomplete(self) -> None:
+        from text_to_sql_agent.orchestration.graph import make_terminal
+
+        updated = make_terminal("budget_stop")({"compact": {"row_count": 5}})
+        assert updated["outcome"] == "budget_stop"
+        assert updated["incomplete"] is True  # частичное не выдаётся за полное
+
+    def test_other_terminals_do_not_set_incomplete(self) -> None:
+        from text_to_sql_agent.orchestration.graph import make_terminal
+
+        updated = make_terminal("done")({})
+        assert "incomplete" not in updated
+
+    def test_answer_question_budget_fallback_sets_incomplete(self) -> None:
+        # exception-fallback (BudgetExceededError мимо графа) — тот же флаг (R3)
+        from text_to_sql_agent.application.use_cases.answer_question import AnswerQuestion
+
+        class _Runner:
+            def run(self, state, *, thread_id=None):
+                raise BudgetExceededError("кап исчерпан")
+
+        class _LLM:
+            def reset_request_budget(self):
+                return None
+
+        result = AnswerQuestion(runner=_Runner(), llm=_LLM()).run("вопрос", user_id="u1")
+        assert result.outcome == "budget_stop"
+        assert result.state["incomplete"] is True

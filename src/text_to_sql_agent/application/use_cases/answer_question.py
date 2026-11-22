@@ -121,10 +121,14 @@ class AnswerQuestion:
         try:
             final = call()
         except BudgetExceededError as exc:
-            # Кап бюджета сработал до вызова шлюза (S03-адаптер) — budget_stop
-            return _with_error(
+            # Кап бюджета сработал до вызова шлюза (S03-адаптер) — budget_stop;
+            # incomplete — как на графе (TERMINAL_PAYLOADS, ruling R3 S15):
+            # exception-fallback не должен обходить флаг честности
+            result = _with_error(
                 "budget_stop", fallback_state, BUDGET_STOP_MESSAGE_TEMPLATE, exc, thread_id
             )
+            result.state["incomplete"] = True
+            return result
         except LLMProviderError as exc:
             # Недоступность шлюза (ретраи/breaker/таймаут) — деградация-исход
             return _with_error("degrade", fallback_state, DEGRADE_MESSAGE_TEMPLATE, exc, thread_id)
