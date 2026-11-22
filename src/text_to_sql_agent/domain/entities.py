@@ -135,8 +135,14 @@ class AgentState(TypedDict, total=False):
     join_plan         plan_joins
     skeleton          build_skeleton
     skeleton_hash     build_skeleton
-    sql               generate_sql / generate_step_sql
-    validation        validate_sql
+    sql               generate_sql / generate_step_sql; validate_sql перезаписывает
+                      исполненным текстом (внешний LIMIT добавлен/скламплен —
+                      ruling R1 S11, звёзды развёрнуты в разрешённые колонки —
+                      ruling R2 S11; исходный текст модели к исполнителю не идёт)
+    validation        validate_sql: {outcome: ok|hallucination|denied (ADR-005 §4),
+                      issues (внутренний контекст ретрая M1/diagnose_error — S14;
+                      пользовательский текст формулирует degrade бизнес-понятиями,
+                      БЕЗ имён таблиц — S9), enforced_limit}
     rows/row_count    execute_sql / merge_results (слияние шагов)
     compact           compact_result
     error             diagnose_error / узлы, поймавшие сбой; кодовое поле — читается

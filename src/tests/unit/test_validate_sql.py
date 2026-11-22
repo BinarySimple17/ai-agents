@@ -17,14 +17,18 @@
 Сервис детерминирован (без LLM/IO) — моков не требует (S00 правило 7).
 """
 
+from collections.abc import Iterator
 from typing import Any
 
 import pytest
+import sqlglot
+from sqlglot import exp
 
 from text_to_sql_agent.application.ports.sql_executor import ROW_LIMIT
 from text_to_sql_agent.application.services.validate_sql_service import (
     ValidateSqlResult,
     ValidateSqlService,
+    build_sql_audit,
 )
 from text_to_sql_agent.domain.join_plan import JoinPlan, JoinPlanEdge
 from text_to_sql_agent.domain.skeleton import Skeleton, build_skeleton
@@ -600,5 +604,212 @@ class TestSkeletonIntegrity:
         assert result.verdict.outcome is ValidationOutcome.OK
 
 
-# --- Task 4: wiring FSM — вердикты → route_flags/state.validation/трейс ---
-# (галерея §4 п.8 + property-сверка + узел — ниже)
+# --- Task 4: adversarial-галерея ADR-005 §4 п.8 + property-сверка (ruling R3) ---
+
+
+class TestAdversarialGallery:
+    """Корпус §4 п.8 — покрытие ≥ поверхности парсера (условие приёмки PR).
+
+    Каждая сцена не исполняется; исход классифицируется КОДОМ (denied — degrade
+    без retry, hallucination — retry оправдан), не текстом ошибки. Инъекции
+    2-го порядка (S6): строковые литералы остаются литералами (sqlglot не
+    парсит их содержимое), комментарии не обходят проверки (AST их не несёт).
+    """
+
+    @pytest.mark.parametrize(
+        ("sql", "expected"),
+        [
+            # UNION с чужой таблицей — denied доминирует над структурой
+            (
+                "SELECT o.id FROM orders o UNION ALL SELECT b.id FROM bonuses b LIMIT 10",
+                ValidationOutcome.DENIED,
+            ),
+            # каталоги и служебные схемы (§4 п.8 «каталоги»)
+            ("SELECT usename FROM pg_catalog.pg_roles LIMIT 10", ValidationOutcome.DENIED),
+            ("SELECT table_name FROM information_schema.tables LIMIT 10", ValidationOutcome.DENIED),
+            ("SELECT role FROM agent_permissions LIMIT 10", ValidationOutcome.DENIED),
+            # window OVER(PARTITION BY ...) — тело проверено, корень цел
+            (
+                "SELECT c.region, sum(o.total) OVER (PARTITION BY c.region) FROM orders o "
+                "INNER JOIN customers c ON o.customer_id = c.id LIMIT 10",
+                ValidationOutcome.OK,
+            ),
+            # подзапросы (EXISTS с корреляцией через скоуп-цепочку)
+            (
+                "SELECT o.id FROM orders o INNER JOIN customers c ON o.customer_id = c.id "
+                "WHERE EXISTS (SELECT 1 FROM customers c2 WHERE c2.region = c.region) LIMIT 10",
+                ValidationOutcome.OK,
+            ),
+            # LATERAL — вложенный (корневой LATERAL-джойн = изменённый скелет)
+            (
+                "SELECT o.id FROM orders o INNER JOIN customers c ON o.customer_id = c.id "
+                "WHERE EXISTS (SELECT l.x FROM orders o2, LATERAL (SELECT o2.customer_id AS x) l "
+                "WHERE l.x = c.id) LIMIT 10",
+                ValidationOutcome.OK,
+            ),
+            # DISTINCT ON
+            (
+                "SELECT DISTINCT ON (c.region) c.region, c.name FROM orders o "
+                "INNER JOIN customers c ON o.customer_id = c.id LIMIT 10",
+                ValidationOutcome.OK,
+            ),
+            # GROUPING SETS
+            (
+                "SELECT c.region, count(*) FROM orders o "
+                "INNER JOIN customers c ON o.customer_id = c.id "
+                "GROUP BY GROUPING SETS ((c.region), ()) LIMIT 10",
+                ValidationOutcome.OK,
+            ),
+            # t.* — разворот в разрешённые колонки (ruling R2), не отказ
+            (
+                "SELECT c.* FROM orders o INNER JOIN customers c ON o.customer_id = c.id LIMIT 10",
+                ValidationOutcome.OK,
+            ),
+            # инъекция через ЗАКРЫТУЮ строку: вторая инструкция — форм-отказ
+            # (одна инструкция; содержимое литерала — данные, закрытая строка +
+            # «; DROP TABLE» снаружи — уже вторая инструкция)
+            (
+                "SELECT o.id FROM orders o INNER JOIN customers c ON o.customer_id = c.id "
+                "WHERE o.status = 'x'; DROP TABLE orders; --'",
+                ValidationOutcome.HALLUCINATION,
+            ),
+            # комментарий не прячет структуру/предикат (AST прозрачен)
+            (
+                "SELECT o.id FROM orders o /* добраться мимо */ "
+                "INNER JOIN customers c ON o.customer_id = c.id",
+                ValidationOutcome.OK,
+            ),
+            # UNION-корень легален парсеру, но это изменённый скелет
+            (
+                "SELECT o.id FROM orders o UNION ALL SELECT c.id FROM customers c LIMIT 10",
+                ValidationOutcome.HALLUCINATION,
+            ),
+        ],
+    )
+    def test_gallery_scene_classified_by_code(self, sql: str, expected: ValidationOutcome):
+        result = _validate(sql)
+        assert result.verdict.outcome is expected
+
+    def test_string_literal_is_not_parsed_as_sql(self):
+        # S6: содержимое литерала не порождает узлов AST — «DROP TABLE» внутри
+        # кавычек не виден валидатору как инструкция (проверка: запрос проходит
+        # форму, литерал — данные, не инструкции)
+        result = _validate(
+            "SELECT o.id FROM orders o INNER JOIN customers c ON o.customer_id = c.id "
+            "WHERE o.status = 'x; DROP TABLE orders; --'"
+        )
+        assert result.verdict.outcome is ValidationOutcome.OK
+        assert "DROP" not in result.sql.replace("'x; DROP TABLE orders; --'", "")
+
+
+class TestPropertyOracleColumns:
+    """Ruling R3 ARCH-GATE (ADR-005 §4 п.9): для корпуса множество колонок,
+    извлечённое валидатором, обязано равняться множеству из независимого обхода
+    sqlglot; расхождение = дыра в whitelist'е узлов — тест красный до продакшена.
+
+    Оракул — ВСТРОЕННЫЙ walk (не общий с валидатором код): для каждой exp.Column
+    кандидаты = источники ближайшего объемлющего SELECT; квалификатор резолвится
+    подъёмом по объемлющим скоупам. Корпус — галерея §4 п.8 (валидные парсеру)
+    + канонические комбинации; корень без CTE (CTE-граница корреляции покрыта
+    отдельными тестами Task 1/3).
+    """
+
+    @staticmethod
+    def _oracle_columns(sql: str) -> set[tuple[str, tuple[str, ...]]]:
+        tree = sqlglot.parse_one(sql, read="postgres")
+        result: set[tuple[str, tuple[str, ...]]] = set()
+        for column in tree.find_all(exp.Column):
+            if isinstance(column.this, exp.Star):
+                continue  # t.* — проекция звёздами, не колонка
+            # ближайший объемлющий SELECT (колонка не в собственном подзапросе)
+            node = column.parent
+            scope = None
+            while node is not None:
+                if type(node) is exp.Select:
+                    scope = node
+                    break
+                node = node.parent
+            if scope is None:
+                continue
+
+            def sources_of(select: exp.Select) -> list[tuple[str, str]]:
+                sources: list[tuple[str, str]] = []
+                from_clause = select.args.get("from_")
+                if from_clause is not None:
+                    t = from_clause.this
+                    sources.append(((t.alias or t.name).lower(), t.name.lower()))
+                for join in select.args.get("joins") or []:
+                    t = join.this
+                    if isinstance(t, (exp.Subquery, exp.Lateral)):
+                        sources.append(((t.alias or "").lower(), (t.alias or "").lower()))
+                    else:
+                        sources.append(((t.alias or t.name).lower(), t.name.lower()))
+                return sources
+
+            qualifier = (column.table or "").lower()
+            if qualifier:
+                # подъём по объемлющим скоупам до скоупа, содержащего квалификатор
+                candidate = None
+                for select in _enclosing_selects(column):
+                    for ref, name in sources_of(select):
+                        if ref == qualifier:
+                            candidate = name
+                            break
+                    if candidate is not None:
+                        break
+                if candidate is None:
+                    continue  # битый квалификатор — форм-отказ, оракул его не судит
+                result.add((column.name.lower(), (candidate,)))
+            else:
+                names = tuple(name for _, name in sources_of(scope))
+                if names:
+                    result.add((column.name.lower(), names))
+        return result
+
+    @pytest.mark.parametrize(
+        "sql",
+        [
+            "SELECT o.id FROM orders o INNER JOIN customers c ON o.customer_id = c.id",
+            "SELECT o.id, c.name, c.region FROM orders o INNER JOIN customers c "
+            "ON o.customer_id = c.id WHERE o.status = 'active' AND o.total > 100 LIMIT 10",
+            "SELECT c.region, sum(o.total) OVER (PARTITION BY c.region) FROM orders o "
+            "INNER JOIN customers c ON o.customer_id = c.id LIMIT 10",
+            "SELECT DISTINCT ON (c.region) c.region, c.name FROM orders o "
+            "INNER JOIN customers c ON o.customer_id = c.id LIMIT 10",
+            "SELECT c.region, count(*) FROM orders o INNER JOIN customers c "
+            "ON o.customer_id = c.id GROUP BY GROUPING SETS ((c.region), ()) LIMIT 10",
+            "SELECT o.id FROM orders o INNER JOIN customers c ON o.customer_id = c.id "
+            "WHERE EXISTS (SELECT 1 FROM customers c2 WHERE c2.region = c.region) LIMIT 10",
+            "SELECT o.id FROM orders o INNER JOIN customers c ON o.customer_id = c.id "
+            "WHERE EXISTS (SELECT l.x FROM orders o2, LATERAL (SELECT o2.customer_id AS x) l "
+            "WHERE l.x = c.id) LIMIT 10",
+            "SELECT o.* FROM orders o INNER JOIN customers c ON o.customer_id = c.id LIMIT 10",
+            "SELECT o.total::text, extract(year FROM o.created_at) FROM orders o "
+            "INNER JOIN customers c ON o.customer_id = c.id LIMIT 10",
+            "SELECT o.id FROM orders o INNER JOIN customers c ON o.customer_id = c.id "
+            "WHERE o.total BETWEEN 10 AND 100 AND o.status LIKE 'act%' LIMIT 10",
+            "SELECT o.id FROM orders o INNER JOIN customers c ON o.customer_id = c.id "
+            "WHERE o.customer_id IN (SELECT c2.id FROM customers c2 WHERE c2.region = 'RU') "
+            "LIMIT 10",
+            "SELECT CASE WHEN o.total > 100 THEN 'big' ELSE 'small' END FROM orders o "
+            "INNER JOIN customers c ON o.customer_id = c.id LIMIT 10",
+            "SELECT o.id FROM orders o INNER JOIN customers c ON o.customer_id = c.id "
+            "WHERE coalesce(o.status, 'none') = lower(c.name) GROUP BY c.name "
+            "ORDER BY c.name LIMIT 10",
+            "SELECT o.id FROM orders o INNER JOIN (SELECT id, region FROM customers) cs "
+            "ON o.customer_id = cs.id LIMIT 10",
+        ],
+    )
+    def test_validator_columns_equal_oracle(self, sql: str):
+        audit = build_sql_audit(sql)
+        validator_set = {(c.name, tuple(s.name for s in c.candidates)) for c in audit.columns}
+        assert validator_set == self._oracle_columns(sql), sql
+
+
+def _enclosing_selects(node: exp.Expression) -> Iterator[exp.Select]:
+    """Объемлющие SELECT'ы от ближайшего к корню (для подъёма квалификатора)."""
+    current = node.parent
+    while current is not None:
+        if type(current) is exp.Select:
+            yield current
+        current = current.parent

@@ -50,6 +50,12 @@ EVENT_SKELETON_UNAVAILABLE = "skeleton.unavailable"
 # payload факты (outcome/llm_calls/escalated/tables), БЕЗ SQL-текста (D-022-аналог)
 EVENT_GENERATE_SQL_VERDICT = "generate_sql.verdict"
 EVENT_GENERATE_SQL_UNAVAILABLE = "generate_sql.unavailable"
+# FSM validate_sql (S11): вердикт рубежа безопасности (ok/hallucination/denied —
+# ADR-005 §4) + сбой (дефект каркаса/недоступный каталог — fail-closed в degrade,
+# деталь оператору); payload факты (outcome/issue-счёт/enforced_limit), БЕЗ
+# SQL-текста (D-022-аналог)
+EVENT_VALIDATE_SQL_VERDICT = "validate_sql.verdict"
+EVENT_VALIDATE_SQL_UNAVAILABLE = "validate_sql.unavailable"
 
 # BL-004 (требование владельца): результат тулa показывается строками данных,
 # хоть обрезанными; единый контракт эмиссии (apps.cli) и рендера (ConsoleTracer)

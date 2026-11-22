@@ -101,7 +101,8 @@ def test_build_container_respects_rrf_alpha_dense(tmp_path) -> None:
 
 
 class _FakePermissionStore:
-    """Минимальный PermissionStore для юнит-wiring FSM: known user с одной таблицей."""
+    """Минимальный PermissionStore для юнит-wiring FSM: known user с правами
+    на две таблицы скриптового плана (S11: валидатор сверяет ACL + каталог мира)."""
 
     def __init__(self, *, known: bool = True) -> None:
         self._known = known
@@ -114,9 +115,12 @@ class _FakePermissionStore:
             user_id=user_id,
             user_known=self._known,
             roles=("analyst",) if self._known else (),
-            tables={"orders": ("*",)} if self._known else {},
+            tables={"orders": ("*",), "order_items": ("*",)} if self._known else {},
             versions={"permissions": 1, "user_roles": 1},
         )
+
+    def data_catalog(self) -> frozenset[str]:
+        return frozenset({"orders", "order_items", "customers", "campaigns", "products"})
 
 
 def test_fsm_runner_wired_from_settings(tmp_path) -> None:
@@ -178,9 +182,15 @@ def test_fsm_runner_honors_caps_and_completes(tmp_path) -> None:
             )
 
     class _ScriptedGenerateSql:
+        # S11: SQL скрипта соответствует скелету плана — валидатор (реальный
+        # узел) сверяет структуру/ACL и пропускает happy path до done
         def generate(self, **kwargs: object) -> GenerateSqlResult:
             return GenerateSqlResult(
-                outcome=GenerateSqlOutcome.SQL, sql="SELECT count(*) FROM orders"
+                outcome=GenerateSqlOutcome.SQL,
+                sql=(
+                    "SELECT count(*) FROM orders o INNER JOIN order_items i "
+                    "ON o.order_id = i.order_id"
+                ),
             )
 
     container = build_container(
@@ -195,10 +205,14 @@ def test_fsm_runner_honors_caps_and_completes(tmp_path) -> None:
     state["budget_used"] = {"llm_calls": container.settings.fsm_max_llm_calls, "rub": 0.0}
     assert container.fsm_runner.run(state)["outcome"] == "budget_stop"
     # Нейтральный прогон — happy path до терминала done; resolve_access отдал
-    # права из стора в state (S00 контракт 3: {tables: {table: [columns]}})
+    # права из стора в state (S00 контракт 3), validate_sql (S11, реальный узел)
+    # пропустил скриптовый SQL (структура = план, таблицы в правах) и положил
+    # вердикт в state.validation; sql перезаписан исполненным текстом (R1: LIMIT)
     result = container.fsm_runner.run(initial_state("Сколько заказов?", user_id="u_analyst"))
     assert result["outcome"] == "done"
-    assert result["permissions"] == {"orders": ["*"]}
+    assert result["permissions"] == {"orders": ["*"], "order_items": ["*"]}
+    assert result["validation"]["outcome"] == "ok"
+    assert "LIMIT" in result["sql"].upper()
 
 
 def test_fsm_rejects_unknown_user_without_llm_calls(tmp_path) -> None:
