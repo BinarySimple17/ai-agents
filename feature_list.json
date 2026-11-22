@@ -127,6 +127,11 @@
           "label": "layer-2-runtime",
           "cmd": "uv run pytest src/tests/integration/test_resolve_access.py -q",
           "repair": "Read failing test; fix RBAC query/mapping and re-run."
+        },
+        {
+          "label": "layer-3-e2e",
+          "cmd": "uv run python -m apps.cli \"Сколько заказов у клиентов из РФ?\" --fsm --token <dev-токен из AGENT_DEV_TOKENS> (маршрут 10 узлов, исход done; без/чужой токен — rejected)",
+          "repair": "Check composition wiring / auth provider, re-run manually."
         }
       ]
     },

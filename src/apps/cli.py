@@ -754,9 +754,11 @@ def _run_fsm(container: Container, question: str, *, token: str) -> int:
         # Сообщение отказа — фиксированный текст узла (S9): деталей настройки
         # (host/роль БД) здесь нет, они — только в операторском трейсе (ревью I1)
         print("Ошибка: " + str(error.get("message")))
-    # Отказ — единообразный non-zero для скриптов (ревью S05 Minor-4), как и
-    # отказ аутентификации выше; содержательный прогон (в т.ч. budget_stop) — 0
-    return 1 if result.outcome == "rejected" else 0
+    # Отказы — единообразный non-zero для скриптов (ревью S05 Minor-4 + re-review
+    # Minor-2): rejected (отказ на входе) и fail (технический сбой прогона —
+    # recursion_limit/missing_outcome); содержательные исходы с ответом
+    # (done/degrade/budget_stop/clarification/…) — 0
+    return 1 if result.outcome in ("rejected", "fail") else 0
 
 
 if __name__ == "__main__":

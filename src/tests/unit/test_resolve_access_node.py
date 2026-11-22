@@ -47,7 +47,7 @@ class _FakeStore:
     ):
         self.rights = rights if rights is not None else {}
         # broken = сбой fetch_rights (settings_versions жив — узел доходит до
-        # чтения прав; rевью I1: деталь psycopg приходит из fetch-пути)
+        # чтения прав; ревью I1: деталь psycopg приходит из fetch-пути)
         self.broken = broken
         self.broken_message = broken_message or "таблицы прав недоступны"
         self.versions = {"permissions": 2, "user_roles": 1}
@@ -128,6 +128,17 @@ class TestResolveAccessServiceCache:
         assert service.resolve("ghost").user_known is False
         assert service.resolve("ghost").user_known is False
         assert store.fetch_calls == 1
+
+    def test_partial_versions_from_store_do_not_freeze_cache(self) -> None:
+        # Re-review Minor-1: store, вернувший пустой/частичный словарь версий,
+        # не морозит кэш — сверка идёт по RIGHTS_VERSION_KEYS (get(key, 0));
+        # до M1-фикса all() по пустому словарю версий давал ложный хит
+        store = _FakeStore(rights={"u_analyst": _RIGHTS})
+        service = ResolveAccessService(store)
+        service.resolve("u_analyst")
+        store.versions = {}  # частичный/пустой ответ store
+        service.resolve("u_analyst")
+        assert store.fetch_calls == 2
 
     def test_rights_unavailable_propagates(self) -> None:
         service = ResolveAccessService(_FakeStore(broken=True))
@@ -215,7 +226,7 @@ class TestRefusalPolicyS9:
     """Политика отказов S9 / ревью S05 Important-1: пользовательский отказ без
     деталей инфраструктуры; техническая деталь — только в операторский трейс."""
 
-    _PSYCOSP_DETAIL = (
+    _PSYCOPG_DETAIL = (
         'connection to server at "127.0.0.1", port 5432 failed: '
         'FATAL: password authentication failed for user "agent_planner"'
     )
@@ -227,7 +238,7 @@ class TestRefusalPolicyS9:
     def test_refusal_message_fixed_without_infra_details(self) -> None:
         # Регрессия: до фикса message содержал str(exc) — host/port/роль БД
         # psycopg утекали в stdout через CLI (S9/Task 4 плана S05)
-        store = _FakeStore(broken=True, broken_message=self._PSYCOSP_DETAIL)
+        store = _FakeStore(broken=True, broken_message=self._PSYCOPG_DETAIL)
         updated = self._node(store)({"user_id": "u_analyst"})
         message = updated["error"]["message"]
         assert "127.0.0.1" not in message
@@ -235,7 +246,7 @@ class TestRefusalPolicyS9:
         assert message == "права недоступны — запрос отклонён (fail-closed)"
 
     def test_infra_detail_goes_to_trace_not_state(self) -> None:
-        store = _FakeStore(broken=True, broken_message=self._PSYCOSP_DETAIL)
+        store = _FakeStore(broken=True, broken_message=self._PSYCOPG_DETAIL)
         tracer = _RecordingTracer()
         self._node(store, tracer)({"user_id": "u_analyst"})
         assert [event.event for event in tracer.records] == ["resolve.rights_unavailable"]

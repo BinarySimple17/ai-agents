@@ -196,6 +196,32 @@ class TestRightsFreshness:
                 cur.execute("DELETE FROM agent_user_roles WHERE user_id = 'integration-ghost'")
             admin_conn.commit()
 
+    def test_non_public_schema_rows_deny_by_default(self, planner_dsn, admin_conn) -> None:
+        # Defense-in-depth M3 (re-review Minor-1): строка прав непубличной схемы
+        # не попадает в карту — мир агента это public (SQL фильтрует schema_name;
+        # удаление фильтра расширило бы чужую таблицу в ключ публичной)
+        store = PgPermissionStore(planner_dsn)
+        service = ResolveAccessService(store)
+        try:
+            with admin_conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO agent_permissions "
+                    "(role, schema_name, table_name, columns, updated_by) "
+                    "VALUES ('logistics_viewer', 'reporting', 'secrets', '*', 'integration') "
+                    "ON CONFLICT (role, schema_name, table_name) DO NOTHING"
+                )
+            admin_conn.commit()
+            rights = service.resolve("u_logist")
+            assert "secrets" not in rights.tables
+        finally:
+            with admin_conn.cursor() as cur:
+                cur.execute(
+                    "DELETE FROM agent_permissions "
+                    "WHERE role = 'logistics_viewer' AND schema_name = 'reporting' "
+                    "AND table_name = 'secrets' AND updated_by = 'integration'"
+                )
+            admin_conn.commit()
+
 
 class TestFSMThroughContainer:
     """Task 4: FSM-путь жив — тест через собранный Container, не напрямую сервис."""

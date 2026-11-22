@@ -39,8 +39,8 @@ class TestNormalizeColumns:
 
     @pytest.mark.parametrize("raw", ["", "   "])
     def test_empty_value_refused(self, raw: str) -> None:
-        # Пустая строка — админ-ошибка данных: отказ, не «колонок нет = deny»?
-        # Нет: пустой CSV не сужает права молча — отказ требует починки данных
+        # Пустой CSV — админ-ошибка данных: отказ, а не «колонок нет = deny» —
+        # отказ честнее: заставляет починить данные, не легализует молчаливый deny
         with pytest.raises(RightsUnavailableError, match="пуст"):
             _normalize_columns(raw, "orders")
 
