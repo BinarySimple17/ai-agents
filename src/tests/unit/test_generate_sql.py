@@ -967,12 +967,18 @@ class TestGenerateSqlNode:
                 "skeleton": build_skeleton(_plan()).model_dump(),
                 "permissions": PERMISSIONS,
                 "budget_used": {"llm_calls": 4},
-                "route_flags": {GENERATE_SQL_FAILED_FLAG: True},  # от дефекта скелета
+                "route_flags": {
+                    GENERATE_SQL_FAILED_FLAG: True,  # от дефекта скелета
+                    GENERATE_SQL_RETRYABLE_FLAG: True,  # stale от ретрай-визита
+                },
                 "trace_id": "t-2",
             }
         )
         assert updated["sql"].startswith("SELECT count(*)")
         assert updated["route_flags"][GENERATE_SQL_FAILED_FLAG] is False
+        # Ревью S14 Minor-2: симметричная очистка — stale RETRYABLE не доживает
+        # до следующего решения ребра (корректность не на fuse-инварианте)
+        assert updated["route_flags"][GENERATE_SQL_RETRYABLE_FLAG] is False
         assert updated["error"] is None
         assert updated["budget_used"]["llm_calls"] == 5  # 4 + 1 (R6)
         verdict = [t for t in tracer.records if t.event == EVENT_GENERATE_SQL_VERDICT]

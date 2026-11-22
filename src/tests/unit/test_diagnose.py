@@ -145,6 +145,24 @@ def test_llm_diagnosis_parses_tool_output() -> None:
     assert "metrics вне каталога мира" in prompt
 
 
+def test_probe_context_flows_into_prompt() -> None:
+    """Факты COUNT-пробы (error["probe"], ревью Important-1) — в контексте разбора."""
+    llm = ScriptedLLM([_tool_response("empty", "проверь условия джойна и фильтры")])
+    service = DiagnoseService(llm=llm)
+    result = service.diagnose(
+        error_class="empty",
+        error_message="по этому вопросу данных не нашлось — проверим условия выборки и повторим",
+        sql="SELECT orders.order_id FROM orders JOIN order_items ON ...",
+        probe_context="проба COUNT по таблицам плана — orders: 400, order_items: 1000",
+    )
+    assert result.verdict is not None
+    assert result.verdict.error_class is DiagnoseClass.EMPTY
+    _, messages = llm.calls[0]
+    prompt = messages[-1]["content"]
+    assert "orders: 400" in prompt  # факты пробы видны диагносту
+    assert "проба COUNT" in prompt
+
+
 def test_retry_futile_is_code_decision_not_model() -> None:
     """Модель не решает security-исход (ADR-005): даже «permissions» от LLM
     не делает флаг — но класс от LLM проверяется кодовой картой."""

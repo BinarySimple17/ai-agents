@@ -143,9 +143,16 @@ def make_generate_sql_node(
         budget["llm_calls"] = (budget.get("llm_calls") or 0) + result.llm_calls
 
         if result.outcome == GenerateSqlOutcome.SQL:
+            # Симметричная очистка (ревью S14 Minor-2): RETRYABLE не остаётся
+            # stale после успеха ретрай-визита — корректность не держится
+            # на неочевидном fuse-инварианте
             return {
                 "sql": result.sql,
-                "route_flags": {**flags, GENERATE_SQL_FAILED_FLAG: False},
+                "route_flags": {
+                    **flags,
+                    GENERATE_SQL_FAILED_FLAG: False,
+                    GENERATE_SQL_RETRYABLE_FLAG: False,
+                },
                 "error": None,
                 "budget_used": budget,
             }

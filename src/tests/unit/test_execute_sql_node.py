@@ -167,7 +167,14 @@ def test_probe_lost_join_suspicion_when_all_tables_have_rows() -> None:
     updated = make_execute_sql_node(executor, tracer=tracer)(_base_state())
     assert updated["route_flags"][PROBE_LOST_JOIN_FLAG] is True
     assert updated["error"]["class"] == "empty"
-    assert "400" in updated["error"]["message"]
+    # S9 (ревью Important-1): пользовательский message фиксированный — имена
+    # таблиц и счётчики НЕ печатаются пользователю; факты — внутренний
+    # error["probe"] (канал диагностики, прецедент state.validation.issues S11)
+    assert updated["error"]["message"] == (
+        "по этому вопросу данных не нашлось — проверим условия выборки и повторим"
+    )
+    assert "400" in updated["error"]["probe"]
+    assert "orders" in updated["error"]["probe"]
     probe_requests = executor.requests[1:]
     assert [r.sql for r in probe_requests] == [
         "SELECT COUNT(*) AS probe_count FROM orders",
@@ -259,13 +266,20 @@ def test_flag_names_parity_with_routing() -> None:
     from text_to_sql_agent.orchestration.routing import (
         FLAG_EXECUTE_DEFECT,
         FLAG_PROBE_LOST_JOIN,
+        FLAG_STEP_DONE,
+        FLAG_STEP_EMPTY_KEYSET,
+        FLAG_STEP_KEYSET_OVERFLOW,
+        FLAG_STEPS_PENDING,
     )
 
     assert PROBE_LOST_JOIN_FLAG == FLAG_PROBE_LOST_JOIN
     assert EXECUTE_DEFECT_FLAG == FLAG_EXECUTE_DEFECT
-    assert set(_STEP_FLAG_NAMES) == {
-        "step_done",
-        "steps_pending",
-        "step_empty_keyset",
-        "step_keyset_overflow",
-    }
+    # Ревью S14 Minor-1: шаговые флаги — честный parity с routing-константами
+    # (источник имён), а не литералы с литералами — переименование в routing
+    # не разойдётся молча с guard'ом probe
+    assert _STEP_FLAG_NAMES == (
+        FLAG_STEP_DONE,
+        FLAG_STEPS_PENDING,
+        FLAG_STEP_EMPTY_KEYSET,
+        FLAG_STEP_KEYSET_OVERFLOW,
+    )

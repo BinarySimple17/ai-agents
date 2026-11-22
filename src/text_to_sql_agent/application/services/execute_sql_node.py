@@ -62,8 +62,10 @@ _STEP_LOOP_FLAGS: frozenset[str] = frozenset(
 _MISSING_SQL_CLASS = SQLFailureClass.SYNTAX
 _MISSING_SQL_MESSAGE = "в state нет SQL для исполнения"
 
-# Фиксированные сообщения дефектов/пробы (S9-политика: без деталей инфраструктуры;
-# имена/счётчики пробы — таблицы плана, они и так в правах и SQL пользователя)
+# Фиксированные сообщения дефектов/пробы (S9-политика: пользовательский текст —
+# фиксированный; факты пробы с именами/счётчиками — внутренний ключ error["probe"]
+# (ревью S14 Important-1 — прецедент state.validation.issues S11: CLI печатает
+# только message, внутренний контекст читает diagnose_error)
 _DEFECT_MESSAGE = "часть данных по этому вопросу вам недоступна — повторите позже"
 _PROBE_LOST_JOIN_MESSAGE = (
     "по этому вопросу данных не нашлось — проверим условия выборки и повторим"
@@ -224,11 +226,14 @@ def _run_probe(
         )
     if not lost_join:
         return {"route_flags": passthrough_flags}
-    summary = ", ".join(f"{table}: {count}" for table, count in counts.items())
+    # Факты пробы — внутренний ключ error["probe"] (S9-паттерн S11: CLI печатает
+    # только message); diagnose_error передаст их в контекст ретрая (D-016)
+    probe_summary = ", ".join(f"{table}: {count}" for table, count in counts.items())
     return {
         "error": {
             "class": "empty",
-            "message": f"{_PROBE_LOST_JOIN_MESSAGE} (проба COUNT — {summary})",
+            "message": _PROBE_LOST_JOIN_MESSAGE,
+            "probe": f"проба COUNT по таблицам плана — {probe_summary}; джойн вернул 0 строк",
         },
         "route_flags": {**passthrough_flags, PROBE_LOST_JOIN_FLAG: True},
     }

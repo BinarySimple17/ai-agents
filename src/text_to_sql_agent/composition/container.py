@@ -11,6 +11,7 @@ from typing import Any
 from text_to_sql_agent.application.ports.auth_provider import AuthProvider
 from text_to_sql_agent.application.ports.llm_provider import LLMProvider
 from text_to_sql_agent.application.ports.permission_store import PermissionStore
+from text_to_sql_agent.application.ports.sql_executor import SQLExecutor
 from text_to_sql_agent.application.ports.tracer import Tracer
 from text_to_sql_agent.application.services.build_skeleton_node import make_build_skeleton_node
 from text_to_sql_agent.application.services.clarify_node import make_clarify_node
@@ -84,7 +85,7 @@ def build_container(
     plan_joins_service: PlanJoinsService | None = None,
     generate_sql_service: GenerateSqlService | None = None,
     validate_sql_service: ValidateSqlService | None = None,
-    executor: object | None = None,
+    executor: SQLExecutor | None = None,
 ) -> Container:
     """Дефолтная сборка; `settings=None` → fail-fast чтение окружения.
 

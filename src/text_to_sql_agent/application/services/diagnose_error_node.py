@@ -71,13 +71,23 @@ def make_diagnose_error_node(
         if not user_id:
             # Defense-in-depth: identity проверена resolve_access — пустой user_id
             # означает подмену каркаса; fail-closed (прецедент generate_sql_node)
-            return _unavailable(passthrough_flags, tracer, "identity_missing")
+            return _unavailable(
+                passthrough_flags,
+                tracer,
+                "identity_missing",
+                "identity отсутствует в state — подмена каркаса",
+            )
         raw_error = state.get("error")
         if not isinstance(raw_error, dict) or not raw_error.get("class"):
             # diagnose_error достигается только по рёбрам с выставленной ошибкой
             # (validate_hallucination / execute_sql / probe) — отсутствие означает
             # подмену каркаса; fail-closed: без ретрая (degrade-ветка routing)
-            return _unavailable(passthrough_flags, tracer, "error_missing")
+            return _unavailable(
+                passthrough_flags,
+                tracer,
+                "error_missing",
+                "state.error отсутствует — diagnose_error достигнут вне цикла сбоя",
+            )
 
         validation = state.get("validation")
         validation_issues: tuple[str, ...] = ()
@@ -91,6 +101,11 @@ def make_diagnose_error_node(
             error_message=str(raw_error.get("message") or ""),
             sql=state.get("sql") if isinstance(state.get("sql"), str) else None,
             validation_issues=validation_issues,
+            # Внутренние факты COUNT-пробы (execute_sql пишет в error["probe"],
+            # S9: CLI печатает только message) — контекст для подсказки регенерации
+            probe_context=(
+                str(raw_error["probe"]) if isinstance(raw_error.get("probe"), str) else None
+            ),
         )
         budget = dict(state.get("budget_used") or {})
         budget["llm_calls"] = (budget.get("llm_calls") or 0) + result.llm_calls
@@ -148,6 +163,7 @@ def _unavailable(
     passthrough_flags: dict[str, Any],
     tracer: Tracer | None,
     defect_class: str,
+    detail: str,
 ) -> dict[str, Any]:
     """Дефект каркаса/стыка: fail-closed без назначения ретрая (degrade-ветка routing).
 
@@ -158,7 +174,7 @@ def _unavailable(
         tracer.record(
             Trace(
                 event=EVENT_DIAGNOSE_UNAVAILABLE,
-                payload={"class": defect_class, "detail": defect_class},
+                payload={"class": defect_class, "detail": detail},
             )
         )
     return {"route_flags": passthrough_flags}

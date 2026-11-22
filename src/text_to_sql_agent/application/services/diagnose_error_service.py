@@ -221,13 +221,15 @@ class DiagnoseService:
         error_message: str,
         sql: str | None = None,
         validation_issues: tuple[str, ...] | list[str] = (),
+        probe_context: str | None = None,
     ) -> DiagnoseResult:
         """Разобрать сбой: futile — без LLM, иначе cheap-LLM с ретраями M1.
 
         ``error_class`` — сырой класс из state.error (SQLFailureClass/вердикт
         валидатора/«empty» пробы); ``sql`` — последняя попытка (D-016: в контексте
         только она); ``validation_issues`` — внутренний контекст валидатора (S11);
-        детали пробы COUNT входят в ``error_message`` (пишет execute_sql, S14).
+        ``probe_context`` — факты COUNT-пробы из error["probe"] (execute_sql, S14 —
+        S9: пользовательский message фиксированный, факты — внутренний канал).
         """
         mapped = _DETERMINISTIC_MAP.get(error_class)
         if mapped in _FUTILE_CLASSES:
@@ -270,6 +272,7 @@ class DiagnoseService:
                         error_message=error_message,
                         sql=sql,
                         validation_issues=validation_issues,
+                        probe_context=probe_context,
                         error_text=error_text,
                     ),
                     tools=[_DIAG_TOOL_SPEC],
@@ -303,6 +306,7 @@ class DiagnoseService:
         error_message: str,
         sql: str | None,
         validation_issues: tuple[str, ...] | list[str],
+        probe_context: str | None,
         error_text: str | None,
     ) -> list[dict[str, str]]:
         """Промпт разбора: SQL + ошибка + контекст источника (D-016: не цепочка попыток)."""
@@ -312,6 +316,7 @@ class DiagnoseService:
             f"Текст ошибки: {error_message}",
             f"SQL последней попытки: {sql or '(не сохранён)'}",
             f"Нарушения валидатора: {issues}",
+            f"Данные пробы COUNT: {probe_context or '(не было)'}",
         ]
         messages = [
             {"role": "system", "content": _DIAG_SYSTEM_PROMPT},

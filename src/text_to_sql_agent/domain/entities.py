@@ -147,7 +147,10 @@ class AgentState(TypedDict, total=False):
     compact           compact_result
     error             diagnose_error / узлы, поймавшие сбой; кодовое поле — читается
                       ребром execute_sql (SQL-ошибка → diagnose_error, routing),
-                      успешный execute_sql ОБЯЗАН очищать его (ревью S04 M2)
+                      успешный execute_sql ОБЯЗАН очищать его (ревью S04 M2);
+                      опциональный внутренний ключ "probe" (execute_sql S14) —
+                      факты COUNT-пробы для контекста diagnose_error (S9: CLI
+                      печатает только message, message фиксированный)
     diagnosis         diagnose_error (S14): {error_class, hint, retry_futile} —
                       внутренний контекст ретрая M1 (подсказка регенерации,
                       D-016); читает generate_sql при FSM-ретрае; пользовательский
