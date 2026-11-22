@@ -31,6 +31,10 @@ packages = ["src/text_to_sql_agent", "src/apps"]
 
 [tool.pytest.ini_options]
 testpaths = ["src/tests"]
+# Короткие трейсы по умолчанию. Без -q здесь намеренно: init.sh уже передаёт -q,
+# а повторный -q у pytest кумулятивен (-qq глотает итоговую строку «N passed/skipped»,
+# на которой завязан test_join_graph_skip_guard). Полный трейс при отладке — pytest --tb=long.
+addopts = "--tb=short"
 
 [tool.ruff]
 line-length = 100

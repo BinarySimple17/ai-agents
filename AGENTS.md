@@ -27,7 +27,7 @@ Before writing code (session start / clock-in):
 1. Confirm working directory with `pwd`
 2. Read this file completely
 3. Read project docs if present: [архитектурный пакет](docs/arch-package.md) (порядок чтения и матрица «вопрос → документ»), [Architecture](docs/ARCHITECTURE.md), [Product](docs/PRODUCT.md), канон — [solution/sessions/S00_session.md](solution/sessions/S00_session.md)
-4. Create/verify the session file first (copy of `solution/sessions/TEMPLATE_session.md` under the session ID, per `solution/README.md` lifecycle), then run `./init.sh` to verify the environment is healthy — it includes the session-start gate (`scripts/guard-subagents.sh --phase start`, D-023/D-027): the gate bites only the session you START (header status flipped to `◐ в работе`; planned `[ ] не начата` sessions are skipped), auto-adds missing checkboxes (`[FIX]`), and `make check` stays RED until that session's ARCH-GATE line is `✅ + evidence` or a genuine `N/A — reason` (`N/A — сессия не начата` does not pass for a started session)
+4. Create/verify the session file first — механика: `make new-session S=<ID> TITLE="..." F=<feat-XXX> [ROLE=продолжает]` (копия `TEMPLATE_session.md` под ID + строка в реестре `solution/sessions.md`, per `solution/README.md` lifecycle; нарратив — предусловия/задачи/ловушки — заполняет агент), then run `./init.sh` to verify the environment is healthy — it includes the session-start gate (`scripts/guard-subagents.sh --phase start`, D-023/D-027): the gate bites only the session you START (header status flipped to `◐ в работе`; planned `[ ] не начата` sessions are skipped), auto-adds missing checkboxes (`[FIX]`), and `make check` stays RED until that session's ARCH-GATE line is `✅ + evidence` or a genuine `N/A — reason` (`N/A — сессия не начата` does not pass for a started session)
 5. Read `feature_list.json` to see current feature state
 6. Review recent commits with `git log --oneline -5`
 7. Read `progress.md` and `session-handoff.md` if present
@@ -51,14 +51,12 @@ If baseline verification is failing, repair that first — do not add new scope 
 
 ## Branch Hygiene
 
-- `main` — только версии продукта (release-срезы, теги `vX.Y.Z`). Прямые пуши запрещены — только через PR.
-- `dev` — интеграционная ветка разработки. Прямые пуши запрещены — только через PR.
-- `milestone/v2` — ветка вехи V2 (ДЗ-03): отпочкована от `dev`, живёт параллельно, пока V1 (ДЗ-02) не сдана и не принята. Рабочие ветки для V2 почкуются от `milestone/v2` и мержатся в неё напрямую; сама `milestone/v2` никуда не сливается (`dev`/`main`) без явной команды владельца — после приёмки V1 реинтеграция через PR (D-024). Хотфиксы V1 — по-прежнему рабочая ветка от `dev` → PR → `dev`.
-- `milestone/v3` — ветка вехи V3 (ДЗ-04 «Гибридная память»): отпочкована от `milestone/v2` (14da923), живёт параллельно, пока V2 (ДЗ-03) не сдана и не принята. Рабочие ветки для V3 почкуются от `milestone/v3` и мержатся в неё напрямую; сама `milestone/v3` никуда не сливается (`dev`/`main`) без явной команды владельца — реинтеграция через PR по модели D-024 (D-029). Хотфиксы V2 — рабочая ветка от `milestone/v2` → merge в `milestone/v2`; хотфиксы V1 — по-прежнему от `dev` → PR → `dev`.
-- `milestone/v4` — ветка вехи V4 (ДЗ-05 «State machine», `hw-05-agent-logic`): отпочкована от `milestone/v3`, живёт параллельно и ждёт приёмки вехи V4. Рабочие ветки для V4 почкуются от `milestone/v4` и мержатся в неё напрямую; сама `milestone/v4` никуда не сливается (`dev`/`main`) без явной команды владельца — реинтеграция через PR по модели D-024 (D-031). Хотфиксы V3 — рабочая ветка от `milestone/v3` → merge в `milestone/v3`; хотфиксы V2/V1 — по прежним правилам.
+- `main` — только версии продукта (release-срезы, теги `vX.Y.Z`); `dev` — интеграция разработки. Прямые пуши запрещены — только через PR (локально `.githooks/pre-commit`/`pre-push`, подключаются идемпотентно в `init.sh`; серверно — GitHub branch protection).
 - Вся работа — в рабочих ветках: `feat-0XX-<slug>` (фичи), `harness/<тема>` (обвязка). Пуш рабочей ветки в origin свободен; попадание в `dev`/`main` — только PR (`gh pr create --base dev`, release — `--base main`).
-- Release: PR `dev` → `main` + тег версии. Хотфикс: рабочая ветка от `main` → PR → `main`, затем перенос в `dev`.
-- Локальные гварды: `.githooks/pre-commit` (коммит на `main`/`dev` невозможен) и `.githooks/pre-push` (пуш в `main`/`dev` невозможен); подключаются идемпотентно в `init.sh` (`core.hooksPath`). Серверный уровень — GitHub branch protection на `main` и `dev`.
+- Вехи: `milestone/v2→v3→v4` почкуются цепочкой (v2←dev, v3←v2, v4←v3) и живут параллельно до приёмки вехи. Рабочие ветки вехи — от её milestone-ветки, мержатся в неё напрямую; сама milestone-ветка не сливается в `dev`/`main` без явной команды владельца — реинтеграция через PR (D-024/D-029/D-031). Хотфиксы — от ветки своей вехи; хотфиксы V1 — от `dev` → PR → `dev`.
+- Release: PR `dev` → `main` + тег версии. Хотфикс release: рабочая ветка от `main` → PR → `main`, затем перенос в `dev`.
+
+Полный граф веток, правила хотфиксов по вехам и детали: [docs/AGENT-OPERATIONS.md](docs/AGENT-OPERATIONS.md).
 
 ## Constraints
 
@@ -83,6 +81,7 @@ If baseline verification is failing, repair that first — do not add new scope 
 - `init.sh` — standard startup and verification path
 - `session-handoff.md` — cross-session handoff (fill for large sessions)
 - `docs/ARCHITECTURE.md`, `docs/PRODUCT.md`, `docs/quality-document.md` — topic docs
+- `docs/AGENT-OPERATIONS.md` — полный операционный объём ритуалов (граф веток вех, чеклист End of Session)
 - `docs/prd.md`, `docs/security.md`, `docs/observability.md`, `docs/model-card.md`, `docs/RISKS.md` — обвязка архитектурного пакета
 - `docs/adr/` — architecture decision records (реестр: ADR-001…011 + [шаблон](docs/adr/ADR-TEMPLATE.md))
 - `docs/diagrams/` — C4 L1/L2/L3, state FSM, sequence, ER-модель (каноническая)
@@ -169,21 +168,14 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) и ADR-реестр ([docs/adr/
 
 ## End of Session
 
-Before ending a session (session end / clock-out):
+Before ending a session (session end / clock-out) — нарратив делает агент, механику делает скрипт:
 
-1. Update `progress.md` (Current State, Next Steps)
-2. Update `feature_list.json` (state + evidence)
-3. Update session file (Статус → `✅ дата`) and the registry row in `solution/sessions.md`; add the new status line to «Текущее состояние» — it must contain ONLY the last closed session's status (one line; old lines are trimmed)
-4. Run `make archive` — closed sessions move to `solution/sessions/archive/`, closed backlog items to `solution/backlog/archive/`, «Текущее состояние» trimmed to one line
-5. Record unresolved risks or blockers in `progress.md` and `DECISIONS.md`; out-of-scope findings → `solution/backlog/` (BL-NN files)
-6. Run the clean-state protocol: `make clean-check` + [templates/clean-state-checklist.md](templates/clean-state-checklist.md) — no debug artifacts remain; the protocol includes the subagent-gate guard (`scripts/guard-subagents.sh`: ARCH-GATE/REVIEW-GATE lines in the session file must be ✅+evidence or N/A+reason)
-7. Update `docs/quality-document.md` for the module you touched (A/B/C/D per dimension)
-8. Commit once work is in a safe state — commit messages explain WHY, not just what changed. Before committing a feature (after `make check` is green): dispatch the `code-reviewer` subagent on the change range (BASE = merge-base with `main` or the last reviewed commit, HEAD = `HEAD`), fix Critical/Important findings — **каждый Critical закрывается регрессионным тестом** (тест, который падает на до-фиксовом коде и остаётся в наборе), re-run tests, then commit; Minor → `solution/backlog/`; record the verdict + range in the session file's REVIEW-GATE line (guard-enforced)
-9. Leave the repo clean and restartable: next session runs `./init.sh` immediately
+1. Нарратив: обнови `progress.md` (Current State, Next Steps), `feature_list.json` (state + evidence: фича-«закрывает» — `make verify-feature F=<id>`; промежуточная — фича остаётся `active`), `docs/quality-document.md`, отчёт в файле сессии («Отчёт по сессии» + строка REVIEW-GATE: вердикт ревью + диапазон `BASE7..HEAD7`). Диспетчеризация `code-reviewer` — после зелёного `make check` по диапазону (BASE = merge-base с `main` или последний отревьюенный коммит); каждый Critical закрывается регрессионным тестом (падает на до-фиксовом коде и остаётся в наборе), Minor → `solution/backlog/`; отчёт ревью — по формату из определения агента (`~/.zcode/agents/code-reviewer.md`, вне репо).
+2. Риски/блокеры → `progress.md` и `DECISIONS.md`; вне скоупа → `solution/backlog/` (BL-NN files)
+3. Механика: запусти `make close-session S=<ID> MSG=<файл-сообщение-коммита>` — скрипт проверит гейты, отчёт, фичи и чистоту дерева вне allowlist (весь КОД закоммичен до запуска; грязь = отказ), перевернёт статус шапки `◐ → ✅ дата`, обновит строку реестра и «Текущее состояние» (только последняя закрытая сессия, одна строка), прогонит clean-state protocol + `make archive` и закоммитит из MSG-файла
+4. Leave the repo clean and restartable: next session runs `./init.sh` immediately
 
-If running low on context, do not rush to finish — stop, update `progress.md`, and commit a clean checkpoint.
-
-Cleanup is dual-mode: immediate cleanup after every session + periodic (weekly) full sweep for structural drift.
+If running low on context, do not rush to finish — stop, update `progress.md`, and commit a clean checkpoint. Полный чеклист закрытия и детали: [docs/AGENT-OPERATIONS.md](docs/AGENT-OPERATIONS.md).
 
 ## Escalation
 

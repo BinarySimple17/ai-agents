@@ -42,11 +42,16 @@ bash scripts/verify-feature.sh feat-001   # гейт фичи: state=active → 
 bash scripts/guard-subagents.sh           # гейты субагентов, end-фаза: обе строки в файле сессии (дефолт)
 bash scripts/guard-subagents.sh --phase start   # start-фаза: ARCH-GATE до старта работ + автодобавление чекбоксов
 bash scripts/tests/test-guard-subagents.sh      # self-test гварда (тоже внутри ./init.sh)
+bash scripts/tests/test-ritual-scripts.sh       # self-test ритуальных скриптов (тоже внутри ./init.sh)
 bash scripts/clean-state-check.sh         # чистое состояние перед коммитом (или: make clean-check)
 bash scripts/clean-state-check.sh . feat-002   # многосессионная фича: feat-002 сознательно остаётся active (продолжение запланировано)
+make new-session S=S12 TITLE="..." F=feat-012   # механика планирования: копия шаблона сессии + строка реестра (S28)
+make close-session S=S12 MSG=msg.txt            # механика закрытия: pre-flight → статус ✅ → реестр → archive → clean-state → commit (S28)
 make check                                # полная верификация (вызывает ./init.sh)
 make vcr                                  # VCR = passing / активированные (цель 1.0)
 ```
+
+- `new-session.sh` / `close-session.sh` — ритуальные скрипты (S28, детали и восстановление после сбоя — `docs/AGENT-OPERATIONS.md`): fail-closed, мутации атомарны в памяти, EOL-preserving; `make close-session` — финальный шаг End of Session, весь код коммитится ДО него.
 
 - `guard-subagents.sh` — механический, двухфазный гейт субагентов (D-023/D-027): проверяет раздел «Гейты субагентов» в файлах сессий, каждая строка — `✅ + evidence` либо `N/A — причина`. **Start-фаза** (`--phase start`; из `./init.sh` и `make session-start`): кусает только сессию, которую СТАРТУЮТ — маркер: статус в шапке «◐ в работе» (запланированные «[ ] не начата» скипаются с пометкой `[SKIP]`, закрытые «✅» в корне — WARN «make archive»); для стартованной — ARCH-GATE до кода (`make check` красный до canon-check ✅ или обоснованного N/A; «N/A — сессия не начата» у ◐ = FAIL), недостающие раздел/строки дозаполняются (`[FIX]`, идемпотентно); REVIEW-GATE — мягкий WARN; стартованных нет — OK/WARN, exit 0 (рестартуемость свежего клона). **End-фаза** (дефолт; из `make clean-check`, `make session-end` и `verify-feature.sh`, там — strict-режим): резолюция по порядку — последняя стартованная (◐) в корне → закрытая (✅) в корне (к моменту clean-check закрываемая уже «✅» — скипать её = байпас REVIEW-GATE, fix C1) → последняя в `archive/` → нечего проверять — WARN exit 0; запланированные («не начата») гейт не кусают; несколько ◐ — проверяется последняя, прочие — WARN; явный файл/путь по фиче проверяются жёстко минуя классификацию; файл не мутируется. Сессия в `archive/` без раздела = legacy (WARN, exit 0). Каталог сессий переопределяется переменной `SESSIONS_DIR` (используется self-test'ом).
 - Примечание: `make clean-check`/`session-end` глушат вывод `init.sh` внутри `clean-state-check.sh` — если старт-фаза там дозаполнила чекбоксы (`[FIX]`), сами вставки в её выводе не видны; факт вставки проверяется `grep '- ARCH-GATE' solution/sessions/<файл>` или отдельным прогоном `bash scripts/guard-subagents.sh --phase start`. Смешанные EOL после `[FIX]`-вставки (LF-строки в CRLF-файле) — не дефект: git нормализует при коммите, «чинить» sed'ом не нужно.
