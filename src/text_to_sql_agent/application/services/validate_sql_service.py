@@ -15,11 +15,16 @@ fail-closed превращает неполноту из молчаливой у
 Обход вложенности: CTE/UNION/подзапросы/EXISTS/LATERAL/производные таблицы —
 каждый скоуп обрабатывается теми же правилами; резолюция алиасов идёт по
 скоуп-цепочке (корреляция подзапросов), граница корреляции — тело CTE (семантика
-PostgreSQL: WITH не видит внешние алиасы).
+PostgreSQL: WITH не видит внешние алиасы). Видимость CTE — лексическая, по
+позиции каждой ссылки (``_visible_ctes``: предыдущие элементы объемлющего WITH +
+все CTE внешних WITH; своё/последующие имена не видны) — глобальное множество
+имён позволяло бы CTE-тенью скрыть реальную таблицу от ACL (ревью S11 C2).
 
 Подстановки текста при ok-вердикте: внешний LIMIT (ruling R1 ARCH-GATE) и
 разворот литеральных звёзд проекции в разрешённые колонки (ruling R2) —
-значения решает domain, механику AST выполняет здесь.
+значения решает domain, механику AST выполняет здесь. Звезда, спрятанная в
+выражении проекции (скобки/алиас/CAST), — форм-отказ: литеральная звезда не
+доходит до БД (ревью S11 C1; COUNT(*) — агрегат, безопасен).
 """
 
 from collections.abc import Iterator, Mapping, Sequence
@@ -62,7 +67,9 @@ _ROOT_TYPES: tuple[type[exp.Expression], ...] = (exp.Select, exp.Union, exp.Exce
 # расширение — осознанное решение с тестом на adversarial-корпусе (§4 п.8).
 # DML/DDL (Insert/Update/Delete/Merge/Create/Drop/Alter/Truncate), служебные
 # инструкции (Command: SET/COPY/CALL/DO), блокировки (Lock: FOR UPDATE) и прочее
-# не входят ПО ПОСТРОЕНИЮ — fail-closed на всём незнакомом.
+# не входят ПО ПОСТРОЕНИЮ — fail-closed на всём незнакомом. INTERVAL — безопасный
+# литерал типового фильтра «за последние N дней» (ревью S11 I4: расширение —
+# осознанное, с тестом).
 _NODE_WHITELIST: frozenset[type[exp.Expression]] = frozenset(
     {
         exp.Select,
@@ -142,6 +149,7 @@ _NODE_WHITELIST: frozenset[type[exp.Expression]] = frozenset(
         exp.Anonymous,
         exp.Array,
         exp.Any,
+        exp.Interval,
         exp.Extract,
         exp.CurrentDate,
         exp.CurrentTimestamp,
@@ -202,30 +210,76 @@ def _parse_tree(sql: str) -> exp.Expression:
     return tree
 
 
+def _visible_ctes(node: exp.Expression) -> frozenset[str]:
+    """CTE-имена, видимые из позиции узла (лексическая семантика PostgreSQL,
+    нерекурсивный WITH; ревью S11 C2): предыдущие элементы объемлющего WITH +
+    все CTE внешних WITH. Своё и последующие имена не видны — там то же имя
+    резолвится в реальную таблицу, и её права проверяются честно."""
+    visible: set[str] = set()
+    skip_with: exp.With | None = None
+    current = node
+    while current.parent is not None:
+        parent = current.parent
+        if isinstance(parent, exp.CTE):
+            # узел внутри тела CTE: видны только ПРЕДЫДУЩИЕ sibling-CTE
+            with_node = parent.parent
+            if isinstance(with_node, exp.With):
+                for cte in with_node.expressions:
+                    if cte is parent:
+                        break
+                    visible.add(cte.alias_or_name.lower())
+                skip_with = with_node
+        else:
+            with_arg = parent.args.get("with_")
+            if isinstance(with_arg, exp.With):
+                if with_arg is not skip_with:
+                    visible.update(cte.alias_or_name.lower() for cte in with_arg.expressions)
+                skip_with = None  # уровень WITH отработан — дальше добавляем все
+        current = parent
+    return frozenset(visible)
+
+
 def _build_audit(tree: exp.Expression) -> SqlAudit:
     """Извлечение IR из дерева (без политики — решения принимает domain)."""
-    cte_names = frozenset(cte.alias.lower() for cte in tree.find_all(exp.CTE))
     root_select = tree if type(tree) is exp.Select else None
 
     scopes = list(tree.find_all(exp.Select))
-    sources_by_scope = {id(s): _scope_sources(s, cte_names) for s in scopes}
-    maps_by_scope = {id(s): _scope_maps(s, cte_names) for s in scopes}
+    sources_by_scope = {id(s): _scope_sources(s) for s in scopes}
+    maps_by_scope = {id(s): _scope_maps(s) for s in scopes}
 
     columns: list[SqlColumn] = []
-    seen_columns: set[tuple[str, tuple[SqlSource, ...]]] = set()
+    seen_columns: set[tuple[str, tuple[SqlSource, ...], bool]] = set()
     for scope in scopes:
         local_sources = sources_by_scope[id(scope)]
+        local_refs = {src.ref for src in local_sources}
+        output_aliases = {
+            expr.alias.lower()
+            for expr in scope.args.get("expressions") or []
+            if isinstance(expr, exp.Alias) and expr.alias
+        }
+        order_node = scope.args.get("order")
+        order_ids = {id(n) for n in order_node.walk()} if order_node is not None else set()
         for node in _local_nodes(scope):
             if not isinstance(node, exp.Column):
                 continue
             if isinstance(node.this, exp.Star):
                 continue  # t.* — проекция звёздами, собирается в star_sources
+            if id(node) in order_ids and node.name.lower() in output_aliases:
+                # ревью S11 I3: ORDER BY по output-алиасу — не ссылка на колонку
+                # БД (приоритет имени вывода в PostgreSQL); GROUP BY остаётся
+                # fail-closed (там приоритет у input-колонки)
+                continue
             candidates = _resolve_candidates(node, maps_by_scope[id(scope)], local_sources)
             sources = tuple(SqlSource(name=s.name, kind=s.kind) for s in candidates)
-            key = (node.name.lower(), sources)
+            # ревью S11 C1: unqualified-ссылка, совпавшая с алиасом источника, —
+            # whole-row reference (PG: колонок с таким именем нет → вся строка)
+            whole_row = not node.table and node.name.lower() in local_refs
+            key = (node.name.lower(), sources, whole_row)
             if key not in seen_columns:
                 seen_columns.add(key)
-                columns.append(SqlColumn(name=node.name.lower(), candidates=sources))
+                columns.append(
+                    SqlColumn(name=node.name.lower(), candidates=sources, whole_row=whole_row)
+                )
 
     star_sources: list[tuple[SqlSource, ...]] = []
     for scope in scopes:
@@ -236,11 +290,11 @@ def _build_audit(tree: exp.Expression) -> SqlAudit:
 
     root_maps = maps_by_scope.get(id(root_select), []) if root_select is not None else []
     return SqlAudit(
-        from_table=_from_table(root_select, cte_names),
-        tables=_collect_tables(tree, cte_names),
-        cte_names=tuple(sorted(cte_names)),
+        from_table=_from_table(root_select),
+        tables=_collect_tables(tree),
+        cte_names=tuple(sorted({cte.alias_or_name.lower() for cte in tree.find_all(exp.CTE)})),
         columns=tuple(columns),
-        joins=_collect_joins(root_select, maps_by_scope, cte_names),
+        joins=_collect_joins(root_select, maps_by_scope),
         where_conjuncts=_collect_where(root_select, root_maps),
         outer_limit=_collect_outer_limit(tree),
         functions=_collect_functions(tree),
@@ -248,9 +302,22 @@ def _build_audit(tree: exp.Expression) -> SqlAudit:
     )
 
 
+def _visible_ctes_for(expr: exp.Expression) -> frozenset[str]:
+    """Тонкая обёртка для читаемости вызовов извлекателей (позиция = сам узел)."""
+    return _visible_ctes(expr)
+
+
 def _expr_source(expr: exp.Expression, cte_names: frozenset[str]) -> _Source:
     """Источник FROM/JOIN: таблица (или ссылка на CTE), производная таблица, LATERAL."""
     if isinstance(expr, exp.Table):
+        if not isinstance(expr.this, exp.Identifier) or not expr.name:
+            # ревью S11 I2: табличная функция (Table.this — вызов, name пуст) —
+            # форм-отказ, не падение VO ((SqlSource min_length) → ValidationError)
+            raise SqlAuditError(
+                "табличная функция в FROM/JOIN не поддерживается валидатором — "
+                "deny-by-default: источником может быть только именованная таблица/"
+                "CTE/производная таблица с алиасом"
+            )
         name = expr.name.lower()
         if not expr.db and name in cte_names:
             return _Source(ref=(expr.alias or name).lower(), name=name, kind="cte")
@@ -268,14 +335,15 @@ def _expr_source(expr: exp.Expression, cte_names: frozenset[str]) -> _Source:
     )
 
 
-def _scope_sources(scope: exp.Select, cte_names: frozenset[str]) -> list[_Source]:
-    """Источники скоупа в порядке появления (FROM + JOIN-секции, включая comma-join)."""
+def _scope_sources(scope: exp.Select) -> list[_Source]:
+    """Источники скоупа в порядке появления (FROM + JOIN-секции, включая comma-join);
+    видимость CTE вычисляется по позиции каждой ссылки (ревью S11 C2)."""
     sources: list[_Source] = []
     from_clause = scope.args.get("from_")
     if from_clause is not None:
-        sources.append(_expr_source(from_clause.this, cte_names))
+        sources.append(_expr_source(from_clause.this, _visible_ctes_for(from_clause.this)))
     for join in scope.args.get("joins") or []:
-        sources.append(_expr_source(join.this, cte_names))
+        sources.append(_expr_source(join.this, _visible_ctes_for(join.this)))
     return sources
 
 
@@ -297,11 +365,31 @@ def _scope_chain(scope: exp.Select) -> list[exp.Select]:
     return chain
 
 
-def _scope_maps(scope: exp.Select, cte_names: frozenset[str]) -> list[dict[str, _Source]]:
+def _scope_maps(scope: exp.Select) -> list[dict[str, _Source]]:
     """Карты резолюции алиасов по скоуп-цепочке (внутренний → внешний)."""
-    return [
-        {src.ref: src for src in _scope_sources(node, cte_names)} for node in _scope_chain(scope)
-    ]
+    return [{src.ref: src for src in _scope_sources(node)} for node in _scope_chain(scope)]
+
+
+def _reject_expression_stars(item: exp.Expression) -> None:
+    """Форм-отказ на звезду, спрятанную в выражении проекции (ревью S11 C1):
+    ``(t.*)``, ``t.* AS x``, ``(t.*)::text`` — разворот сложен, а литеральная
+    звезда не должна доходить до БД (ACL-байпас). ``COUNT(*)`` — агрегат, колонок
+    не раскрывает (ruling R2) — исключение."""
+    for star in item.find_all(exp.Star):
+        parent = star.parent
+        under_count = False
+        while parent is not None:
+            if isinstance(parent, exp.Count):
+                under_count = True
+                break
+            if parent is item:
+                break
+            parent = parent.parent
+        if not under_count:
+            raise SqlAuditError(
+                "звезда '*' внутри выражения проекции (скобки/алиас/CAST) "
+                "не поддерживается — литеральная звезда не доходит до БД"
+            )
 
 
 def _projection_stars(
@@ -312,10 +400,9 @@ def _projection_stars(
     """Звёзды проекции скоупа: bare ``*`` — все источники скоупа, ``t.*`` — один.
 
     Общий источник IR (``_build_audit``) и разворота (``_expand_stars``) — они
-    видят ровно одни и те же звёзды. Звёзды внутри выражений (COUNT(*)) проекцией
-    не являются — не собираются (ruling R2: агрегат колонок не раскрывает).
-    Bare-звезда без источников FROM — форм-отказ (postgres такой SELECT не
-    исполняет — «не существует в мире агента»).
+    видят ровно одни и те же звёзды. Любая ДРУГАЯ форма с звездой внутри —
+    форм-отказ (``_reject_expression_stars``, ревью S11 C1). Bare-звезда без
+    источников FROM — форм-отказ (postgres такой SELECT не исполняет).
     """
     for item in scope.args.get("expressions") or []:
         if isinstance(item, exp.Star):
@@ -324,6 +411,8 @@ def _projection_stars(
             yield item, list(sources)
         elif isinstance(item, exp.Column) and isinstance(item.this, exp.Star):
             yield item, [_resolve_qualifier((item.table or "").lower(), maps)]
+        else:
+            _reject_expression_stars(item)
 
 
 def _local_nodes(scope: exp.Select) -> Iterator[exp.Expression]:
@@ -368,24 +457,28 @@ def _resolve_candidates(
     return tuple(local_sources)
 
 
-def _from_table(root_select: exp.Select | None, cte_names: frozenset[str]) -> str:
-    """bare-имя источника FROM внешнего запроса ("" у set-операций)."""
+def _from_table(root_select: exp.Select | None) -> str:
+    """bare-имя источника FROM внешнего запроса ("" у set-операций); ссылка,
+    привязанная к CTE или производной таблице, — не «FROM не изменён» (ревью
+    S11 C2: сверка скелета сравнивает имя, вид источника обязан быть таблицей)."""
     if root_select is None:
         return ""
     from_clause = root_select.args.get("from_")
     if from_clause is None:
         return ""
-    return _expr_source(from_clause.this, cte_names).name
+    source = _expr_source(from_clause.this, _visible_ctes_for(from_clause.this))
+    return source.name if source.kind == "table" else ""
 
 
-def _collect_tables(tree: exp.Expression, cte_names: frozenset[str]) -> tuple[str, ...]:
+def _collect_tables(tree: exp.Expression) -> tuple[str, ...]:
     """Все relation-ссылки как написано (схема квалифицируется); ссылки на CTE —
-    не таблицы мира (их тела проверяются теми же правилами на своём скоупе)."""
+    не таблицы мира (их тела проверяются теми же правилами на своём скоупе).
+    Видимость CTE — по позиции каждой ссылки (ревью S11 C2)."""
     tables: list[str] = []
     seen: set[str] = set()
     for table in tree.find_all(exp.Table):
         name = table.name.lower()
-        if not table.db and name in cte_names:
+        if not table.db and name in _visible_ctes_for(table):
             continue
         qualified = f"{table.db.lower()}.{name}" if table.db else name
         if qualified not in seen:
@@ -438,14 +531,13 @@ def _qualified_name(column: exp.Column, maps: list[dict[str, _Source]]) -> str:
 def _collect_joins(
     root_select: exp.Select | None,
     maps_by_scope: dict[int, list[dict[str, _Source]]],
-    cte_names: frozenset[str],
 ) -> tuple[SqlJoin, ...]:
     """Джойны ВНЕШНЕГО запроса в порядке появления (сверка со скелетом — Task 3)."""
     if root_select is None:
         return ()
     joins: list[SqlJoin] = []
     for join in root_select.args.get("joins") or []:
-        source = _expr_source(join.this, cte_names)
+        source = _expr_source(join.this, _visible_ctes_for(join.this))
         joins.append(
             SqlJoin(
                 join_type=_normalize_join_type(join),
@@ -561,13 +653,12 @@ def _expand_stars(tree: exp.Expression, permissions: Mapping[str, Sequence[str]]
     (текст перегенерирован), False — звёзд для разворота нет.
     """
     changed = False
-    cte_names = frozenset(cte.alias.lower() for cte in tree.find_all(exp.CTE))
     for scope in tree.find_all(exp.Select):
         expressions = scope.args.get("expressions")
         if not expressions:
             continue
-        sources = _scope_sources(scope, cte_names)
-        stars = list(_projection_stars(scope, sources, _scope_maps(scope, cte_names)))
+        sources = _scope_sources(scope)
+        stars = list(_projection_stars(scope, sources, _scope_maps(scope)))
         for item, star_sources in stars:
             replacement: list[exp.Expression] = []
             for source in star_sources:

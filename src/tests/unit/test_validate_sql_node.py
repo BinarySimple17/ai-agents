@@ -91,9 +91,13 @@ class TestOkOutcome:
         assert update["validation"]["enforced_limit"] == ROW_LIMIT
 
     def test_star_expanded_before_execution(self):
-        # ruling R2: литеральная звезда не доходит до исполнителя
+        # ruling R2: литеральная звезда не доходит до исполнителя (ревью M2:
+        # в входе ДОЛЖНА быть звезда — иначе тест кусает вхолостую)
         update = _node()(
-            _state(permissions={"orders": ["id", "customer_id"], "customers": ["id", "region"]})
+            _state(
+                sql="SELECT * FROM orders o INNER JOIN customers c ON o.customer_id = c.id",
+                permissions={"orders": ["id", "customer_id"], "customers": ["id", "region"]},
+            )
         )
         assert update["validation"]["outcome"] == "ok"
         assert "o.id" in update["sql"] and "o.customer_id" in update["sql"]
@@ -110,10 +114,21 @@ class TestHallucinationOutcome:
         assert update["route_flags"][VALIDATE_HALLUCINATION_FLAG] is True
         assert update["route_flags"][ACL_DENIED_FLAG] is False
         assert update["error"]["class"] == "validate_hallucination"
-        # контекст ретрая M1/D-016: diagnose_error (S14) получает текст нарушения
-        assert update["error"]["message"] == update["validation"]["issues"][0]
         merged = {**_state(), **update}
         assert routing.route_validate_sql(merged) == "diagnose_error"
+
+    def test_hallucination_user_message_without_table_names(self):
+        # ревью S11 I1: имена таблиц/инфраструктуры — только во внутреннем
+        # validation.issues (контекст ретрая M1; подключение — S14), а
+        # пользовательский текст (state.error.message, печатает CLI) —
+        # фиксированный бизнес-текст (S9: отказ не раскрывает конфигурацию)
+        update = _node()(
+            _state(sql="SELECT id FROM orders o INNER JOIN customers c ON o.customer_id = c.id")
+        )
+        assert update["validation"]["outcome"] == "hallucination"
+        assert update["validation"]["issues"]
+        assert "orders" not in update["error"]["message"]
+        assert "customers" not in update["error"]["message"]
 
     def test_sql_not_rewritten_on_rejection(self):
         # отказ: узел не пишет sql (LangGraph-merge оставляет исходный текст —
@@ -207,6 +222,9 @@ class TestTraceAndCatalog:
         _node(tracer=_Tracer())(_state())
         assert events[0].event == EVENT_VALIDATE_SQL_VERDICT
         assert events[0].payload["outcome"] == "ok"
+        # ревью M5: ключ — issues_count (счёт), не issues (массив) — имя не вводит
+        assert events[0].payload["issues_count"] == 0
+        assert "issues" not in events[0].payload
         assert "sql" not in events[0].payload  # D-022-аналог: БЕЗ SQL-текста
 
     def test_unavailable_event_on_catalog_failure(self):

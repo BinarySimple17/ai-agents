@@ -117,7 +117,7 @@ def make_validate_sql_node(
                     payload={
                         "user_id": user_id,
                         "outcome": result.verdict.outcome.value,
-                        "issues": len(result.verdict.issues),
+                        "issues_count": len(result.verdict.issues),
                         "enforced_limit": result.verdict.enforced_limit,
                     },
                 )
@@ -160,13 +160,11 @@ def _route(flags: dict[str, Any], result: Any) -> dict[str, Any]:
             "error": None,
         }
     denied = outcome is ValidationOutcome.DENIED
-    # issues — внутренний контекст (ретрай M1/diagnose_error); пользовательский
-    # текст деградации формулирует S15 бизнес-понятиями без имён таблиц (S9)
-    message = (
-        _DEFECT_MESSAGE
-        if denied
-        else (result.verdict.issues[0] if result.verdict.issues else "SQL не прошёл валидацию")
-    )
+    # ревью S11 I1: пользовательский текст (state.error.message печатает CLI) —
+    # ФИКСИРОВАННЫЙ бизнес-текст для обоих отказов (S9: без имён таблиц и деталей
+    # инфраструктуры); тексты нарушений остаются во внутреннем validation.issues —
+    # контекст ретрая M1/D-016 подключит S14 (сейчас diagnose_error — транзит)
+    message = _DEFECT_MESSAGE
     return {
         "validation": validation,
         "route_flags": {

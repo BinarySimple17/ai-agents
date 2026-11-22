@@ -191,6 +191,39 @@ class TestStatementForm:
         )
         assert result.verdict.outcome is ValidationOutcome.OK
 
+    def test_table_function_in_from_form_rejected(self):
+        # ревью S11 I2: табличная функция в FROM — форм-отказ (SqlAuditError),
+        # не ValidationError сервиса (Table.name пуст → падение pydantic-VO;
+        # аргумент — литерал, чтобы bite шёл именно по ветке _expr_source)
+        result = _validate("SELECT * FROM pg_read_file('/etc/passwd') LIMIT 10")
+        assert result.verdict.outcome is ValidationOutcome.HALLUCINATION
+
+    def test_interval_literal_allowed(self):
+        # ревью S11 I4: INTERVAL — безопасный литерал типового фильтра «за N дней»
+        result = _validate(
+            "SELECT o.id FROM orders o INNER JOIN customers c ON o.customer_id = c.id "
+            "WHERE o.created_at > CURRENT_DATE - INTERVAL '7 days' LIMIT 10"
+        )
+        assert result.verdict.outcome is ValidationOutcome.OK
+
+    def test_all_quantifier_allowed(self):
+        # ревью M4: квантор ALL парсится sqlglot как Anonymous('all') — безопасный
+        # квантор сравнения (зеркало ANY-узла); расширение — осознанное, с тестом
+        result = _validate(
+            "SELECT o.id FROM orders o INNER JOIN customers c ON o.customer_id = c.id "
+            "WHERE o.total = ALL(ARRAY[1, 2]) LIMIT 10"
+        )
+        assert result.verdict.outcome is ValidationOutcome.OK
+
+    def test_order_by_output_alias_allowed(self):
+        # ревью S11 I3: ORDER BY по output-алиасу — не ссылка на колонку БД
+        # (приоритет имени вывода в PostgreSQL); ложный denied = degrade без retry
+        result = _validate(
+            "SELECT o.status AS st, count(*) FROM orders o INNER JOIN customers c "
+            "ON o.customer_id = c.id GROUP BY c.name ORDER BY st LIMIT 10"
+        )
+        assert result.verdict.outcome is ValidationOutcome.OK
+
 
 class TestFunctionAllowList:
     @pytest.mark.parametrize(
@@ -605,6 +638,98 @@ class TestSkeletonIntegrity:
 
 
 # --- Task 4: adversarial-галерея ADR-005 §4 п.8 + property-сверка (ruling R3) ---
+
+
+class TestRowExpansionWholeRow:
+    """Ревью S11 C1: row-expansion не обходит R2/ACL колонок.
+
+    Звезда, спрятанная в выражении проекции (скобки/алиас/CAST), — форм-отказ
+    (литеральная звезда не доходит до БД); whole-row-ссылка (SELECT orders)
+    требует '*' в правах КАЖДОЙ таблицы-кандидата — явный список её не покрывает.
+    На до-фиксовом коде каждый из первых пяти кейсов проходил как ok (байт
+    подтверждён ревью на живом PostgreSQL).
+    """
+
+    def test_paren_star_form_rejected(self):
+        result = _validate(
+            "SELECT (orders.*) FROM orders INNER JOIN customers "
+            "ON orders.customer_id = customers.id LIMIT 10"
+        )
+        assert result.verdict.outcome is ValidationOutcome.HALLUCINATION
+
+    def test_aliased_star_form_rejected(self):
+        result = _validate(
+            "SELECT orders.* AS x FROM orders INNER JOIN customers "
+            "ON orders.customer_id = customers.id LIMIT 10"
+        )
+        assert result.verdict.outcome is ValidationOutcome.HALLUCINATION
+
+    def test_cast_star_form_rejected(self):
+        result = _validate(
+            "SELECT (orders.*)::text FROM orders INNER JOIN customers "
+            "ON orders.customer_id = customers.id LIMIT 10"
+        )
+        assert result.verdict.outcome is ValidationOutcome.HALLUCINATION
+
+    def test_whole_row_reference_denied_without_star_perms(self):
+        # явный список на читаемую таблица + '*' на соседнюю — прежний код
+        # резолвил whole-row как «колонку» через разрешённого соседа (утечка)
+        perms = {"orders": list(ORDERS_COLUMNS), "customers": ["*"]}
+        result = _validate(
+            "SELECT orders FROM orders INNER JOIN customers "
+            "ON orders.customer_id = customers.id LIMIT 10",
+            permissions=perms,
+        )
+        assert result.verdict.outcome is ValidationOutcome.DENIED
+
+    def test_whole_row_cast_denied_without_star_perms(self):
+        perms = {"orders": list(ORDERS_COLUMNS), "customers": ["*"]}
+        result = _validate(
+            "SELECT orders::text FROM orders INNER JOIN customers "
+            "ON orders.customer_id = customers.id LIMIT 10",
+            permissions=perms,
+        )
+        assert result.verdict.outcome is ValidationOutcome.DENIED
+
+    def test_whole_row_with_star_perms_ok(self):
+        # '*' на всех кандидатах — whole-row безопасен (аналог суб-звезды R2)
+        perms = {"orders": ["*"], "customers": ["*"]}
+        result = _validate(
+            "SELECT orders FROM orders INNER JOIN customers "
+            "ON orders.customer_id = customers.id LIMIT 10",
+            permissions=perms,
+        )
+        assert result.verdict.outcome is ValidationOutcome.OK
+
+
+class TestLexicalCteVisibility:
+    """Ревью S11 C2: видимость CTE — лексическая (семантика PostgreSQL).
+
+    CTE-тень («WITH orders AS …» поверх реальной таблицы orders) не прячет
+    таблицу от ACL: внутри тела первого CTE имя bonuses ещё НЕ видно как CTE —
+    это реальная таблица и её права проверяются. На до-фиксовом коде сцена
+    проходила как ok (байт: контроль без обманки — denied).
+    """
+
+    def test_decoy_cte_does_not_hide_real_table(self):
+        result = _validate(
+            "WITH orders AS (SELECT * FROM bonuses), bonuses AS (SELECT 1 AS customer_id) "
+            "SELECT count(*) FROM orders INNER JOIN customers "
+            "ON orders.customer_id = customers.id LIMIT 10"
+        )
+        assert result.verdict.outcome is ValidationOutcome.DENIED
+
+    def test_control_direct_bonuses_still_denied(self):
+        # контроль: из отказа нельзя «вылечиться» — прямое чтение bonuses вне прав
+        result = _validate(
+            "SELECT count(*) FROM bonuses b INNER JOIN customers c ON b.customer_id = c.id LIMIT 10"
+        )
+        assert result.verdict.outcome is ValidationOutcome.DENIED
+
+    def test_from_resolving_to_cte_is_not_skeleton_from(self):
+        # FROM, привязанный к CTE, — не «FROM не изменён»: структурный отказ
+        result = _validate("WITH orders AS (SELECT 1 AS id) SELECT id FROM orders LIMIT 10")
+        assert result.verdict.outcome is ValidationOutcome.HALLUCINATION
 
 
 class TestAdversarialGallery:

@@ -465,7 +465,8 @@
       "behavior": "Вопрос прогоняется через агента (Streamlit-демо): трейс виден в Jaeger (waterfall по узлам), метрики собираются Prometheus со /metrics демо-процесса, дашборд Grafana показывает success rate / p95 / ₽; скриншот дашборда — артефакт ДЗ-06.",
       "verification": "make infra-up && make infra-obs-up && uv run pytest src/tests/integration/test_observability.py -q",
       "dependencies": [
-        "feat-015"
+        "feat-015",
+        "feat-022"
       ],
       "state": "not_started",
       "status": "not-started",
@@ -568,6 +569,38 @@
           "label": "layer-3-e2e",
           "cmd": "make bench-retrieval — hit@5 dense-only vs гибрид на 10–20 русских вопросах, отчёт в сессию/model-card",
           "repair": "Разобрать промахи (нормализация/веса RRF/глубина ноги), поправить константы по канону D-026 и re-run."
+        }
+      ]
+    },
+    {
+      "id": "feat-022",
+      "name": "Streamlit-демо (презентационный слой)",
+      "description": "Веб-демо src/apps/streamlit_app.py (канон AGENTS.md/PRODUCT/c4-l2, решение владельца D-032): DevTokenAuth — выбор dev-пользователя/токена (prd.md §Auth, MVP); чат с потоковым выводом ответа (порт StreamFinal, feat-019/020); показ полного контракта ответа feat-015 (SQL, допущения, флаги усечения/approximate, стоимость); clarify-interrupt UX — форма уточнения + resume того же прогона (feat-008, checkpointer Valkey); честное отображение 9 терминальных исходов FSM (deny/degrade/rejected — бизнес-языком); долгоживущий процесс — хозяин /metrics для feat-018 (ADR-010 v1.2). Тонкий app: вся логика в application/services + composition, модуль UI — только рендер.",
+      "behavior": "Пользователь открывает демо в браузере, выбирает dev-пользователя (токен), задаёт вопрос; ответ стримится по мере генерации; SQL/допущения/флаги/стоимость разворачиваются; неоднозначный вопрос → форма уточнения → resume того же прогона; отказ по правам — бизнес-формулировкой без имён чужих таблиц.",
+      "verification": "uv run pytest src/tests/unit/test_streamlit_demo.py -q",
+      "dependencies": [
+        "feat-008",
+        "feat-015",
+        "feat-019"
+      ],
+      "state": "not_started",
+      "status": "not-started",
+      "evidence": "",
+      "layers": [
+        {
+          "label": "layer-1-static",
+          "cmd": "uv run ruff check src",
+          "repair": "Fix lint issues in demo/UI code, then re-run."
+        },
+        {
+          "label": "layer-2-runtime",
+          "cmd": "uv run pytest src/tests/unit/test_streamlit_demo.py -q",
+          "repair": "Read failing test (LLM/хранилища мокаются, S00 правило 7); fix UI-логику (auth/стрим/interrupt/исходы) and re-run."
+        },
+        {
+          "label": "layer-3-e2e",
+          "cmd": "uv run streamlit run src/apps/streamlit_app.py → вопрос в браузере → стрим-ответ + SQL/допущения/флаги (ручной прогон)",
+          "repair": "Fix wiring composition → app, re-run manually."
         }
       ]
     }
