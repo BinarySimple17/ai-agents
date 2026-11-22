@@ -1,6 +1,6 @@
 # S11 — validate_sql: sqlglot AST + ACL + скелет + джойны по графу (веха V4, ДЗ-05)
 
-Этап: Веха V4 (ДЗ-05: главный рубеж безопасности FSM) | Владелец: агент | Зависимости: S05, S07, S10 | Оценка: 1.5 | Статус: [ ] не начата
+Этап: Веха V4 (ДЗ-05: главный рубеж безопасности FSM) | Владелец: агент | Зависимости: S05, S07, S10 | Оценка: 1.5 | Статус: ◐ в работе
 Фичи: feat-011 — validate_sql (AST + ACL); зависимости feat-005 (закрывается S05), feat-007 (passing), feat-010 (закрывается S10)
 Роль по фиче: закрывает feat-011 — финальная сессия, через make verify-feature
 
@@ -33,14 +33,17 @@ S03/S21 контур наблюдаемости), БЕЗ кэш-гейта (SQL 
    КОГО в мире агента» ≠ «таблица существует в permissions-мире, но не для этого
    пользователя»: первое — hallucination-вердикт, второе — deny-вердикт без retry.
    Классификация — код по permissions + каталогу таблиц данных (не текст ошибки).
-5. Валидатор — чистая функция над (sql, skeleton_hash, join_plan, permissions):
-   без IO и LLM; размещение — `domain/` + тонкая обвязка сервиса (канон-прецедент
-   validate_join_plan S09); sqlglot — инфраструктурная зависимость парсинга (в
-   services), не в domain-модели.
+5. Валидатор — чистая функция над (IR, skeleton_digest, join_plan, permissions,
+   row_limit): без IO и LLM; размещение — `domain/` + тонкая обвязка сервиса
+   (канон-прецедент validate_join_plan S09); sqlglot — инфраструктурная зависимость
+   парсинга (в services), не в domain-модели. Ruling R4 ARCH-GATE: services парсят
+   sqlglot → нейтральный IR (VO в domain) → domain решает вердикт над IR; обход
+   sqlglot в services — whitelist типов узлов, fail-closed на неизвестном типе
+   (вердикт hallucination).
 
 ## Предусловия
 
-- [ ] Сессия СТАРТУЕТ: статус в шапке переведён в «◐ в работе» и ARCH-GATE резолвлен ДО кода (canon-check architect ✅ либо обоснованный N/A) — старт-гейт (`guard-subagents.sh --phase start`, D-027) проверяет только стартованные (◐) сессии; «[ ] не начата» — план, гейт её скипает
+- [x] Сессия СТАРТУЕТ: статус в шапке переведён в «◐ в работе» и ARCH-GATE резолвлен ДО кода (canon-check architect ✅ либо обоснованный N/A) — старт-гейт (`guard-subagents.sh --phase start`, D-027) проверяет только стартованные (◐) сессии; «[ ] не начата» — план, гейт её скипает
 - [ ] S05, S10 закрыты: `uv run pytest src/tests/integration/test_resolve_access.py src/tests/unit/test_generate_sql.py -q` → passed (feat-005, feat-010 passing)
 - [ ] S07 закрыта: `uv run pytest src/tests/integration/test_join_graph.py -q` → passed (feat-007 passing)
 - [ ] `make check` зелёный (baseline репозитория)
@@ -53,8 +56,10 @@ S03/S21 контур наблюдаемости), БЕЗ кэш-гейта (SQL 
 sqlglot (dialect postgres): ровно одна инструкция; корень — Select (не
 Insert/Update/Delete/Merge/Ddl/Set/Copy/Call/Do); запрет операций SET/COPY/CALL/DO
 и функций deny-list (dblink, pg_read_file, pg_sleep и пр. — константа); обход
-CTE/UNION/подзапросов/LATERAL; LIMIT — к внешнему запросу (отсутствие → verdict
-требования, не авто-добавление кодом).
+CTE/UNION/подзапросов/LATERAL; внешний LIMIT — валидатор добавляет/клампит его
+к ≤ ROW_LIMIT=1000 (ruling R1 ARCH-GATE: SQL от assemble_sql всегда без LIMIT —
+S10 skeleton.py:157; отсутствие LIMIT — не вердикт-отказ); внутренние LIMIT
+подзапросов/CTE — допустимы (кап канала — обёртка исполнителя S13).
 
 **✅ Самопроверка:**
 
@@ -71,6 +76,11 @@ uv run pytest src/tests/unit/test_validate_sql.py -q   # DML/DDL/SET/COPY/CALL/D
 permissions (включая ACL колонок соединения: ключ ребра без доступа к колонкам —
 джойн недоступен целиком, правило S09). Псевдонимы/aliases резолвятся к исходным
 именам перед проверкой.
+
+`SELECT *` / `t.*` — разворачиваются в разрешённые колонки таблицы из permissions
+(ADR-005 §4 п.2 — не отклоняются, ruling R2 ARCH-GATE); разворот ПОДСТАВЛЯЕТСЯ в
+текст SQL к исполнителю — литеральная звезда у БД вернула бы все колонки (ACL-байпас);
+нет ни одной разрешённой колонки → deny-вердикт.
 
 BL-014 (S05 Minor-9; триаж 2026-11-22): строгий `'*'`-интерпретатор колонок и любую
 правку R5-семантики делать через единую fail-closed нормализацию прав (адаптер
@@ -107,7 +117,13 @@ uv run pytest src/tests/unit/test_validate_sql.py -q   # переставлен�
 Строковые литералы в VALUES/WHERE — остаются литералами (не парсятся как SQL,
 не расширяют поверхность — S6 hw-01); комментарии не обходят проверки. Wiring:
 наполнение заглушки validate_sql в FSM — три исхода ведут в check_cost-транзит →
-execute / diagnose_error / degrade (рёбра S04). Adversarial-галерея — в тест-файл.
+execute / diagnose_error / degrade (рёбра S04); вердикт — в state.validation +
+FLAG_* из orchestration/routing.py (единый источник имён). Adversarial-галерея —
+в тест-файл. Property-based сверка с парсером (ADR-005 §4 п.9, ruling R3): для
+корпуса множество колонок валидатора == независимому обходу sqlglot (встроенный
+walk как оракул) — расхождение = дыра в whitelist'е узлов. Корпус §4 п.8 явно:
+UNION с чужой таблицей, подзапросы, t.*, каталоги, window OVER(PARTITION BY …),
+LATERAL, DISTINCT ON, GROUPING SETS.
 
 **✅ Самопроверка:**
 
@@ -120,7 +136,7 @@ grep -rn "EXPLAIN ANALYZE" src   # пусто (запрет S00)
 
 - [ ] Запрос с DML/DDL, второй инструкцией, запрещённой схемой/таблицей/колонкой, джойном вне edge_id плана, изменённым скелетом или отсутствующим mandatory_predicates не выполняется (behavior feat-011)
 - [ ] Несуществующее → retry-ветка (diagnose_error), вне прав → degrade без retry (behavior feat-011) — классификация кодом, не текстом ошибки
-- [ ] Валидный SELECT с LIMIT к внешнему запросу проходит дальше (behavior feat-011)
+- [ ] Валидный SELECT проходит дальше с внешним LIMIT ≤ 1000 (добавлен/скламплен валидатором — ruling R1) (behavior feat-011)
 - [ ] CTE/UNION/подзапросы/LATERAL проверяются теми же правилами (behavior feat-011)
 - [ ] Валидатор — deny-by-default: тест «неизвестная конструкция отклоняется» (A-класс ADR-005 §5: adversarial ≥ поверхности парсера)
 - [ ] Фича закрыта: `make verify-feature F=feat-011` → PASS, state=passing с evidence
@@ -144,7 +160,7 @@ grep -rn "EXPLAIN ANALYZE" src   # пусто (запрет S00)
 
 ## Гейты субагентов (заполняется по факту, до закрытия сессии)
 
-- ARCH-GATE: [✅ <verdict: compliant | violations | needs-decision> + <план/файл> | N/A — <причина>]
+- ARCH-GATE: ✅ needs-decision → rulings R1–R4 до кода (canon-check architect 2026-11-22): **R1 (blocker)** — внешний LIMIT: SQL от assemble_sql всегда БЕЗ LIMIT (S10: domain/skeleton.py:157 «LIMIT добавляет validate_sql», assemble_sql LIMIT не пишет) — строка плана «отсутствие → verdict требования» ложная посылка, выжгла бы happy-path на каждом запросе; валидатор ДОБАВЛЯЕТ/КЛАМПИТ внешний LIMIT ≤ ROW_LIMIT=1000 (канонная константа порта SQLExecutor, передаётся параметром в domain-функцию — domain не импортирует application); присутствующий ≤ 1000 сохраняется, > 1000 клампится, внутренние LIMIT подзапросов/CTE допустимы (кап канала — обёртка исполнителя S13); Task 1 плана исправлен. **R2** — `SELECT *`/`t.*` разворачиваются в разрешённые колонки таблицы из permissions (ADR-005 §4 п.2 — не отклоняются); разворот ПОДСТАВЛЯЕТСЯ в текст SQL к исполнителю (литеральная звезда у БД вернула бы все колонки — ACL-байпас); ни одной разрешённой колонки → deny; добавлено в Task 2. **R3** — property-based сверка с парсером (ADR-005 §4 п.9) в сессии: для корпуса множество колонок валидатора == независимому обходу sqlglot (встроенный walk как оракул — не общий с валидатором код); без новой зависимости (корпус = adversarial-галерея + генерируемые комбинации); добавлено в Task 4. **R4** — пин контракта service↔domain: services парсят sqlglot → нейтральный IR (VO в domain) → domain-функция решает вердикт над IR; обход sqlglot в services — whitelist типов узлов, fail-closed на неизвестном типе (вердикт hallucination); правило 5 плана закреплено. Notes приняты: вердикт — в state.validation + FLAG_* (orchestration/routing.py — единый источник имён); adversarial-корпус ADR-005 §4 п.8 перечислен явно в Task 4. Set aside: размещение валидатора — прецедент S09 канонен; скоуп/FSM-рёбра state-agent v1.7/BL-014 — канонны.
 - REVIEW-GATE: [✅ <Ready to merge? вердикт> + <BASE7>..<HEAD7> | N/A — <причина>]
 
 ## Отчёт по сессии (заполняется по факту)
