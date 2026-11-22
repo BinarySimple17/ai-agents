@@ -15,6 +15,7 @@ from text_to_sql_agent.application.ports.tracer import Tracer
 from text_to_sql_agent.application.services.build_skeleton_node import make_build_skeleton_node
 from text_to_sql_agent.application.services.clarify_node import make_clarify_node
 from text_to_sql_agent.application.services.clarify_service import ClarifyService
+from text_to_sql_agent.application.services.execute_sql_node import make_execute_sql_node
 from text_to_sql_agent.application.services.generate_sql_node import make_generate_sql_node
 from text_to_sql_agent.application.services.generate_sql_service import GenerateSqlService
 from text_to_sql_agent.application.services.plan_joins_node import make_plan_joins_node
@@ -79,6 +80,7 @@ def build_container(
     plan_joins_service: PlanJoinsService | None = None,
     generate_sql_service: GenerateSqlService | None = None,
     validate_sql_service: ValidateSqlService | None = None,
+    executor: object | None = None,
 ) -> Container:
     """Дефолтная сборка; `settings=None` → fail-fast чтение окружения.
 
@@ -92,7 +94,8 @@ def build_container(
     `plan_joins_service` / `generate_sql_service` / `validate_sql_service` —
     инъекции скриптовых сервисов юнит-тестов wiring и integration-прогонов без
     LLM (S00 правило 7 — LLM в тестах только моки; реальный контур собирает
-    сервисы со швом бюджета Q7).
+    сервисы со швом бюджета Q7). `executor` — инъекция SQLExecutor (S14: узел
+    execute_sql в FSM — юнит-тесты без БД; None → PostgresExecutor agent_ro).
     """
     settings = settings or load_settings()
     tracer: Tracer = JsonlTracer(settings.trace_jsonl_path)
@@ -100,7 +103,7 @@ def build_container(
         tracer = TeeTracer(tracer, ConsoleTracer())
     llm = OpenAIProvider(settings, tracer=tracer)
     # Канал SQL — строго AGENT_RO_DSN (security §2.1); сервисный POSTGRES_DSN — не здесь.
-    executor = PostgresExecutor(settings.agent_ro_dsn.get_secret_value())
+    executor = executor or PostgresExecutor(settings.agent_ro_dsn.get_secret_value())
     run_sql_tool = RunSqlTool(executor)
     # Векторная память (S06/S26): поиск — agent_planner (c4-l2 v1.8 «пул agent_planner:
     # retrieval»); write_dsn (сервисный) — только офлайн-индексация
@@ -209,6 +212,10 @@ def build_container(
             "plan_joins": make_plan_joins_node(plan_joins_service, tracer=tracer),
             "build_skeleton": make_build_skeleton_node(tracer=tracer),
             "generate_sql": make_generate_sql_node(generate_sql_service, tracer=tracer),
+            # S14/feat-014: execute_sql — исполнение S13 + probe COUNT при 0 строк
+            # (маршрут — routing.route_execute_sql: дефект → degrade, ошибка →
+            # diagnose_error, потерянный джойн → diagnose_error, пусто → compact_result)
+            "execute_sql": make_execute_sql_node(executor, tracer=tracer),
             "validate_sql": make_validate_sql_node(
                 validate_sql_service,
                 catalog_provider=permission_store.data_catalog,

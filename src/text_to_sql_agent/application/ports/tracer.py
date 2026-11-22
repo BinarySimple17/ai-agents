@@ -66,6 +66,10 @@ EVENT_DIAGNOSE_UNAVAILABLE = "diagnose.unavailable"
 # не узел, код визита execute_sql); payload факты (tables/counts/verdict), БЕЗ
 # SQL-текста (D-022-аналог)
 EVENT_EXECUTE_PROBE = "execute.probe"
+# FSM execute_sql (S14): fail-closed дефект каркаса (identity/sql/скелет — подмена)
+# или сбой самой COUNT-пробы — деталь оператору, не пользователю (S9-прецедент
+# skeleton.unavailable); маршрут — degrade без diagnose (FLAG_EXECUTE_DEFECT)
+EVENT_EXECUTE_UNAVAILABLE = "execute.unavailable"
 
 # BL-004 (требование владельца): результат тулa показывается строками данных,
 # хоть обрезанными; единый контракт эмиссии (apps.cli) и рендера (ConsoleTracer)

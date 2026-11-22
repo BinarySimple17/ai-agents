@@ -44,6 +44,9 @@ FLAG_STEPS_PENDING = "steps_pending"  # merge_results: есть ещё шаги 
 FLAG_STEP_EMPTY_KEYSET = "step_empty_keyset"  # execute_sql: 0 ключей → short_circuit
 FLAG_STEP_KEYSET_OVERFLOW = "step_keyset_overflow"  # execute_sql: key-set > капа → overflow
 FLAG_PROBE_LOST_JOIN = "probe_lost_join"  # probe (S14): 0 строк — потерянный джойн → diagnose
+FLAG_EXECUTE_DEFECT = "execute_defect"  # execute_sql (S14): дефект каркаса (identity/sql/
+# скелет отсутствуют) → degrade без diagnose — дефект не чинится ретраем/разбором
+# (fail-closed, прецедент FLAG_IDENTITY_FAILED resolve_access → rejected)
 FLAG_RETRY_GENERATE_SQL = "retry_generate_sql"  # diagnose: попытка 2/3 генератора (M1)
 FLAG_RETRY_GENERATE_STEP_SQL = "retry_generate_step_sql"  # diagnose: ретрай шага (D-019)
 FLAG_RETRY_TARGET = "retry_target"  # гейт: чей счётчик ретраев активен
@@ -260,15 +263,21 @@ def route_check_cost(state: State) -> str:
 
 
 def route_execute_sql(state: State) -> str:
-    """execute_sql → шаговый цикл | probe-решение | diagnose_error.
+    """execute_sql → degrade (дефект каркаса) | шаговый цикл | probe-решение | diagnose_error.
 
-    Приоритет причин (state-agent v1.5): SQL-ошибка → diagnose_error; шаговый
-    цикл: пустой key-set → short_circuit («данных нет», hw-01 §3.5.4 правило 2),
+    Приоритет причин (state-agent v1.5 + ruling R4 ARCH-GATE S14): дефект каркаса
+    (identity/sql/скелет отсутствуют — подмена) → degrade БЕЗ diagnose: дефект
+    не чинится ни ретраем, ни разбором ошибки (fail-closed, прецедент
+    resolve_access → rejected); SQL-ошибка → diagnose_error; шаговый цикл:
+    пустой key-set → short_circuit («данных нет», hw-01 §3.5.4 правило 2),
     key-set > капа 50 000 → overflow (молча обрезать нельзя); шаг готов →
     merge_results; 0 строк одиночного запроса → probe-решение (COUNT-проба —
-    S14; каркас: «реально пусто» — валидный пустой ответ → compact_result).
+    S14: потерянный джойн → diagnose_error; «реально пусто» — валидный пустой
+    ответ → compact_result, ruling R1).
     """
     flags = state.get("route_flags") or {}
+    if flags.get(FLAG_EXECUTE_DEFECT):
+        return "degrade"
     if state.get("error"):
         return "diagnose_error"
     if flags.get(FLAG_STEP_EMPTY_KEYSET):
