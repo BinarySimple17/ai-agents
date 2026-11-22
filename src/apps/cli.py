@@ -52,6 +52,7 @@ import uuid
 from collections.abc import Callable
 from typing import Any
 
+from text_to_sql_agent.application.ports.auth_provider import AuthenticationError
 from text_to_sql_agent.application.ports.llm_provider import (
     NO_TEXT_FALLBACK_REASONS,
     LLMProvider,
@@ -684,8 +685,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--fsm",
         action="store_true",
-        help="FSM-прогон ДЗ-05 (S04, feat-004): state machine на LangGraph, "
-        "узлы — заглушки-транзиты; печатает порядок обхода и терминальный исход",
+        help="FSM-прогон ДЗ-05 (S04/S05): state machine на LangGraph; печатает "
+        "порядок обхода и терминальный исход (resolve_access читает права из настроек)",
+    )
+    parser.add_argument(
+        "--token",
+        default="",
+        help="dev-токен для FSM-прогона (--fsm, S05): identity — только из "
+        "проверенного токена (ADR-005); сырой --user verify не проходит",
     )
     args = parser.parse_args(argv)
     question = " ".join(args.question)
@@ -693,7 +700,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         ctx = RunContext(trace_id=uuid.uuid4().hex, user_id=args.user)
         if args.fsm:
-            return _run_fsm(container, question)
+            return _run_fsm(container, question, token=args.token)
         if args.plain:
             answer = run_tool_loop(
                 question,
@@ -722,23 +729,36 @@ def main(argv: list[str] | None = None) -> int:
         container.graph_store.close()
 
 
-def _run_fsm(container: Container, question: str) -> int:
-    """FSM-прогон (S04, feat-004): порядок обхода узлов + терминальный исход.
+def _run_fsm(container: Container, question: str, *, token: str) -> int:
+    """FSM-прогон (S04/S05): verify токена → порядок обхода узлов + исход.
 
-    Каркас ДЗ-05: узлы — заглушки-транзиты (S00-8: сбой шлюза/БД — валидный
-    исход, не traceback); содержательное наполнение — последующие сессии вехи
-    V4. Порядок обхода — из state.visited_nodes (обвязка graph.py, ruling R3),
-    исход — различимый payload FSMResult.outcome (state-agent v1.5).
+    Identity — только из проверенного токена (ADR-005, ruling R4 ARCH-GATE S05):
+    AuthProvider.verify ДО graph.invoke, verified user_id кладётся в state;
+    отказ аутентификации — вежливый отказ без LLM-вызова и деталей конфигурации
+    (S9-политика). Порядок обхода — из state.visited_nodes (ruling R3), исход —
+    различимый payload FSMResult.outcome (state-agent v1.5).
     """
-    result = container.answer_question.run(question)
+    try:
+        user_id = container.auth_provider.verify(token)
+    except AuthenticationError as exc:
+        print("Исход: rejected")
+        print("Ошибка: " + str(exc))
+        return 1
+    result = container.answer_question.run(question, user_id=user_id)
     # ASCII-стрелка: при перенаправлении stdout в файл ru-Windows (cp1251)
     # « → » дал бы UnicodeEncodeError (ревью S04 M3)
     print("Маршрут: " + " -> ".join(result.visited_nodes))
     print("Исход: " + result.outcome)
     error = result.state.get("error")
     if error:
+        # Сообщение отказа — фиксированный текст узла (S9): деталей настройки
+        # (host/роль БД) здесь нет, они — только в операторском трейсе (ревью I1)
         print("Ошибка: " + str(error.get("message")))
-    return 0
+    # Отказы — единообразный non-zero для скриптов (ревью S05 Minor-4 + re-review
+    # Minor-2): rejected (отказ на входе) и fail (технический сбой прогона —
+    # recursion_limit/missing_outcome); содержательные исходы с ответом
+    # (done/degrade/budget_stop/clarification/…) — 0
+    return 1 if result.outcome in ("rejected", "fail") else 0
 
 
 if __name__ == "__main__":

@@ -7,9 +7,13 @@
 
 from dataclasses import dataclass
 
+from text_to_sql_agent.application.ports.auth_provider import AuthProvider
 from text_to_sql_agent.application.ports.llm_provider import LLMProvider
+from text_to_sql_agent.application.ports.permission_store import PermissionStore
 from text_to_sql_agent.application.ports.tracer import Tracer
 from text_to_sql_agent.application.services.plan_joins_service import PlanJoinsService
+from text_to_sql_agent.application.services.resolve_access_node import make_resolve_access_node
+from text_to_sql_agent.application.services.resolve_access_service import ResolveAccessService
 from text_to_sql_agent.application.services.run_sql_tool import RunSqlTool
 from text_to_sql_agent.application.use_cases.answer_question import AnswerQuestion
 from text_to_sql_agent.config.settings import Settings, load_settings
@@ -19,7 +23,9 @@ from text_to_sql_agent.infrastructure.memory.pgvector_store import PgVectorStore
 from text_to_sql_agent.infrastructure.observability.composite_tracer import TeeTracer
 from text_to_sql_agent.infrastructure.observability.console_tracer import ConsoleTracer
 from text_to_sql_agent.infrastructure.observability.jsonl_tracer import JsonlTracer
+from text_to_sql_agent.infrastructure.persistence.dev_token_auth import DevTokenAuth
 from text_to_sql_agent.infrastructure.persistence.edge_proposal_store import PgEdgeProposalStore
+from text_to_sql_agent.infrastructure.persistence.pg_permission_store import PgPermissionStore
 from text_to_sql_agent.infrastructure.persistence.postgres_executor import PostgresExecutor
 from text_to_sql_agent.orchestration.routing import FSMGuardCaps
 from text_to_sql_agent.orchestration.runner import LangGraphRunner, build_fsm_runner
@@ -38,6 +44,8 @@ class Container:
     graph_store: Neo4jGraphStore
     edge_proposal_store: PgEdgeProposalStore
     plan_joins_service: PlanJoinsService
+    auth_provider: AuthProvider
+    resolve_access_service: ResolveAccessService
     fsm_runner: LangGraphRunner
     answer_question: AnswerQuestion
 
@@ -48,6 +56,7 @@ def build_container(
     console_trace: bool = False,
     knowledge_writer: bool = False,
     rrf_alpha_dense: float | None = None,
+    permission_store: PermissionStore | None = None,
 ) -> Container:
     """Дефолтная сборка; `settings=None` → fail-fast чтение окружения.
 
@@ -109,6 +118,13 @@ def build_container(
         edge_proposals=edge_proposal_store,
         budget_remaining_roubles=lambda: settings.budget_per_request_rub - llm.budget_used_rub,
     )
+    # Права и identity (S05/feat-005): чтение настроек — agent_planner (гранты
+    # SELECT 0002:80-83, ruling R1 ARCH-GATE S05); инъекция фейка — юнит-тесты
+    # wiring (прецедент rrf_alpha_dense). Identity — DevTokenAuth из Settings
+    # (ruling R4: verify в точке входа, сырой user_id не проходит).
+    permission_store = permission_store or PgPermissionStore(settings.agent_planner_dsn)
+    resolve_access_service = ResolveAccessService(permission_store)
+    auth_provider: AuthProvider = DevTokenAuth(settings.dev_token_map)
     # FSM-каркас (S04/feat-004): граф на заглушках-транзитах; содержательные
     # сервисы подменяются в последующих сессиях вехи V4 (S05/S08/S10/S11/S14/S15)
     # — сборка остаётся здесь (composition — единственное место сборки). Гвард
@@ -122,6 +138,11 @@ def build_container(
         ),
         deadline_s=settings.fsm_deadline_s,
         recursion_limit=settings.fsm_recursion_limit,
+        # S05/feat-005: resolve_access — содержательный узел (права из настроек);
+        # заглушки остаются для юнит-тестов каркаса (test_graph строит граф сам)
+        node_overrides={
+            "resolve_access": make_resolve_access_node(resolve_access_service, tracer=tracer)
+        },
     )
     answer_question = AnswerQuestion(runner=fsm_runner, llm=llm)
     return Container(
@@ -134,6 +155,8 @@ def build_container(
         graph_store=graph_store,
         edge_proposal_store=edge_proposal_store,
         plan_joins_service=plan_joins_service,
+        auth_provider=auth_provider,
+        resolve_access_service=resolve_access_service,
         fsm_runner=fsm_runner,
         answer_question=answer_question,
     )

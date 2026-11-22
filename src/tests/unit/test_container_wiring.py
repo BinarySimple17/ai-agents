@@ -9,6 +9,8 @@ build_container строит реальные компоненты, но ни о
 import pytest
 from pydantic import SecretStr
 
+from text_to_sql_agent.application.ports.auth_provider import AuthenticationError
+from text_to_sql_agent.application.ports.permission_store import UserRights
 from text_to_sql_agent.application.ports.vector_store import DocKind, KnowledgeDocument
 from text_to_sql_agent.composition.container import build_container
 from text_to_sql_agent.config.settings import Settings
@@ -81,6 +83,25 @@ def test_build_container_respects_rrf_alpha_dense(tmp_path) -> None:
     assert container.vector_store._rrf_alpha_dense == 1.0  # noqa: SLF001 — инвариант сборки
 
 
+class _FakePermissionStore:
+    """Минимальный PermissionStore для юнит-wiring FSM: known user с одной таблицей."""
+
+    def __init__(self, *, known: bool = True) -> None:
+        self._known = known
+
+    def settings_versions(self) -> dict[str, int]:
+        return {"permissions": 1, "user_roles": 1}
+
+    def fetch_rights(self, user_id: str) -> UserRights:
+        return UserRights(
+            user_id=user_id,
+            user_known=self._known,
+            roles=("analyst",) if self._known else (),
+            tables={"orders": ("*",)} if self._known else {},
+            versions={"permissions": 1, "user_roles": 1},
+        )
+
+
 def test_fsm_runner_wired_from_settings(tmp_path) -> None:
     # S04/feat-004: FSM-каркас собирается в composition, раннер соответствует
     # engine-neutral порту GraphRunner (ruling R2 ARCH-GATE S04)
@@ -95,12 +116,39 @@ def test_fsm_runner_wired_from_settings(tmp_path) -> None:
 
 def test_fsm_runner_honors_caps_and_completes(tmp_path) -> None:
     # Гвард глобальных капов — из Settings (≤ 8 вызовов / ≤ 2 ₽), не моделью:
-    # исчерпанный счётчик вызовов → budget_stop ДО первого LLM-узла
+    # исчерпанный счётчик вызовов → budget_stop ДО первого LLM-узла.
+    # user_id обязателен (S05): узел resolve_access fail-closed на пустой
+    # identity → rejected сработал бы раньше гварда (решение ребра первично)
     from text_to_sql_agent.application.services.stub_nodes import initial_state
 
-    container = build_container(_settings(tmp_path))
-    state = initial_state("Сколько заказов?")
+    container = build_container(_settings(tmp_path), permission_store=_FakePermissionStore())
+    state = initial_state("Сколько заказов?", user_id="u_analyst")
     state["budget_used"] = {"llm_calls": container.settings.fsm_max_llm_calls, "rub": 0.0}
     assert container.fsm_runner.run(state)["outcome"] == "budget_stop"
-    # Нейтральный прогон — happy path до терминала done
-    assert container.fsm_runner.run(initial_state("Сколько заказов?"))["outcome"] == "done"
+    # Нейтральный прогон — happy path до терминала done; resolve_access отдал
+    # права из стора в state (S00 контракт 3: {tables: {table: [columns]}})
+    result = container.fsm_runner.run(initial_state("Сколько заказов?", user_id="u_analyst"))
+    assert result["outcome"] == "done"
+    assert result["permissions"] == {"orders": ["*"]}
+
+
+def test_fsm_rejects_unknown_user_without_llm_calls(tmp_path) -> None:
+    # Fail-closed (ruling R6 ARCH-GATE S05): unknown user_id → rejected, БЕЗ
+    # единого LLM-вызова (узел до первого LLM-узла clarify) — behavior feat-005
+    from text_to_sql_agent.application.services.stub_nodes import initial_state
+
+    container = build_container(
+        _settings(tmp_path), permission_store=_FakePermissionStore(known=False)
+    )
+    result = container.fsm_runner.run(initial_state("Сколько заказов?", user_id="ghost"))
+    assert result["outcome"] == "rejected"
+    assert result["budget_used"]["llm_calls"] == 0
+    assert result["error"]["class"] == "unknown_user"
+
+
+def test_auth_provider_fail_closed_without_tokens(tmp_path) -> None:
+    # AGENT_DEV_TOKENS пуст → DevTokenAuth отклоняет любой токен (ruling R4:
+    # дефолтного пользователя нет)
+    container = build_container(_settings(tmp_path))
+    with pytest.raises(AuthenticationError):
+        container.auth_provider.verify("anything")

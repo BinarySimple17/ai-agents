@@ -17,6 +17,7 @@ from text_to_sql_agent.domain.entities import (
 # Контракт стыка 1 S00 дословно (плюс обвязочные поля orchestration — R3/R4)
 CONTRACT_1_FIELDS = {
     "question",
+    "user_id",  # verified identity (R4 S05) — точка входа, resolve_access читает
     "rewritten_question",
     "assumptions",
     "permissions",

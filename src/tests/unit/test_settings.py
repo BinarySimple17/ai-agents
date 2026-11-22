@@ -118,6 +118,17 @@ def test_secret_never_leaks_into_repr(clean_env):
     assert "agent_ro:agent_ro@" not in repr(settings)
 
 
+def test_dev_tokens_never_leak_into_repr(clean_env):
+    # Регрессия (ревью S05 Important-2): dev-токены — credential как пароли,
+    # SecretStr; до фикса field был plain str и repr(Settings) печатал токен
+    _set_required(clean_env, AGENT_DEV_TOKENS="u_analyst:super-secret-token")
+    settings = load_settings()
+    assert "super-secret-token" not in repr(settings)
+    assert "super-secret-token" not in str(settings)
+    # Функциональность сохранена: парсер читает через get_secret_value()
+    assert settings.dev_token_map == {"u_analyst": "super-secret-token"}
+
+
 def test_compose_only_vars_ignored(clean_env):
     _set_required(clean_env)
     clean_env.setenv("POSTGRES_DB", "agent")

@@ -93,6 +93,10 @@ class AgentState(TypedDict, total=False):
     Поле              Владелец (пишет)
     ================  ==========================================================
     question          точка входа (не узел); узлы только читают
+    user_id           точка входа (AuthProvider.verify ДО прогона — ruling R4
+                      S05: identity только из проверенного токена, сырой user_id
+                      verify не обходит); resolve_access читает, fail-closed на
+                      пустом
     rewritten_question  clarify
     assumptions       clarify
     permissions       resolve_access
@@ -140,6 +144,7 @@ class AgentState(TypedDict, total=False):
 
     # Контракт стыка 1, S00 дословно
     question: str
+    user_id: str  # verified identity (R4 S05) — точка входа, узел resolve_access читает
     rewritten_question: str | None
     assumptions: list[str]
     permissions: dict[str, Any]  # {tables: {table: [columns]}} — scope (стык 3)
