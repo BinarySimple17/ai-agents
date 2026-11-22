@@ -1,0 +1,6 @@
+Маршрут: resolve_access -> clarify -> plan_joins -> build_skeleton -> generate_sql -> validate_sql -> diagnose_error -> generate_sql -> validate_sql -> check_cost -> execute_sql -> compact_result -> interpret_result
+Исход: done
+Ответ: Заказов у клиентов из Бурундии нет: 0 шт.
+SQL: SELECT COUNT(*) AS orders_count FROM orders INNER JOIN customers ON orders.customer_id = customers.customer_id WHERE (customers.country = 'BI') LIMIT 1000
+Допущение: customers.created_at — критерий «новый клиент» (по created_at)
+Стоимость: 0.0000 руб.

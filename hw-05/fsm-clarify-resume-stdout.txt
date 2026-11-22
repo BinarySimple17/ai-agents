@@ -1,0 +1,7 @@
+Уточнение: Нужно ли учитывать только заказы с `campaign_id IS NOT NULL` (только из рекламы), или также включать заказы без кампании?
+Ответ: Маршрут: resolve_access -> clarify -> clarify -> plan_joins -> build_skeleton -> generate_sql -> validate_sql -> diagnose_error -> generate_sql -> validate_sql -> check_cost -> execute_sql -> compact_result -> interpret_result
+Исход: done
+Ответ: Всего 20 клиентов, пришедших из рекламы (first-touch: первый заказ клиента из ads-кампании). Данные не усечены и точны.
+SQL: SELECT COUNT(DISTINCT orders.customer_id) AS clients_count FROM campaigns INNER JOIN orders ON campaigns.campaign_id = orders.campaign_id WHERE (orders.campaign_id IS NOT NULL) LIMIT 1000
+Допущение: «пришли из рекламы» = first-touch: первый заказ клиента из ads-кампании; any-touch завышает цифру; campaign_id надёжен с 2026-03; NULL campaign_id — заказы вне кампаний, INNER JOIN их молча теряет (ADR-006 §4.7)
+Стоимость: 0.0000 руб.

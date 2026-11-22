@@ -1,0 +1,20 @@
+▶ Вопрос: Сколько заказов у клиентов из РФ?
+  → узел resolve_access
+  → узел clarify
+  · qwen3.8-9b · 1031→63 ток · 6.0с · 0.00₽
+  · clarify: исход unambiguous, допущений 1
+  → узел plan_joins
+  · plan_joins: исход plan, gv 223, кандидаты: orders, customers
+  → узел build_skeleton
+  → узел generate_sql
+  · qwen3.8-9b · 1240→50 ток · 5.8с · 0.00₽
+  · generate_sql: исход sql, таблиц 2, вызовов 1, эскалация нет
+  → узел validate_sql
+  · validate_sql: исход ok, замечаний 0, LIMIT 1000
+  → узел check_cost
+  → узел execute_sql
+  → узел compact_result
+  → узел interpret_result
+  · qwen3.8-9b · 682→25 ток · 1.2с · 0.00₽
+  · qwen3.8-9b · 743→37 ток · 0.6с · 0.00₽
+  · interpret: answer, строк 1, 0.00₽

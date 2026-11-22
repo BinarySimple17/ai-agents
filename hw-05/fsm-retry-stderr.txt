@@ -1,0 +1,28 @@
+▶ Вопрос: Сколько заказов у клиентов из Бурундии?
+  → узел resolve_access
+  → узел clarify
+  · qwen3.8-9b · 776→67 ток · 5.9с · 0.00₽
+  · clarify: исход unambiguous, допущений 1
+  → узел plan_joins
+  · plan_joins: исход plan, gv 225, кандидаты: orders, customers
+  → узел build_skeleton
+  → узел generate_sql
+  · qwen3.8-9b · 888→50 ток · 5.5с · 0.00₽
+  · generate_sql: исход sql, таблиц 2, вызовов 1, эскалация нет
+  → узел validate_sql
+  · validate_sql: исход hallucination, замечаний 1, LIMIT 1000
+  → узел diagnose_error
+  · qwen3.8-9b · 616→84 ток · 2.0с · 0.00₽
+  · diagnose: класс semantics, вызовов 1
+  → узел generate_sql
+  · qwen3.8-9b · 1012→50 ток · 5.9с · 0.00₽
+  · generate_sql: исход sql, таблиц 2, вызовов 1, эскалация нет
+  → узел validate_sql
+  · validate_sql: исход ok, замечаний 0, LIMIT 1000
+  → узел check_cost
+  → узел execute_sql
+  → узел compact_result
+  → узел interpret_result
+  · qwen3.8-9b · 675→46 ток · 1.5с · 0.00₽
+  · qwen3.8-9b · 736→41 ток · 0.7с · 0.00₽
+  · interpret: answer, строк 1, 0.00₽
