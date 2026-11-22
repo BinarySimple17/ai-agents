@@ -150,7 +150,7 @@ uv run pytest src/tests/unit/test_graph.py src/tests/unit/test_interpret.py -q  
 - [x] Бюджет исчерпан: честный отказ или incomplete-флаг; частичный результат — только с incomplete (behavior feat-015, контракт budget_stop) — R3: терминал-карта + exception-fallback, тесты обоих путей
 - [x] BudgetGuard — порт из S00; шов budget_remaining_roubles переведён; резерв 0,6 ₽ сохранён (D-016) — ruling R4, wiring-тест 4 сервисов на одном источнике
 - [x] usage_notes рёбер раскрываются в допущениях ответа (преемственность флагмана ДЗ-04) — JoinPlan.assumptions → final_answer.usage_notes (тест + live «агрегация поверх ребра…»)
-- [ ] Фича закрыта: `make verify-feature F=feat-015` → PASS, state=passing with evidence — после REVIEW-GATE
+- [x] Фича закрыта: `make verify-feature F=feat-015` → PASS, state=passing с evidence — «uv run pytest src/tests/unit/test_interpret.py -q» exited 0, 66 passed (2026-11-22)
 
 ## Ловушки
 
@@ -171,7 +171,7 @@ uv run pytest src/tests/unit/test_graph.py src/tests/unit/test_interpret.py -q  
 ## Гейты субагентов (заполняется по факту, до закрытия сессии)
 
 - ARCH-GATE: ✅ needs-decision → rulings R1–R8 закрыты ДО кода (canon-check architect 2026-11-22: план по канону; blocker — живой ADR-007:74 «degrade — код, без LLM»/«0 ₽» противоречит ADR-005:171 + state-agent v1.8 + routing.LLM_NODES → обязателен amend ADR-007 v1.3 тем же коммитом с degrade)
-- REVIEW-GATE: [✅ <Ready to merge? вердикт> + <BASE7>..<HEAD7> | N/A — <причина>]
+- REVIEW-GATE: ✅ Ready to merge: Yes (волна 1 «With fixes» 0C/2I/3M: I1 cost_rub — снапшот после вызова + регрессия с растущим guard'ом; I2 parity-гвард флагов degrade; M1 стемы-маркеры; M2 entities; M3 тул report_refusal → fix-волна 4655c66; scoped re-review 5/5 закрыто, регрессий нет — доводка гварда шаблонов + BL-020 [eb29e60]; 072fa53..eb29e60)
 
 ### Rulings ARCH-GATE S15 (canon-check 2026-11-22, до первого код-коммита)
 
@@ -193,7 +193,8 @@ uv run pytest src/tests/unit/test_graph.py src/tests/unit/test_interpret.py -q  
   - **Task 3**: domain/degradation.py (DegradationCase cause/situation/available/forbidden + fallback_text) + DegradeService (mid, одна попытка, тул report_refusal, санитайзер + шаблон-fallback) + degrade_node (cause-priority, final_answer с sql=None, события) + R3 (TERMINAL_PAYLOADS в make_terminal + exception-fallback answer_question) + amend ADR-007 v1.3. 26 тестов.
   - **Task 4**: infrastructure/token_budget.py (TokenBudgetGuard: spent-зеркало/remaining floor 0/reset-делегат) + container (4 лямбды → guard.remaining_rub, BL-015 закрыт; Container.budget_guard) + BL-005 закрыт (EVENT_LLM_* в порту tracer; provider/console_tracer импортируют). 6+1 тестов.
   - **Task 5**: container node_overrides (compact/interpret/degrade + инъекции interpret_service/degrade_service) + FSMResult.answer → final_answer + CLI _print_final_answer. 3 FSM-сценария на реальном графе.
-  - **Тесты**: unit 805 + integration 82 (init.sh baseline 818 → с S15-узлами 887; ruff чист); самопроверки всех задач зелёные.
+  - **Тесты**: unit 807 + integration 82 (ruff чист); самопроверки всех задач зелёные; verify-feature feat-015 PASS (66 test_interpret).
+  - **REVIEW-GATE**: волна 1 «With fixes» 0C/2I/3M → fix-волна 4655c66 (I1 — cost_rub payload/трейса ПОСЛЕ вызова strong [пользовательский контракт, ~0,58 ₽ из капа] + регрессия с растущим guard-фейком, кусающая до-фикс; I2 — parity-гвард литералов флагов degrade vs routing; M1 — стемы «содерж/имеютс/наличи» + 2 adversarial-кейса; M2 — entities карта владения; M3 — родной тул в промпт-тесте) → scoped re-review «Ready to merge: Yes» (5/5 закрыто, регрессий нет) → доводка eb29e60 (гвард шаблонов теми же стемами + BL-020 [эвристика стемов не исчерпывающая — P3]).
   - **Layer-3 live** (локальный шлюз qwen3.8-9b + БД): ① happy-path «Сколько всего заказов в базе?» — 10 узлов → done, ответ «В базе всего 1000 заказов» + исполненный SQL + допущение из usage_notes ребра (fanout_guard ADR-004) + стоимость; ② clarify-цикл u_logist «премии» — права-фильтрованный мир честно не содержит чужих таблиц (уточнение ×3 → clarification по TTL); ③ полный цикл «Сколько клиентов имеет более одной рекламной кампании?» — генерация → SQL-ошибка → diagnose → ретраи ×2 → degrade с честным отказом (только свои темы, без чужих имён и подтверждений существования — санитайзер/S9 в бою).
 - Отклонения от плана:
   - Port — Task 4 планировался после Task 2/3, но порт BudgetGuard понадобился узлам уже в Task 2 (снапшот ₽/cost_rub) — Protocol создан в Task 2, реализация и перевод шва — в Task 4 по плану; поведение не менялось.
