@@ -15,6 +15,8 @@ from text_to_sql_agent.application.ports.tracer import Tracer
 from text_to_sql_agent.application.services.build_skeleton_node import make_build_skeleton_node
 from text_to_sql_agent.application.services.clarify_node import make_clarify_node
 from text_to_sql_agent.application.services.clarify_service import ClarifyService
+from text_to_sql_agent.application.services.diagnose_error_node import make_diagnose_error_node
+from text_to_sql_agent.application.services.diagnose_error_service import DiagnoseService
 from text_to_sql_agent.application.services.execute_sql_node import make_execute_sql_node
 from text_to_sql_agent.application.services.generate_sql_node import make_generate_sql_node
 from text_to_sql_agent.application.services.generate_sql_service import GenerateSqlService
@@ -59,6 +61,7 @@ class Container:
     generate_sql_service: GenerateSqlService
     validate_sql_service: ValidateSqlService
     clarify_service: ClarifyService
+    diagnose_service: DiagnoseService
     auth_provider: AuthProvider
     resolve_access_service: ResolveAccessService
     # Сессии interrupt (S08, ruling R2): ValkeyCheckpointer в проде;
@@ -77,6 +80,7 @@ def build_container(
     permission_store: PermissionStore | None = None,
     checkpointer: object | None = None,
     clarify_service: ClarifyService | None = None,
+    diagnose_service: DiagnoseService | None = None,
     plan_joins_service: PlanJoinsService | None = None,
     generate_sql_service: GenerateSqlService | None = None,
     validate_sql_service: ValidateSqlService | None = None,
@@ -181,6 +185,13 @@ def build_container(
             vector_store=vector_store,
             budget_remaining_roubles=lambda: settings.budget_per_request_rub - llm.budget_used_rub,
         )
+    # Разбор ошибок (S14/feat-014): qwen/cheap + futile-классы без LLM (ADR-005);
+    # шов бюджета — ruling Q7 (тот же, что plan_joins/clarify/generate_sql)
+    if diagnose_service is None:
+        diagnose_service = DiagnoseService(
+            llm=llm,
+            budget_remaining_roubles=lambda: settings.budget_per_request_rub - llm.budget_used_rub,
+        )
     # Сессии interrupt (S08, ruling R2 ARCH-GATE): Valkey + TTL из Settings;
     # инъекция фейка/MemorySaver — юнит-тесты без инфры (S00 правило 7)
     checkpointer = checkpointer or ValkeyCheckpointer(
@@ -216,6 +227,10 @@ def build_container(
             # (маршрут — routing.route_execute_sql: дефект → degrade, ошибка →
             # diagnose_error, потерянный джойн → diagnose_error, пусто → compact_result)
             "execute_sql": make_execute_sql_node(executor, tracer=tracer),
+            # S14/feat-014: diagnose_error — разбор + назначение ретрая генератору
+            # (диагноз qwen/cheap; futile-классы — код без LLM; замыкает цикл
+            # самокоррекции ADR-002 §4: generate → validate → execute → diagnose → generate)
+            "diagnose_error": make_diagnose_error_node(diagnose_service, tracer=tracer),
             "validate_sql": make_validate_sql_node(
                 validate_sql_service,
                 catalog_provider=permission_store.data_catalog,
@@ -237,6 +252,7 @@ def build_container(
         generate_sql_service=generate_sql_service,
         validate_sql_service=validate_sql_service,
         clarify_service=clarify_service,
+        diagnose_service=diagnose_service,
         auth_provider=auth_provider,
         resolve_access_service=resolve_access_service,
         checkpointer=checkpointer,

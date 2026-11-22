@@ -52,6 +52,11 @@ FLAG_RETRY_GENERATE_STEP_SQL = "retry_generate_step_sql"  # diagnose: ретра
 FLAG_RETRY_TARGET = "retry_target"  # гейт: чей счётчик ретраев активен
 FLAG_GENERATE_SQL_FAILED = "generate_sql_failed"  # генерация невозможна (исчерпание
 # генератора / дефект скелета) → degrade (S10, ruling R2 ARCH-GATE)
+FLAG_GENERATE_SQL_RETRYABLE = "generate_sql_retryable"  # generate_sql (S14, ruling R3
+# ARCH-GATE — BL-016): generation-fail на FSM-ретрай-визите (битый выход модели) —
+# ретрай оправдан → гейт retry_generate_sql (визит 3 — эскалация strong с
+# бюджет-проверкой в сервисе); первый визит флаг не ставит (внутренние M1 уже
+# потрачены), исчерпание fuse — degrade (R2 в своей зоне)
 
 # Одноразовые флаги перехода (шаговый цикл): описывают завершённый переход,
 # а не вердикт узла — на ре-входе в узел гасятся биндером (graph.py), иначе
@@ -212,15 +217,25 @@ def route_plan_query(state: State) -> str:
 
 
 def route_generate_sql(state: State) -> str:
-    """generate_sql → validate_sql | degrade (исчерпание M1 — ruling R2 ARCH-GATE S10).
+    """generate_sql → retry-гейт (generation-fail, R3) | validate_sql | degrade.
 
-    Валидация не перепрыгивается: единственное ребро к исполнению проходит через
-    validate_sql — свойство структуры (ADR-002 §5: «ребро execute_sql существует
-    только из validate_sql»). Отказ генератора (ретраи исчерпаны/бюджет/дефект
-    скелета) → degrade: носитель отказа генератора при исчерпании — канон
-    degrade (state-agent; отказ формулирует S15 бизнес-понятиями).
+    Приоритет причин (ruling R3 ARCH-GATE S14 — BL-016): generation-fail на
+    FSM-ретрай-визите (битый выход модели — ретрай оправдан) при незатраченном
+    fuse → гейт retry_generate_sql (инкремент кодом ребра → визит 3 — эскалация
+    strong с бюджет-проверкой в сервисе; детур через diagnose_error отвергнут —
+    битый выход генератора самодиагностируем). Валидация не перепрыгивается:
+    единственное ребро к исполнению проходит через validate_sql — свойство
+    структуры (ADR-002 §5: «ребро execute_sql существует только из validate_sql»).
+    Остальные отказы (шлюз/retrieval/бюджет/исчерпание fuse) → degrade:
+    носитель отказа генератора при исчерпании — канон degrade (ruling R2 S10).
     """
-    if (state.get("route_flags") or {}).get(FLAG_GENERATE_SQL_FAILED):
+    flags = state.get("route_flags") or {}
+    if (
+        flags.get(FLAG_GENERATE_SQL_RETRYABLE)
+        and attempts_used(state, "generate_sql") < MAX_NODE_RETRIES
+    ):
+        return "retry_generate_sql"
+    if flags.get(FLAG_GENERATE_SQL_FAILED):
         return "degrade"
     return "validate_sql"
 
