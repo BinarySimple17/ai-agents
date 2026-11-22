@@ -261,3 +261,65 @@ class TestStoreBoundary:
         saver, _ = _saver(monkeypatch, _FakeClock(), fail=True)
         with pytest.raises(CheckpointStoreError, match="хранилище сессий недоступно"):
             saver.list(_config("t1"))
+
+
+# --- Allowlist msgpack-сериализации (S27, находка живого resume) ---
+# Дефолтный JsonPlusSerializer пропускал незарегистрированные типы с
+# deprecation-warning «will be blocked in a future version» — VO из AgentState
+# (Assumption на interrupt-чекпоинте) десериализовались «на честном слове».
+
+
+class _Foreign:
+    """Тип вне allowlist — имитация чужого/забытого класса в state."""
+
+
+def _checkpointer(monkeypatch: pytest.MonkeyPatch) -> ValkeyCheckpointer:
+    # Redis.from_url ленив — соединения нет до первой команды; serde-тесты
+    # используют только self.serde, инфра не нужна (S00 правило 7)
+    return ValkeyCheckpointer("redis://localhost:6399/0", ttl_s=600)
+
+
+def test_domain_vos_roundtrip_without_unregistered_warning(
+    monkeypatch: pytest.MonkeyPatch, recwarn: pytest.WarningsRecorder
+) -> None:
+    import warnings as _warnings
+
+    from text_to_sql_agent.domain.entities import Assumption
+    from text_to_sql_agent.domain.result_compact import ResultCompact
+    from text_to_sql_agent.domain.skeleton import Skeleton
+
+    ckpt = _checkpointer(monkeypatch)
+    assumption = Assumption(source="user_answer", text="за 2026 год")
+    skeleton = Skeleton(
+        tables=("orders", "customers"),
+        from_table="orders",
+        join_sections=("INNER JOIN customers ON orders.customer_id = customers.customer_id",),
+        mandatory_predicates=(),
+        skeleton_hash="abc123",
+    )
+    blob = ckpt.serde.dumps_typed((assumption, skeleton, None))
+    with _warnings.catch_warnings():
+        _warnings.simplefilter("error")  # «unregistered type» теперь ошибка теста
+        assumption_back, skeleton_back, _ = ckpt.serde.loads_typed(blob)
+    assert assumption_back == assumption
+    assert skeleton_back == skeleton
+    assert not [w for w in recwarn if "unregistered" in str(w.message)]
+    # ResultCompact — тот же allowlist (pydantic-VO из state, S15)
+    compact = ResultCompact(row_count=1, sample=[{"n": 5}])
+    blob2 = ckpt.serde.dumps_typed((compact,))
+    (compact_back,) = ckpt.serde.loads_typed(blob2)
+    assert compact_back == compact
+
+
+def test_unregistered_type_is_blocked_not_silently_allowed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Deny-by-default: тип вне allowlist отвергается громко на DUMP (строже
+    # прежнего warning-режима и «будущей блокировки» LangGraph — чекпоинт с
+    # забытым VO не запишется молча); новый VO в state добавляется в
+    # _CHECKPOINT_MSGPACK_TYPES осознанно
+    import pytest as _pytest
+
+    ckpt = _checkpointer(monkeypatch)
+    with _pytest.raises(TypeError):
+        ckpt.serde.dumps_typed((_Foreign(),))
