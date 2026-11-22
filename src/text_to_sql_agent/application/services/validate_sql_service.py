@@ -1,0 +1,535 @@
+"""Сервис validate_sql — sqlglot-парсинг и обход AST → нейтральный IR (feat-011, S11).
+
+Разделение по ruling R4 ARCH-GATE: ЗДЕСЬ — механика (парсинг postgres, ровно одна
+инструкция, whitelist типов узлов fail-closed, извлечение IR, подстановки текста);
+ПОЛИТИКА (функции/LIMIT/ACL/скелет) — ``domain.sql_validation``. Форм-отказ
+парсинга/обхода — вердикт hallucination (синтаксис не существует в мире агента —
+retry оправдан, ADR-005 §4).
+
+Whitelist узлов — exact-match по типу (ADR-005 §4 п.1: «узел вне whitelist'а →
+отказ, а не „не проверили → пропустили"»; sqlglot богаче любого списка —
+fail-closed превращает неполноту из молчаливой утечки в явный отказ). Строковые
+литералы остаются литералами (S6 hw-01): sqlglot не парсит их содержимое —
+вторые инструкции/SET внутри ``'...'`` не образуют узлов AST.
+
+Обход вложенности: CTE/UNION/подзапросы/EXISTS/LATERAL/производные таблицы —
+каждый скоуп обрабатывается теми же правилами; резолюция алиасов идёт по
+скоуп-цепочке (корреляция подзапросов), граница корреляции — тело CTE (семантика
+PostgreSQL: WITH не видит внешние алиасы).
+"""
+
+from collections.abc import Iterator, Mapping, Sequence
+from dataclasses import dataclass
+
+import sqlglot
+from pydantic import BaseModel, ConfigDict
+from sqlglot import exp
+from sqlglot.errors import ParseError as SqlParseError
+from sqlglot.errors import TokenError as SqlTokenError
+
+from text_to_sql_agent.domain.join_plan import JoinPlan
+from text_to_sql_agent.domain.skeleton import Skeleton, normalize_sql_fragment
+from text_to_sql_agent.domain.sql_validation import (
+    SqlAudit,
+    SqlColumn,
+    SqlJoin,
+    ValidationOutcome,
+    ValidationVerdict,
+    validate_sql,
+)
+
+
+class SqlAuditError(Exception):
+    """Форм-отказ парсинга/обхода (не политика прав): вердикт — hallucination."""
+
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
+        super().__init__(reason)
+
+
+# Корень: один SELECT или set-операция (UNION/EXCEPT/INTERSECT — behavior «тела
+# проверяются теми же правилами»; несоответствие скелету ловит проверка Task 3,
+# содержимое веток классифицируется до вердикта о структуре).
+_ROOT_TYPES: tuple[type[exp.Expression], ...] = (exp.Select, exp.Union, exp.Except, exp.Intersect)
+
+# Whitelist типов узлов — exact-match (ADR-005 §4 п.1). Держится минимальным:
+# расширение — осознанное решение с тестом на adversarial-корпусе (§4 п.8).
+# DML/DDL (Insert/Update/Delete/Merge/Create/Drop/Alter/Truncate), служебные
+# инструкции (Command: SET/COPY/CALL/DO), блокировки (Lock: FOR UPDATE) и прочее
+# не входят ПО ПОСТРОЕНИЮ — fail-closed на всём незнакомом.
+_NODE_WHITELIST: frozenset[type[exp.Expression]] = frozenset(
+    {
+        exp.Select,
+        exp.From,
+        exp.Join,
+        exp.Where,
+        exp.Group,
+        exp.Having,
+        exp.Order,
+        exp.Ordered,
+        exp.Limit,
+        exp.Offset,
+        exp.Column,
+        exp.Identifier,
+        exp.Literal,
+        exp.Boolean,
+        exp.Null,
+        exp.Star,
+        exp.Table,
+        exp.TableAlias,
+        exp.Alias,
+        exp.CTE,
+        exp.With,
+        exp.Subquery,
+        exp.Lateral,
+        exp.Var,
+        exp.Paren,
+        exp.Union,
+        exp.Except,
+        exp.Intersect,
+        exp.Exists,
+        exp.In,
+        exp.Between,
+        exp.Like,
+        exp.ILike,
+        exp.Is,
+        exp.Not,
+        exp.And,
+        exp.Or,
+        exp.EQ,
+        exp.NEQ,
+        exp.GT,
+        exp.GTE,
+        exp.LT,
+        exp.LTE,
+        exp.Add,
+        exp.Sub,
+        exp.Mul,
+        exp.Div,
+        exp.Mod,
+        exp.DPipe,
+        exp.Neg,
+        exp.Cast,
+        exp.DataType,
+        exp.Case,
+        exp.If,
+        exp.Window,
+        exp.Distinct,
+        exp.Tuple,
+        exp.GroupingSets,
+        exp.Rollup,
+        exp.Cube,
+        exp.Count,
+        exp.Sum,
+        exp.Avg,
+        exp.Min,
+        exp.Max,
+        exp.Coalesce,
+        exp.Nullif,
+        exp.Lower,
+        exp.Upper,
+        exp.Length,
+        exp.Abs,
+        exp.Round,
+        exp.TimestampTrunc,
+        exp.DateTrunc,
+        exp.Anonymous,
+        exp.Array,
+        exp.Any,
+        exp.Extract,
+        exp.CurrentDate,
+        exp.CurrentTimestamp,
+    }
+)
+
+# Структурные наследники exp.Func, которые функциями по смыслу не являются
+# (имя попало бы в allow-list-проверку ложно): CASE/WHEN, EXISTS, конструктор массива.
+_STRUCTURAL_FUNCS: tuple[type[exp.Expression], ...] = (exp.Case, exp.If, exp.Array, exp.Exists)
+
+# Маркер пары ON, которую извлекатель не свёл к равенству колонок (OR, литералы,
+# USING) — сверка со скелетом равенством даст mismatch: ON фиксирован скелетом.
+_COMPLEX_ON = ("__complex_on__", "__complex_on__")
+
+
+@dataclass(frozen=True, slots=True)
+class _Source:
+    """Источник скоупа: ``ref`` — как на него ссылаются в SQL, ``name`` — bare-имя
+    сущности для проверки прав (таблица/CTE; производная таблица — её алиас)."""
+
+    ref: str
+    name: str
+    kind: str  # "table" | "cte" | "sub"
+
+
+def build_sql_audit(sql: str) -> SqlAudit:
+    """IR запроса (публичная точка property-сверки с парсером — ruling R3, Task 4)."""
+    return _build_audit(_parse_tree(sql))
+
+
+def _parse_tree(sql: str) -> exp.Expression:
+    """Парсинг postgres + форма: одна инструкция, корень SELECT, whitelist узлов."""
+    try:
+        statements = sqlglot.parse(sql, read="postgres")
+    except (SqlParseError, SqlTokenError) as exc:
+        # TokenError не наследует ParseError (незакрытые кавычки/комментарии) —
+        # тот же исход (прецедент S10 C1-регресс)
+        raise SqlAuditError(f"SQL не парсится (postgres): {type(exc).__name__}") from None
+    if len(statements) != 1 or statements[0] is None:
+        raise SqlAuditError("разрешён ровно один SELECT-запрос — вторых инструкций нет")
+    tree = statements[0]
+    if not isinstance(tree, _ROOT_TYPES):
+        raise SqlAuditError("корень запроса — только SELECT (DML/DDL/SET/COPY/CALL/DO отвергаются)")
+    for node in tree.walk():
+        if type(node) not in _NODE_WHITELIST:
+            raise SqlAuditError(
+                f"конструкция {type(node).__name__} вне whitelist'а валидатора — "
+                "deny-by-default: неизвестное не пропускается"
+            )
+    return tree
+
+
+def _build_audit(tree: exp.Expression) -> SqlAudit:
+    """Извлечение IR из дерева (без политики — решения принимает domain)."""
+    cte_names = frozenset(cte.alias.lower() for cte in tree.find_all(exp.CTE))
+    root_select = tree if type(tree) is exp.Select else None
+
+    scopes = list(tree.find_all(exp.Select))
+    sources_by_scope = {id(s): _scope_sources(s, cte_names) for s in scopes}
+    maps_by_scope = {
+        id(s): [{src.ref: src for src in sources_by_scope[id(m)]} for m in _scope_chain(s)]
+        for s in scopes
+    }
+
+    columns: list[SqlColumn] = []
+    seen_columns: set[tuple[str, tuple[str, ...]]] = set()
+    for scope in scopes:
+        local_sources = sources_by_scope[id(scope)]
+        for node in _local_nodes(scope):
+            if not isinstance(node, exp.Column):
+                continue
+            if isinstance(node.this, exp.Star):
+                continue  # t.* — проекция звёздами, собирается в star_sources
+            candidates = _resolve_candidates(node, maps_by_scope[id(scope)], local_sources)
+            key = (node.name.lower(), candidates)
+            if key not in seen_columns:
+                seen_columns.add(key)
+                columns.append(SqlColumn(name=node.name.lower(), candidates=candidates))
+
+    star_sources: list[tuple[str, ...]] = []
+    for scope in scopes:
+        maps = maps_by_scope[id(scope)]
+        for item in scope.args.get("expressions") or []:
+            if isinstance(item, exp.Star):
+                star_sources.append(tuple(src.name for src in sources_by_scope[id(scope)]))
+            elif isinstance(item, exp.Column) and isinstance(item.this, exp.Star):
+                source = _resolve_qualifier((item.table or "").lower(), maps)
+                star_sources.append((source.name,))
+
+    return SqlAudit(
+        from_table=_from_table(root_select, cte_names),
+        tables=_collect_tables(tree, cte_names),
+        cte_names=tuple(sorted(cte_names)),
+        columns=tuple(columns),
+        joins=_collect_joins(root_select, maps_by_scope, cte_names),
+        where_conjuncts=_collect_where(root_select),
+        outer_limit=_collect_outer_limit(tree),
+        functions=_collect_functions(tree),
+        star_sources=tuple(star_sources),
+    )
+
+
+def _expr_source(expr: exp.Expression, cte_names: frozenset[str]) -> _Source:
+    """Источник FROM/JOIN: таблица (или ссылка на CTE), производная таблица, LATERAL."""
+    if isinstance(expr, exp.Table):
+        name = expr.name.lower()
+        if not expr.db and name in cte_names:
+            return _Source(ref=(expr.alias or name).lower(), name=name, kind="cte")
+        return _Source(ref=(expr.alias or name).lower(), name=name, kind="table")
+    if isinstance(expr, (exp.Subquery, exp.Lateral)):
+        ref = (expr.alias or "").lower()
+        if not ref:
+            raise SqlAuditError(
+                "производная таблица (подзапрос/LATERAL в FROM/JOIN) требует алиаса"
+            )
+        return _Source(ref=ref, name=ref, kind="sub")
+    raise SqlAuditError(
+        f"источник {type(expr).__name__} в FROM/JOIN не поддерживается валидатором — "
+        "deny-by-default"
+    )
+
+
+def _scope_sources(scope: exp.Select, cte_names: frozenset[str]) -> list[_Source]:
+    """Источники скоупа в порядке появления (FROM + JOIN-секции, включая comma-join)."""
+    sources: list[_Source] = []
+    from_clause = scope.args.get("from_")
+    if from_clause is not None:
+        sources.append(_expr_source(from_clause.this, cte_names))
+    for join in scope.args.get("joins") or []:
+        sources.append(_expr_source(join.this, cte_names))
+    return sources
+
+
+def _scope_chain(scope: exp.Select) -> list[exp.Select]:
+    """Скоуп-цепочка внутренний→внешний для резолюции алиасов (корреляция).
+
+    Граница корреляции — CTE: тело WITH не видит алиасы внешнего запроса
+    (семантика PostgreSQL); подзапросы/EXISTS/LATERAL коррелируют свободно.
+    """
+    chain = [scope]
+    crossed_cte = False
+    node = scope.parent
+    while node is not None:
+        if isinstance(node, exp.CTE):
+            crossed_cte = True
+        if type(node) is exp.Select and not crossed_cte:
+            chain.append(node)
+        node = node.parent
+    return chain
+
+
+def _local_nodes(scope: exp.Select) -> Iterator[exp.Expression]:
+    """Узлы скоупа без спуска во вложенные SELECT (CTE/подзапросы/ветки UNION —
+    каждый обрабатывается собственным скоупом с теми же правилами)."""
+    nested = {id(s) for s in scope.find_all(exp.Select) if s is not scope}
+    for node in scope.walk():
+        if node is scope:
+            continue
+        parent = node.parent
+        inside_nested = False
+        while parent is not None and parent is not scope:
+            if id(parent) in nested:
+                inside_nested = True
+                break
+            parent = parent.parent
+        if not inside_nested:
+            yield node
+
+
+def _resolve_qualifier(qualifier: str, maps: list[dict[str, _Source]]) -> _Source:
+    """Квалификатор колонки → источник (внутренний скоуп → внешний)."""
+    for mapping in maps:
+        source = mapping.get(qualifier)
+        if source is not None:
+            return source
+    raise SqlAuditError(f"квалификатор {qualifier!r} не резолвится к источнику запроса")
+
+
+def _resolve_candidates(
+    column: exp.Column,
+    maps: list[dict[str, _Source]],
+    local_sources: list[_Source],
+) -> tuple[str, ...]:
+    """Кандидаты-источники колонки (Ловушка 5): квалифицированная — один,
+    unqualified — все источники СВОЕГО скоупа (не «повезёт с дефолтом»)."""
+    qualifier = (column.table or "").lower()
+    if qualifier:
+        return (_resolve_qualifier(qualifier, maps).name,)
+    if not local_sources:
+        raise SqlAuditError(f"колонка {column.name!r} без источников FROM/JOIN в скоупе")
+    return tuple(source.name for source in local_sources)
+
+
+def _from_table(root_select: exp.Select | None, cte_names: frozenset[str]) -> str:
+    """bare-имя источника FROM внешнего запроса ("" у set-операций)."""
+    if root_select is None:
+        return ""
+    from_clause = root_select.args.get("from_")
+    if from_clause is None:
+        return ""
+    return _expr_source(from_clause.this, cte_names).name
+
+
+def _collect_tables(tree: exp.Expression, cte_names: frozenset[str]) -> tuple[str, ...]:
+    """Все relation-ссылки как написано (схема квалифицируется); ссылки на CTE —
+    не таблицы мира (их тела проверяются теми же правилами на своём скоупе)."""
+    tables: list[str] = []
+    seen: set[str] = set()
+    for table in tree.find_all(exp.Table):
+        name = table.name.lower()
+        if not table.db and name in cte_names:
+            continue
+        qualified = f"{table.db.lower()}.{name}" if table.db else name
+        if qualified not in seen:
+            seen.add(qualified)
+            tables.append(qualified)
+    return tuple(tables)
+
+
+def _normalize_join_type(join: exp.Join) -> str:
+    """Нормализация типа джойна к токенам скелета (inner/left — реестр ADR-006)."""
+    side = (join.side or "").lower()
+    kind = (join.kind or "").lower()
+    if kind == "comma":
+        return "comma"
+    if side in ("left", "right", "full"):
+        return side
+    if not side and kind in ("", "inner"):
+        return "inner"
+    if kind == "cross":
+        return "cross"
+    if kind in ("semi", "anti"):
+        return kind
+    return f"{side}_{kind}" if side else "unknown"
+
+
+def _on_pairs(join: exp.Join, maps: list[dict[str, _Source]]) -> tuple[tuple[str, str], ...]:
+    """Пары колонок ON (каждая сортируется — направление равенства не семантично)."""
+    if join.args.get("on") is None:
+        return (_COMPLEX_ON,)  # USING/без ON — скелет рендерит только ON-равенства
+    pairs: list[tuple[str, str]] = []
+    for part in _flatten_and(join.args["on"]):
+        if (
+            isinstance(part, exp.EQ)
+            and isinstance(part.this, exp.Column)
+            and isinstance(part.expression, exp.Column)
+        ):
+            left = _qualified_name(part.this, maps)
+            right = _qualified_name(part.expression, maps)
+            pairs.append(tuple(sorted((left, right))))
+        else:
+            return (_COMPLEX_ON,)
+    return tuple(sorted(pairs))
+
+
+def _qualified_name(column: exp.Column, maps: list[dict[str, _Source]]) -> str:
+    source = _resolve_qualifier((column.table or "").lower(), maps)
+    return f"{source.name}.{column.name.lower()}"
+
+
+def _collect_joins(
+    root_select: exp.Select | None,
+    maps_by_scope: dict[int, list[dict[str, _Source]]],
+    cte_names: frozenset[str],
+) -> tuple[SqlJoin, ...]:
+    """Джойны ВНЕШНЕГО запроса в порядке появления (сверка со скелетом — Task 3)."""
+    if root_select is None:
+        return ()
+    joins: list[SqlJoin] = []
+    for join in root_select.args.get("joins") or []:
+        source = _expr_source(join.this, cte_names)
+        joins.append(
+            SqlJoin(
+                join_type=_normalize_join_type(join),
+                table=source.name,
+                on_pairs=_on_pairs(join, maps_by_scope[id(root_select)]),
+            )
+        )
+    return tuple(joins)
+
+
+def _flatten_and(node: exp.Expression) -> Iterator[exp.Expression]:
+    """Плоский список конъюнктов (AND-ассоциативность, скобки прозрачны)."""
+    if isinstance(node, exp.Paren):
+        yield from _flatten_and(node.this)
+    elif isinstance(node, exp.And):
+        yield from _flatten_and(node.this)
+        yield from _flatten_and(node.expression)
+    else:
+        yield node
+
+
+def _collect_where(root_select: exp.Select | None) -> tuple[str, ...]:
+    """Конъюнкты WHERE внешнего запроса — нормализованные тексты (сверка
+    mandatory_predicates — Task 3; нормализация — единая с S10, ruling R3 S10)."""
+    if root_select is None:
+        return ()
+    where = root_select.args.get("where")
+    if where is None:
+        return ()
+    return tuple(
+        normalize_sql_fragment(part.sql(dialect="postgres")) for part in _flatten_and(where.this)
+    )
+
+
+def _collect_outer_limit(root: exp.Expression) -> int | None:
+    """LIMIT внешнего запроса (Select или set-операции); внутренние не собираются."""
+    limit = root.args.get("limit")
+    if limit is None:
+        return None
+    value = limit.expression
+    if not isinstance(value, exp.Literal) or not value.is_int:
+        raise SqlAuditError("LIMIT — целочисленный литерал (переменные/выражения отвергаются)")
+    return int(value.this)
+
+
+def _collect_functions(tree: exp.Expression) -> tuple[str, ...]:
+    """Имена функций (канонические sqlglot sql_name; Anonymous — исходное имя)."""
+    names: set[str] = set()
+    for node in tree.find_all(exp.Func):
+        if isinstance(node, _STRUCTURAL_FUNCS):
+            continue
+        if isinstance(node, exp.Anonymous):
+            names.add(str(node.this).lower())
+        else:
+            names.add(node.sql_name().lower())
+    return tuple(sorted(names))
+
+
+def _enforce_limit(tree: exp.Expression, enforced: int) -> bool:
+    """Внешний LIMIT итогового SQL (ruling R1): добавить/склампить. True — дерево
+    менялось (текст перегенерирован sqlglot), False — исходный текст без изменений."""
+    limit = tree.args.get("limit")
+    if limit is not None and isinstance(limit.expression, exp.Literal):
+        try:
+            current = int(limit.expression.this)
+        except (TypeError, ValueError):
+            current = None
+        if current == enforced:
+            return False
+    tree.set("limit", exp.Limit(expression=exp.Literal.number(str(enforced))))
+    return True
+
+
+class ValidateSqlResult(BaseModel):
+    """Результат валидации: вердикт + итоговый SQL (в ok — с исполненным LIMIT)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    verdict: ValidationVerdict
+    sql: str
+
+
+class ValidateSqlService:
+    """Детерминированная валидация (без LLM/IO): glue sqlglot ↔ domain (ruling R4).
+
+    Входы обязательны (fail-closed wiring): узел FSM передаёт skeleton/join_plan/
+    permissions/data_catalog из state; форм-отказ — вердикт hallucination с
+    исходным SQL без изменений (ничего не исполняется).
+    """
+
+    def validate(
+        self,
+        sql: str,
+        *,
+        skeleton: Skeleton,
+        join_plan: JoinPlan,
+        skeleton_hash: str,
+        permissions: Mapping[str, Sequence[str]],
+        data_catalog: frozenset[str] | set[str],
+        row_limit: int,
+    ) -> ValidateSqlResult:
+        try:
+            tree = _parse_tree(sql)
+            audit = _build_audit(tree)
+        except SqlAuditError as exc:
+            return ValidateSqlResult(
+                verdict=ValidationVerdict(
+                    outcome=ValidationOutcome.HALLUCINATION,
+                    issues=(f"SQL отвергнут по форме: {exc.reason}",),
+                    enforced_limit=row_limit,
+                ),
+                sql=sql,
+            )
+        verdict = validate_sql(
+            audit,
+            skeleton=skeleton,
+            join_plan=join_plan,
+            skeleton_hash=skeleton_hash,
+            permissions=permissions,
+            data_catalog=data_catalog,
+            row_limit=row_limit,
+        )
+        final_sql = sql
+        if verdict.outcome is ValidationOutcome.OK and _enforce_limit(tree, verdict.enforced_limit):
+            final_sql = tree.sql(dialect="postgres")
+        return ValidateSqlResult(verdict=verdict, sql=final_sql)

@@ -217,6 +217,11 @@ def _normalize_fragment(text: str) -> str:
     )
 
 
+# Публичный алиас для S11 (сверка mandatory_predicates и нормализация конъюнктов):
+# единый источник нормализации — ruling R3 ARCH-GATE S10
+normalize_sql_fragment = _normalize_fragment
+
+
 def _join_section(edge: JoinPlanEdge) -> str:
     """Готовая JOIN-строка ребра: тип/направление/ключи — из плана, не из модели."""
     conditions = " AND ".join(
