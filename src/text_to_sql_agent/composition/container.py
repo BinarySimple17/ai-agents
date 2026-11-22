@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from text_to_sql_agent.application.ports.auth_provider import AuthProvider
+from text_to_sql_agent.application.ports.budget_guard import BudgetGuard
 from text_to_sql_agent.application.ports.llm_provider import LLMProvider
 from text_to_sql_agent.application.ports.permission_store import PermissionStore
 from text_to_sql_agent.application.ports.sql_executor import SQLExecutor
@@ -41,6 +42,7 @@ from text_to_sql_agent.infrastructure.persistence.dev_token_auth import DevToken
 from text_to_sql_agent.infrastructure.persistence.edge_proposal_store import PgEdgeProposalStore
 from text_to_sql_agent.infrastructure.persistence.pg_permission_store import PgPermissionStore
 from text_to_sql_agent.infrastructure.persistence.postgres_executor import PostgresExecutor
+from text_to_sql_agent.infrastructure.token_budget import TokenBudgetGuard
 from text_to_sql_agent.orchestration.interrupt_gate import LangGraphInterruptGate
 from text_to_sql_agent.orchestration.routing import FSMGuardCaps
 from text_to_sql_agent.orchestration.runner import LangGraphRunner, build_fsm_runner
@@ -53,6 +55,7 @@ class Container:
     settings: Settings
     llm: LLMProvider
     tracer: Tracer
+    budget_guard: BudgetGuard
     executor: PostgresExecutor
     run_sql_tool: RunSqlTool
     vector_store: PgVectorStore
@@ -107,6 +110,14 @@ def build_container(
     if console_trace:
         tracer = TeeTracer(tracer, ConsoleTracer())
     llm = OpenAIProvider(settings, tracer=tracer)
+    # BudgetGuard (S15/feat-015, ruling R4 ARCH-GATE): read-side снапшот над
+    # резидентным аккумулятором адаптера S03 — порт не расширяет LLMProvider;
+    # исключение ДО вызова поднимает адаптер, кап-гвард рёбер — llm_guard
+    budget_guard = TokenBudgetGuard(
+        cap_rub=settings.budget_per_request_rub,
+        spent_getter=lambda: llm.budget_used_rub,
+        resetter=llm.reset_request_budget,
+    )
     # Канал SQL — строго AGENT_RO_DSN (security §2.1); сервисный POSTGRES_DSN — не здесь.
     executor = executor or PostgresExecutor(settings.agent_ro_dsn.get_secret_value())
     run_sql_tool = RunSqlTool(executor)
@@ -146,15 +157,15 @@ def build_container(
     # UPDATE/DELETE/SELECT-грантов.
     edge_proposal_store = PgEdgeProposalStore(settings.agent_planner_dsn)
     # Узел plan_joins (S09 сервис, подключение к FSM — S10/feat-010): retrieval +
-    # граф + ранжирование. Шов бюджета (ruling Q7): остаток = кап запроса −
-    # резидентный аккумулятор адаптера; FSM (V4) заменит на порт BudgetGuard.
+    # граф + ранжирование. Шов бюджета (ruling Q7 S09) переведён на порт
+    # BudgetGuard (S15/BL-015): тот же Callable, источник — снапшот прогона.
     if plan_joins_service is None:
         plan_joins_service = PlanJoinsService(
             llm=llm,
             vector_store=vector_store,
             graph_store=graph_store,
             edge_proposals=edge_proposal_store,
-            budget_remaining_roubles=lambda: settings.budget_per_request_rub - llm.budget_used_rub,
+            budget_remaining_roubles=budget_guard.remaining_rub,
         )
     # Узел generate_sql (S10/feat-010): наполнение скелета deepseek/mid; ретраи
     # M1 с эскалацией mid→strong при остатке с резервом (ruling R7 ARCH-GATE —
@@ -163,7 +174,7 @@ def build_container(
         generate_sql_service = GenerateSqlService(
             llm=llm,
             vector_store=vector_store,
-            budget_remaining_roubles=lambda: settings.budget_per_request_rub - llm.budget_used_rub,
+            budget_remaining_roubles=budget_guard.remaining_rub,
         )
     # Права и identity (S05/feat-005): чтение настроек — agent_planner (гранты
     # SELECT 0002:80-83, ruling R1 ARCH-GATE S05); инъекция фейка — юнит-тесты
@@ -178,20 +189,19 @@ def build_container(
     if validate_sql_service is None:
         validate_sql_service = ValidateSqlService()
     # Узел clarify (S08/feat-008): классификация однозначности + interrupt-
-    # механика. Шов бюджета — ruling Q7 (тот же, что у plan_joins: остаток =
-    # кап запроса − резидентный аккумулятор адаптера; FSM замена — S15 BudgetGuard).
+    # механика. Шов бюджета — ruling Q7 (переведён на порт BudgetGuard, S15).
     if clarify_service is None:
         clarify_service = ClarifyService(
             llm=llm,
             vector_store=vector_store,
-            budget_remaining_roubles=lambda: settings.budget_per_request_rub - llm.budget_used_rub,
+            budget_remaining_roubles=budget_guard.remaining_rub,
         )
     # Разбор ошибок (S14/feat-014): qwen/cheap + futile-классы без LLM (ADR-005);
     # шов бюджета — ruling Q7 (тот же, что plan_joins/clarify/generate_sql)
     if diagnose_service is None:
         diagnose_service = DiagnoseService(
             llm=llm,
-            budget_remaining_roubles=lambda: settings.budget_per_request_rub - llm.budget_used_rub,
+            budget_remaining_roubles=budget_guard.remaining_rub,
         )
     # Сессии interrupt (S08, ruling R2 ARCH-GATE): Valkey + TTL из Settings;
     # инъекция фейка/MemorySaver — юнит-тесты без инфры (S00 правило 7)
@@ -244,6 +254,7 @@ def build_container(
         settings=settings,
         llm=llm,
         tracer=tracer,
+        budget_guard=budget_guard,
         executor=executor,
         run_sql_tool=run_sql_tool,
         vector_store=vector_store,

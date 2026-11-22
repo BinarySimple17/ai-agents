@@ -1,6 +1,6 @@
 # BL-015 — Единый модуль политики эскалации M1: константы дублируются по сервисам узлов
 
-- **Статус:** открыт <!-- легенду держать вне строки «Статус:» — archive.sh ищет «закрыт» в строке -->
+- **Статус:** закрыт (2026-11-22, S15 feat-015) <!-- легенду держать вне строки «Статус:» — archive.sh ищет «закрыт» в строке -->
 - **Дата:** 2026-11-22
 - **Сессия-источник:** S08 (REVIEW-GATE Minor-7)
 - **Приоритет:** P3
@@ -41,4 +41,11 @@ S08 не рефакторит S09-код (карта владения файла
 
 ## Закрытие (заполняется при закрытии)
 
-[что решили и куда]
+S15 (feat-015, ruling R4 ARCH-GATE): шов `budget_remaining_roubles` переведён на порт
+`BudgetGuard` — `application/ports/budget_guard.py` (read-side Protocol) + реализация
+`infrastructure/token_budget.py` (TokenBudgetGuard над аккумулятором S03);
+`composition/container.py` инжектирует `budget_guard.remaining_rub` во все 4 сервиса
+(plan_joins/generate_sql/clarify/diagnose) — лямбды-копии удалены, сигнатура сервисов
+не менялась (Callable[[], float], поведение тестов то же). Узлы пишут
+`budget_used.rub` снапшотом `guard.spent_rub()` (ruling R6) — ₽-половина llm_guard
+живая. Wiring-тест — test_container_wiring.test_budget_guard_wired_as_port.

@@ -7,6 +7,7 @@ LLM в тестах — только моки (S00 правило 7): скрип
 """
 
 import json
+from collections.abc import Callable
 
 import pytest
 
@@ -735,3 +736,50 @@ class TestBudgetStopIncomplete:
         result = AnswerQuestion(runner=_Runner(), llm=_LLM()).run("вопрос", user_id="u1")
         assert result.outcome == "budget_stop"
         assert result.state["incomplete"] is True
+
+
+# --- Task 4: BudgetGuard — реализация над аккумулятором S03 (R4) ---
+
+
+class TestTokenBudgetGuard:
+    def _guard(self, spent: float = 0.0):
+        from text_to_sql_agent.infrastructure.token_budget import TokenBudgetGuard
+
+        holder = {"spent": spent, "resets": 0}
+        guard = TokenBudgetGuard(
+            cap_rub=2.0,
+            spent_getter=lambda: holder["spent"],
+            resetter=lambda: holder.__setitem__("resets", holder["resets"] + 1),
+        )
+        return guard, holder
+
+    def test_satisfies_port(self) -> None:
+        from text_to_sql_agent.application.ports.budget_guard import BudgetGuard
+
+        guard, _ = self._guard()
+        assert isinstance(guard, BudgetGuard)  # runtime_checkable Protocol
+
+    def test_spent_mirrors_accumulator(self) -> None:
+        guard, holder = self._guard(spent=0.42)
+        assert guard.spent_rub() == pytest.approx(0.42)
+
+    def test_remaining_is_cap_minus_spent(self) -> None:
+        guard, holder = self._guard(spent=0.5)
+        assert guard.remaining_rub() == pytest.approx(1.5)
+
+    def test_remaining_floored_at_zero(self) -> None:
+        # перерасход (округления usage) не даёт отрицательный остаток эскалациям
+        guard, _ = self._guard(spent=2.5)
+        assert guard.remaining_rub() == 0.0
+
+    def test_reset_delegates_to_entry_point(self) -> None:
+        guard, holder = self._guard()
+        guard.reset()
+        assert holder["resets"] == 1
+
+    def test_seam_callable_compatibility(self) -> None:
+        # шов ruling Q7: сервисы принимают Callable[[], float] — bound method
+        # порта подставляется без изменения сигнатур (BL-015)
+        guard, holder = self._guard(spent=0.25)
+        seam: Callable[[], float] = guard.remaining_rub
+        assert seam() == pytest.approx(1.75)

@@ -68,7 +68,15 @@ from text_to_sql_agent.application.ports.llm_provider import (
     ToolSpec,
     Usage,
 )
-from text_to_sql_agent.application.ports.tracer import Tracer
+from text_to_sql_agent.application.ports.tracer import (
+    EVENT_LLM_BREAKER_OPEN,
+    EVENT_LLM_BUDGET_STOP,
+    EVENT_LLM_COMPLETE,
+    EVENT_LLM_REJECT,
+    EVENT_LLM_RETRY,
+    EVENT_LLM_TIMEOUT,
+    Tracer,
+)
 from text_to_sql_agent.config.settings import Settings
 from text_to_sql_agent.domain.entities import Trace
 
@@ -155,7 +163,7 @@ class OpenAIProvider:
     def _guard_budget(self) -> None:
         if self._budget_used_rub >= self._settings.budget_per_request_rub:
             self._emit(
-                "llm.budget_stop",
+                EVENT_LLM_BUDGET_STOP,
                 budget_used_rub=round(self._budget_used_rub, 6),
                 cap_rub=self._settings.budget_per_request_rub,
             )
@@ -259,7 +267,7 @@ class OpenAIProvider:
             except openai.APITimeoutError as exc:
                 # W2: таймаут — отказ узла БЕЗ инкремента breaker и без ретраев
                 self._emit(
-                    "llm.timeout",
+                    EVENT_LLM_TIMEOUT,
                     role=role,
                     elapsed_ms=round((self._clock() - started) * 1000),
                 )
@@ -269,7 +277,7 @@ class OpenAIProvider:
             except openai.APIStatusError as exc:
                 if not self._is_retryable(exc):
                     # 4xx (кроме 429) — конфигурационная ошибка: ретраи и breaker не помогут
-                    self._emit("llm.reject", role=role, status_code=exc.status_code)
+                    self._emit(EVENT_LLM_REJECT, role=role, status_code=exc.status_code)
                     raise LLMRequestError(f"шлюз отклонил запрос (HTTP {exc.status_code})") from exc
                 last_error = exc
             except openai.APIConnectionError as exc:
@@ -282,7 +290,7 @@ class OpenAIProvider:
                 # llm.retry — только когда ретрай реально будет: последняя попытка
                 # видна в итоговом LLMRequestError (ревью S03, нит к Important-5)
                 self._emit(
-                    "llm.retry",
+                    EVENT_LLM_RETRY,
                     role=role,
                     attempt=attempt + 1,
                     status_code=getattr(last_error, "status_code", "connection"),
@@ -370,7 +378,7 @@ class OpenAIProvider:
             # APITimeoutError («Request timed out.») — регресс-тест фиксирует фактическую
             # форму (обёртку) и ловит обе (ревью C1 fix-волна)
             self._emit(
-                "llm.timeout",
+                EVENT_LLM_TIMEOUT,
                 role=role,
                 elapsed_ms=round((self._clock() - started) * 1000),
                 stream=True,
@@ -392,7 +400,7 @@ class OpenAIProvider:
             # ValueError) сознательно НЕ ловим — это наш контракт-баг, не шлюз.
             self._register_failure()
             self._emit(
-                "llm.reject",
+                EVENT_LLM_REJECT,
                 role=role,
                 status_code=None,  # не HTTP-ответ — статус-кода нет (ревью-2 m5)
                 reason="stream_abort",
@@ -424,7 +432,7 @@ class OpenAIProvider:
                 yield StreamChunk(text_delta=fallback)
         usage, cost_rub = self._register_success_usage(role, raw_usage)
         self._emit(
-            "llm.complete",
+            EVENT_LLM_COMPLETE,
             role=role,
             model=actual_model or model,
             tokens_in=usage.tokens_in,
@@ -499,14 +507,14 @@ class OpenAIProvider:
         if self._probe_pending:
             # Пробный запрос после cooldown не удался — переоткрываем немедленно (Minor-7)
             self._breaker_open_until = self._clock() + _BREAKER_COOLDOWN_S
-            self._emit("llm.breaker_open", reason="half-open probe failed")
+            self._emit(EVENT_LLM_BREAKER_OPEN, reason="half-open probe failed")
             return
         self._consecutive_failures += 1
         if self._consecutive_failures >= _BREAKER_THRESHOLD:
             self._breaker_open_until = self._clock() + _BREAKER_COOLDOWN_S
             self._consecutive_failures = 0
             self._probe_pending = True  # после паузы — один пробный запрос
-            self._emit("llm.breaker_open", failures=_BREAKER_THRESHOLD)
+            self._emit(EVENT_LLM_BREAKER_OPEN, failures=_BREAKER_THRESHOLD)
 
     def _register_success_usage(self, role: str, raw_usage: Any) -> tuple[Usage, float]:
         """Учёт успешного вызова: usage → ₽ в копилку запроса + сброс счётчика
@@ -559,7 +567,7 @@ class OpenAIProvider:
             finish_reason=finish_reason,
         )
         self._emit(
-            "llm.complete",
+            EVENT_LLM_COMPLETE,
             role=role,
             model=response.model,
             tokens_in=usage.tokens_in,

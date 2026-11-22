@@ -94,6 +94,30 @@ def test_generate_sql_budget_seam_wired_to_adapter(tmp_path) -> None:
     assert container.generate_sql_service._budget_remaining_roubles() == pytest.approx(2.0)  # noqa: SLF001
 
 
+def test_budget_guard_wired_as_port(tmp_path) -> None:
+    # S15/feat-015 (ruling R4 ARCH-GATE): шов ruling Q7 переведён на порт
+    # BudgetGuard — read-side снапшот над аккумулятором S03 (BL-015 закрыт);
+    # сервисы получают bound method с той же сигнатурой Callable[[], float]
+    from text_to_sql_agent.application.ports.budget_guard import BudgetGuard
+
+    container = build_container(_settings(tmp_path), checkpointer=_mem_ckpt())
+    assert isinstance(container.budget_guard, BudgetGuard)
+    assert container.budget_guard.remaining_rub() == pytest.approx(
+        container.settings.budget_per_request_rub
+    )
+    assert container.budget_guard.spent_rub() == pytest.approx(0.0)  # сборка — без вызовов
+    # шов сервисов — порт (одна точка источника, не лямбды-копии); bound methods
+    # сравниваются по == (каждый доступ создаёт новый объект-обёртку)
+    seam = container.budget_guard.remaining_rub
+    for service in (
+        container.plan_joins_service,
+        container.generate_sql_service,
+        container.clarify_service,
+        container.diagnose_service,
+    ):
+        assert service._budget_remaining_roubles == seam  # noqa: SLF001
+
+
 def test_build_container_respects_rrf_alpha_dense(tmp_path) -> None:
     # I3 ревью S26: измерительный контур (bench dense-only α=1.0) собирается
     # ТОЛЬКО через build_container — сборка адаптера вне composition запрещена
