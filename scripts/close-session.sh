@@ -51,14 +51,9 @@ for arg in "$@"; do
   esac
 done
 
-# Пороги/литералы логики — именованные константы (AGENTS.md)
-# SHA в REVIEW-GATE — короткий хэш git; HEAD_SCAN — синхронно с guard-subagents.sh/archive.sh
-MIN_MSG_BYTES=16     # «одна фраза WHY» — меньше заведомо заглушка; git commit -F отклонит и пустой файл
-
 [ -z "$S" ] && { echo "ERROR: S обязателен. Пример: make close-session S=S11 MSG=close-msg.txt" >&2; exit 2; }
-printf '%s' "$S" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9_-]*$' || {
-  echo "ERROR: S — латиница/цифры/дефис/подчёркивание, без путей (получено: «$S»)" >&2; exit 2;
-}
+# Валидация всей строки (case, не grep: ^…$ матчит только первую строку — S=$'S99\nevil' проходил)
+case "$S" in *[!A-Za-z0-9_-]*) echo "ERROR: S — только латиница/цифры/дефис/подчёркивание, без путей и переводов строк (получено: «$S»)" >&2; exit 2 ;; esac
 if [ "$DRY_RUN" -eq 0 ] && { [ -z "$MSG" ] || [ ! -s "$MSG" ]; }; then
   echo "ERROR: MSG обязателен для мутаций и должен быть НЕпустым файлом (фраза WHY); план без мутаций — --dry-run" >&2
   exit 2
@@ -84,21 +79,24 @@ printf '%s' "$HEAD20" | grep -Eq 'Статус:[[:space:]]*◐' \
   || { echo "ERROR: сессия $S не в статусе «◐ в работе» — закрывают только стартованные сессии" >&2; exit 1; }
 
 # --- роль по фиче: строка обязательна и канонична (fail-open здесь = закрытие без
-# сверки фич — ревью I4); «без фич» — легитимный harness-режим (S21/S22/S27) ---
+# сверки фич — ревью I4). Значение, начинающееся с «—», — легитимный no-feature режим
+# (конвенция шаблона; прецеденты S21/S22/S27 с разными формулировками) ---
 ROLE_LINE="$(grep -m1 '^Роль по фиче:' "$SESSION_FILE" || true)"
 if [ -z "$ROLE_LINE" ]; then
-  echo "ERROR: в сессии $S нет строки «Роль по фиче:» — заполни шапку: закрывает/продолжает feat-0XX либо «— (сессия без фичи, states не меняются)»" >&2
+  echo "ERROR: в сессии $S нет строки «Роль по фиче:» — заполни шапку: закрывает/продолжает feat-0XX либо «— …» (сессия без фич)" >&2
   exit 1
 fi
-if printf '%s' "$ROLE_LINE" | grep -q 'без фич'; then
+ROLE_VALUE="${ROLE_LINE#Роль по фиче:}"
+ROLE_VALUE="${ROLE_VALUE#"${ROLE_VALUE%%[![:space:]]*}"}"
+if [[ "$ROLE_VALUE" == —* ]]; then
   ROLE="harness"
   FEATS_CSV=""
-elif printf '%s' "$ROLE_LINE" | grep -Eq 'закрывает|продолжает'; then
+elif printf '%s' "$ROLE_VALUE" | grep -Eq 'закрывает|продолжает'; then
   ROLE="$(printf '%s' "$ROLE_LINE" | grep -oq 'продолжает' && echo "продолжает" || echo "закрывает")"
   FEATS_CSV="$(printf '%s' "$ROLE_LINE" | grep -oE 'feat-[0-9]{3,}' | sort -u | paste -sd, -)"
   [ -z "$FEATS_CSV" ] && { echo "ERROR: роль заявлена («$ROLE»), но в строке нет feat-0XX: $ROLE_LINE" >&2; exit 1; }
 else
-  echo "ERROR: строка «Роль по фиче:» не каноническая (ожидание: закрывает/продолжает feat-0XX либо «— (сессия без фичи, states не меняются)»): $ROLE_LINE" >&2
+  echo "ERROR: строка «Роль по фиче:» не каноническая (ожидание: закрывает/продолжает feat-0XX либо «— …» для сессии без фич): $ROLE_LINE" >&2
   exit 1
 fi
 echo "=== close-session $S [${ROLE}${FEATS_CSV:+ $FEATS_CSV}] ==="
@@ -162,16 +160,24 @@ esac
 
 # --- грязь вне allowlist = FAIL до мутаций (I3): коммит закрытия ведёт только
 # ритуальные артефакты; код и прочее закоммичены ДО close-session (End of Session).
-# porcelain -z: пути с пробелами/юникодом не ломаются; rename = пара полей. ---
+# porcelain -z: пути с пробелами/юникодом не ломаются; rename = пара полей.
+# MSG исключается по относительному И нормализованному пути (./x, абсолютный) ---
 DIRTY_OUT=0
 DIRTY_LIST=""
+MSG_EXCLUDE_2=""
+if [ -n "$MSG" ]; then
+  MSG_ABS="$(readlink -f "$MSG" 2>/dev/null || printf '%s' "$MSG")"
+  MSG_EXCLUDE_2="${MSG_ABS#"$ROOT"/}"
+fi
 while IFS= read -r -d '' entry; do
   st="${entry:0:2}"
   path="${entry:3}"
   if [[ "$st" == R* || "$st" == C* ]]; then
     read -r -d '' _oldpath || true   # парное поле rename: старый путь
   fi
-  [ "$path" = "$MSG" ] && continue
+  if [ "$path" = "$MSG" ] || { [ -n "$MSG_EXCLUDE_2" ] && [ "$path" = "$MSG_EXCLUDE_2" ]; }; then
+    continue
+  fi
   case "$path" in
     solution|solution/*|progress.md|feature_list.json|DECISIONS.md|docs/quality-document.md) ;;
     *) DIRTY_OUT=$((DIRTY_OUT + 1)); DIRTY_LIST="$DIRTY_LIST $path" ;;
@@ -207,6 +213,8 @@ if [ "${CLOSE_SESSION_CLEANSTATE:-1}" = "1" ]; then
     echo "ERROR: clean-state-check не прошёл — мутаций не было (pre-flight), исправь FAIL выше" >&2
     exit 1
   }
+else
+  echo "  [WARN] clean-state пропущен (self-test hook CLOSE_SESSION_CLEANSTATE=0) — в ручных прогонах не задавать"
 fi
 
 # --- мутации: шапка сессии, реестр, «Текущее состояние» (node; атомарно: все
@@ -223,9 +231,12 @@ const sess = readLines(sessPath);
 const reg = readLines(regPath);
 
 const HEAD_SCAN = 20; // синхронно с guard-subagents.sh/archive.sh
-const stIdx = sess.lines.findIndex((l, i) => i < HEAD_SCAN && l.includes("Статус: ◐ в работе"));
-if (stIdx === -1) throw new Error("шапка сессии: строка «Статус: ◐ в работе» не найдена в первых " + HEAD_SCAN + " строках");
-sess.lines[stIdx] = sess.lines[stIdx].split("Статус: ◐ в работе").join("Статус: ✅ " + date);
+// Предикат статуса — тот же гибкий, что в bash pre-flight (Статус: ◐, допускает
+// пробелы; иначе строка проходит pre-flight и падает уже после clean-state)
+const stRe = /Статус:[ \t]*◐[^\r\n|]*/;
+const stIdx = sess.lines.findIndex((l, i) => i < HEAD_SCAN && stRe.test(l));
+if (stIdx === -1) throw new Error("шапка сессии: строка «Статус: ◐ …» не найдена в первых " + HEAD_SCAN + " строках");
+sess.lines[stIdx] = sess.lines[stIdx].replace(stRe, "Статус: ✅ " + date);
 
 const rowIdx = reg.lines.findIndex(l => l.startsWith("| " + s + " |"));
 if (rowIdx === -1) throw new Error("реестр: строка | " + s + " | не найдена");

@@ -6,9 +6,12 @@
 # Механика: одноразовый git worktree --detach от HEAD в mktemp-каталоге — все мутации
 # в песочнице, рабочий checkout не трогается. Тестируемые скрипты и Makefile
 # копируются из ИСХОДНОГО дерева (гейт проверяет текущий код, не последний коммит).
-# БЕЗ pytest: clean-state в close-session глушится self-test hook'ом
-# CLOSE_SESSION_CLEANSTATE=0 (см. шапку скрипта); отрицательный кейс I1 ловится на
-# проверке progress.md ДО тяжёлого ./init.sh.
+# Кейсы с clean-state: I1 — с честным clean-state (красным в песочнице по посторонней
+# причине: нет .env), но с сентинелом RITUAL_SELFTEST — вложенный init.sh НЕ рекурсивно
+# зовёт этот же self-test (ревью I-2); причина отказа I1 доказывается grep'ом вывода
+# («progress.md has been updated»), не только кодом выхода. I3 — с
+# CLOSE_SESSION_CLEANSTATE=0: единственный источник exit 1 — dirty-check (ревью I-1:
+# без этого кейс зелёный даже без фикса, clean-state краснеет сам по себе).
 #
 # Кейсы:
 #   C1-регресс: make/direct new-session без ROLE (make передаёт пустую строку) → exit 0
@@ -51,6 +54,9 @@ cp "$ROOT/Makefile" "$WORK/Makefile"
 git -C "$WORK" add scripts/ Makefile
 git -C "$WORK" commit -m "self-test setup: тестируемые скрипты" >/dev/null
 cd "$WORK"
+
+# Сентинел против рекурсии self-test → clean-state → init.sh → self-test (ревью I-2)
+export RITUAL_SELFTEST=1
 
 FIX_S="S99C"
 NEW_SESS=(bash scripts/new-session.sh)
@@ -99,19 +105,39 @@ fs.writeFileSync("solution/sessions/S99C_session.md", md);
 ' || bad "фикстура S99C не собралась (node)"
 printf '%s' "self-test: механика закрытия сессий в песочнице" > close-msg.txt
 
-# --- I3: грязь вне allowlist → отказ до мутаций (dirty-check идёт раньше clean-state) ---
+# --- I3: грязь вне allowlist → отказ до мутаций (dirty-check идёт раньше clean-state;
+# clean-state глушим — иначе песочница краснеет сама по себе и кейс ложноположителен,
+# ревью I-1) ---
 printf 'rogue\n' > rogue.txt
 assert_rc 1 "грязь вне allowlist → отказ (exit 1, I3-регресс)" \
-  "${CLOSE_SESS[@]}" S=$FIX_S MSG=close-msg.txt
+  env CLOSE_SESSION_CLEANSTATE=0 "${CLOSE_SESS[@]}" S=$FIX_S MSG=close-msg.txt
 assert_grep "после отказа мутаций нет — шапка всё ещё ◐ (I3)" 'Статус: ◐ в работе' solution/sessions/${FIX_S}_session.md
 rm -f rogue.txt
 
-# --- I1: красный clean-state (placeholder progress.md) → отказ до мутаций ---
+# --- I1: красный clean-state (placeholder progress.md) → отказ до мутаций; причина —
+# именно clean-state — доказывается текстом вывода, не только кодом выхода (ревью I-1) ---
 printf '**Last Updated:** YYYY-MM-DD\n' > progress.md
-assert_rc 1 "красный clean-state → отказ до мутаций (I1-регресс)" \
-  "${CLOSE_SESS[@]}" S=$FIX_S MSG=close-msg.txt
+I1_OUT="$("${CLOSE_SESS[@]}" S=$FIX_S MSG=close-msg.txt 2>&1)"; I1_RC=$?
+[ "$I1_RC" -eq 1 ] && ok "красный clean-state → отказ до мутаций (I1-регресс, exit 1)" \
+  || bad "I1-регресс (exit $I1_RC, ожидался 1)"
+if grep -q "progress.md has been updated" <<<"$I1_OUT"; then
+  ok "причина отказа — clean-state по progress.md (I1, bite-доказуемо)"
+else
+  bad "в выводе нет отказа по progress.md — причина отказа не доказана (I1)"
+fi
 assert_grep "после clean-state-отказа мутаций нет — шапка ◐ (I1)" 'Статус: ◐ в работе' solution/sessions/${FIX_S}_session.md
 git checkout -- progress.md
+
+# --- I-3: S27-стиль роли «— …» (не буквальная «без фич») распознаётся как no-feature ---
+assert_rc 0 "new-session S99D (без F)" "${NEW_SESS[@]}" S=S99D TITLE="S27-стиль роли"
+sed -i 's|Статус: \[ \] не начата|Статус: ◐ в работе|' solution/sessions/S99D_session.md
+sed -i 's|^Роль по фиче: .*|Роль по фиче: — (финальные сессии фич — S04/S05)|' solution/sessions/S99D_session.md
+sed -i 's|^- ARCH-GATE: .*|- ARCH-GATE: ✅ compliant — self-test (S27-стиль)|' solution/sessions/S99D_session.md
+sed -i 's|^- REVIEW-GATE: .*|- REVIEW-GATE: ✅ Ready to merge: Yes + abcdef12345 (self-test)|' solution/sessions/S99D_session.md
+sed -i 's|^  - \[Task:.*|  - Self-test: распознавание S27-стиля роли|' solution/sessions/S99D_session.md
+# MSG передаётся и в dry-run: close-msg.txt от предыдущих кейсов должен исключаться
+assert_rc 0 "close-session распознаёт S27-стиль роли «— …» (I-3-регресс)" \
+  "${CLOSE_SESS[@]}" S=S99D MSG=close-msg.txt --dry-run
 
 # --- пустой MSG-файл → отказ до мутаций ---
 : > empty-msg.txt

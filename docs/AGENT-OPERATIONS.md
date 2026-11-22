@@ -16,8 +16,9 @@
 
 ## End of Session — полный чеклист закрытия
 
-Нарратив делает агент (шаги 1–3), механику — `make close-session` (шаги 4–5).
-Скрипт не пишет содержание: пустой нарратив = отказ закрытия (fail-closed).
+Нарратив делает агент (шаги 1–4); шаги 5–7 — прогона `make close-session`
+(clean-state — его pre-flight, рестартуемость — его итог). Скрипт не пишет
+содержание: пустой нарратив = отказ закрытия (fail-closed).
 
 1. **Нарратив-артефакты:** `progress.md` (Current State, Next Steps), `feature_list.json`
    (state + evidence: фича-«закрывает» — `make verify-feature F=<id>` до закрытия;
@@ -71,7 +72,7 @@ make new-session S=S30 TITLE="Хотфикс-сборка" FLAGS=--dry-run      
 
 ```bash
 make close-session S=S11 MSG=close-msg.txt SUMMARY="feat-011 → passing" FLAGS=--push
-make close-session S=S11 MSG=close-msg.txt FLAGS=--dry-run                   # pre-flight + план без мутаций
+make close-session S=S11 MSG=close-msg.txt FLAGS=--dry-run                   # pre-flight (без clean-state) + план без мутаций
 ```
 
 Pre-flight — ВСЕ проверки до первой мутации (fail-closed): сессия в статусе

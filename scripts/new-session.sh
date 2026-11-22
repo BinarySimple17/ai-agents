@@ -51,9 +51,8 @@ TITLE_MAX_LEN=80   # защита от простыни в шапке реест
 # make-слой передаёт ROLE="$(ROLE)" всегда — пустая строка затирает дефолт (ревью C1)
 [ -z "$ROLE" ] && ROLE="закрывает"
 [ -z "$S" ] && { echo "ERROR: S обязателен. Пример: make new-session S=S12 TITLE=\"check_cost\" F=feat-012" >&2; exit 2; }
-printf '%s' "$S" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9_-]*$' || {
-  echo "ERROR: S — латиница/цифры/дефис/подчёркивание, без путей (получено: «$S»)" >&2; exit 2;
-}
+# Валидация всей строки (case, не grep: ^…$ матчит только первую строку)
+case "$S" in *[!A-Za-z0-9_-]*) echo "ERROR: S — только латиница/цифры/дефис/подчёркивание, без путей и переводов строк (получено: «$S»)" >&2; exit 2 ;; esac
 [ -z "$TITLE" ] && { echo "ERROR: TITLE обязателен" >&2; exit 2; }
 [ "${#TITLE}" -gt "$TITLE_MAX_LEN" ] && { echo "ERROR: TITLE длиннее $TITLE_MAX_LEN символов — название, не отчёт" >&2; exit 2; }
 case "$TITLE" in
