@@ -10,14 +10,15 @@ fail-closed в обходе services). Три исхода (ADR-005 §4): ``ok``
 не должна «уговорить» валидатор.
 
 Реализация по задачам плана S11 (сессия ◐, инкременты одной сессии):
-- Task 1 (этот коммит) — форма AST: одна инструкция, корень SELECT, allow-list
+- Task 1 — форма AST: одна инструкция, корень SELECT, allow-list
   функций (план правило 2: «функции из allow-list; всё новое — отказ»), внешний
   LIMIT (ruling R1 ARCH-GATE: SQL от assemble_sql всегда БЕЗ LIMIT — валидатор
   добавляет/клампит до ROW_LIMIT);
-- Task 2 — ACL: deny-list схем (мир агента — public), таблицы/колонки ∈
-  permissions + каталог мира (data_catalog — классификация «несуществующее» vs
-  «вне прав», plan правило 4), разворот ``*`` в разрешённые колонки (ADR-005
-  §4 п.2, ruling R2);
+- Task 2 (этот коммит) — ACL: deny-list схем (мир агента — public), таблицы/
+  колонки ∈ permissions + каталог мира (data_catalog — классификация
+  «несуществующее» vs «вне прав», план правило 4), разворот ``*`` в разрешённые
+  колонки (ADR-005 §4 п.2, ruling R2); контракт прав BL-014 — значения строго
+  «список колонок», CSV-строка → ValueError (свой CSV-парсер валидатор не заводит);
 - Task 3 — скелет: skeleton_hash (state ↔ VO), структура джойнов = JoinPlan
   (тип/таблица/пары ON/порядок), mandatory_predicates в WHERE внешнего запроса.
 
@@ -29,6 +30,7 @@ FSM не подключён (заглушка S04 продолжает рабо�
 
 from collections.abc import Mapping, Sequence
 from enum import StrEnum
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -69,6 +71,11 @@ ALLOWED_FUNCTIONS: frozenset[str] = frozenset(
 # любой другой схемой — отказ, один SELECT не утаскивает топологию БД).
 PUBLIC_SCHEMA = "public"
 
+# Служебные таблицы агента (agent_permissions, agent_query_trace, …) — сборка
+# префиксом: infraструктура существует, но вне мира аналитики (ADR-005 рубеж 3) —
+# deny, degrade без retry (не «не существует»: она существует, просто не для SQL)
+AGENT_TABLE_PREFIX = "agent_"
+
 
 class ValidationOutcome(StrEnum):
     """Исход валидации — носитель маршрута (routing.route_validate_sql)."""
@@ -78,19 +85,33 @@ class ValidationOutcome(StrEnum):
     DENIED = "denied"
 
 
-class SqlColumn(BaseModel):
-    """Ссылка на колонку с кандидатами-источниками (резолюция алиасов — services).
+class SqlSource(BaseModel):
+    """Источник скоупа в IR: bare-имя сущности + природа источника.
 
-    ``candidates`` — имена-источники: bare-имена таблиц, имена CTE или алиасы
-    производных таблиц/LATERAL. Квалифицированная колонка — один кандидат;
-    unqualified — все источники скоупа (Ловушка 5: неоднозначность/вне прав
-    любого кандидата → отказ, не «повезёт с дефолтом»).
+    ``table`` — реальная таблица мира (единственный носитель прав — ACL-проверка);
+    ``cte``/``sub`` — производный источник (CTE/подзапрос/LATERAL): права на него
+    не назначаются — его тело уже проверено на собственном скоупе теми же
+    правилами, наружу он отдаёт только свою проверенную проекцию.
     """
 
     model_config = ConfigDict(frozen=True)
 
     name: str = Field(min_length=1)
-    candidates: tuple[str, ...] = Field(min_length=1)
+    kind: Literal["table", "cte", "sub"]
+
+
+class SqlColumn(BaseModel):
+    """Ссылка на колонку с кандидатами-источниками (резолюция алиасов — services).
+
+    ``candidates`` — источники скоупа. Квалифицированная колонка — один
+    кандидат; unqualified — все источники скоупа (Ловушка 5: вне прав/неоднозначно
+    у любого кандидата-таблицы → отказ, не «повезёт с дефолтом»).
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    name: str = Field(min_length=1)
+    candidates: tuple[SqlSource, ...] = Field(min_length=1)
 
 
 class SqlJoin(BaseModel):
@@ -127,7 +148,8 @@ class SqlAudit(BaseModel):
     where_conjuncts: tuple[str, ...] = ()
     outer_limit: int | None = None
     functions: tuple[str, ...] = ()
-    star_sources: tuple[tuple[str, ...], ...] = ()  # источники скоупа на каждую «*»
+    # источники скоупа на каждую литеральную «*» проекции (COUNT(*) — не проекция)
+    star_sources: tuple[tuple[SqlSource, ...], ...] = ()
 
 
 class ValidationVerdict(BaseModel):
@@ -158,16 +180,23 @@ def validate_sql(
 ) -> ValidationVerdict:
     """Вердикт над IR (чистая функция; все входы обязательны — fail-closed wiring).
 
-    Task 1 (реализовано): allow-list функций; внешний LIMIT (ruling R1).
-    Task 2/3 (следующие коммиты этой сессии): ACL и скелет по плану — параметры
-    приняты контрактом API, проверки добавляются в своих задачах; до wiring
-    (Task 4) в FSM работает заглушка S04, поэтому «недо-валидатор» недостижим.
+    Task 1: allow-list функций; внешний LIMIT (ruling R1).
+    Task 2 (реализовано): ACL — схемы/таблицы/колонки/литеральные звёзды;
+    классификация «несуществующее» vs «вне прав» по каталогу мира (план правило 4);
+    контракт прав BL-014 (str-value → ValueError).
+    Task 3 (следующий коммит этой сессии): скелет — параметры приняты контрактом
+    API, проверка добавляется в своей задаче; до wiring (Task 4) в FSM работает
+    заглушка S04, поэтому «недо-валидатор» недостижим.
     """
     if row_limit <= 0:
         raise ValueError(f"row_limit должен быть положительным, получен {row_limit}")
+    _check_permissions_contract(permissions)
     issues_denied: list[str] = []
     issues_hallucination: list[str] = []
     _check_functions(audit, issues_hallucination)
+    _check_tables(audit, permissions, data_catalog, issues_denied, issues_hallucination)
+    _check_columns(audit, permissions, data_catalog, issues_denied, issues_hallucination)
+    _check_stars(audit, permissions, issues_denied)
     enforced = _enforced_limit(audit.outer_limit, row_limit)
     return ValidationVerdict(
         outcome=_merge_outcome(issues_denied, issues_hallucination),
@@ -184,6 +213,156 @@ def _check_functions(audit: SqlAudit, issues: list[str]) -> None:
                 f"функция {name} вне allow-list — разрешены только аналитические "
                 "функции из фиксированного списка"
             )
+
+
+def _check_permissions_contract(permissions: Mapping[str, Sequence[str]]) -> None:
+    """Контракт стыка прав (BL-014): значения — списки колонок, не CSV-строки.
+
+    Нормализация «id,total» → [id, total] — зона границы адаптера
+    (PgPermissionStore, fail-closed S05); валидатор свой CSV-парсер не заводит —
+    строка в правах означает разъезд стыка, честный ValueError, не тихое сужение.
+    """
+    for table, columns in permissions.items():
+        if isinstance(columns, str) or not isinstance(columns, Sequence):
+            raise ValueError(
+                f"права {table!r}: ожидается список колонок, получено "
+                f"{type(columns).__name__} — CSV-строки валидатор не парсит (BL-014)"
+            )
+
+
+def _check_tables(
+    audit: SqlAudit,
+    permissions: Mapping[str, Sequence[str]],
+    data_catalog: frozenset[str] | set[str],
+    issues_denied: list[str],
+    issues_hallucination: list[str],
+) -> None:
+    """ACL таблиц (план правило 4, ADR-005 §4): схема → служебные → мир → права.
+
+    Схема вне public и служебные agent_* — denied (инфраструктура существует, но
+    вне мира аналитики). Таблица вне каталога — hallucination («не существует в
+    мире агента», retry оправдан); в каталоге, но вне прав — denied («существует,
+    но вне прав», degrade без retry). Каталог — SoT существования: права, ссылающиеся
+    на отсутствующую в мире таблицу, существующей её не делают.
+    """
+    for qualified in audit.tables:
+        schema: str | None = None
+        name = qualified
+        if "." in qualified:
+            schema, name = qualified.split(".", 1)
+        if name.startswith(AGENT_TABLE_PREFIX):
+            issues_denied.append(
+                f"таблица {qualified} — служебная инфраструктура агента (agent_*), "
+                "вне мира аналитики"
+            )
+            continue
+        if schema is not None and schema != PUBLIC_SCHEMA:
+            issues_denied.append(
+                f"таблица {qualified} вне схемы {PUBLIC_SCHEMA} — "
+                "мир агента ограничен публичной схемой"
+            )
+            continue
+        if name not in data_catalog:
+            issues_hallucination.append(
+                f"таблица {name} не существует в мире агента (каталог agent_data_sources)"
+            )
+        elif name not in permissions:
+            issues_denied.append(
+                f"таблица {name} существует, но вне прав (agent_permissions) — degrade без retry"
+            )
+
+
+def _check_columns(
+    audit: SqlAudit,
+    permissions: Mapping[str, Sequence[str]],
+    data_catalog: frozenset[str] | set[str],
+    issues_denied: list[str],
+    issues_hallucination: list[str],
+) -> None:
+    """ACL колонок (Ловушка 5): решают кандидаты-таблицы мира, остальные — нет.
+
+    Кандидаты cte/sub пропускаются: права назначаются таблицам мира, тело
+    производного источника уже проверено на своём скоупе. Таблицы вне каталога
+    тоже не участвуют: несуществующая таблица уже дала hallucination на уровне
+    таблиц — её колонка не превращается в ложное «вне прав» (degrade без retry).
+    Неоднозначность вычисляется по разрешённым кандидатам (схемы БД у валидатора
+    нет — «колонка существует» проксируется правами): ≥2 разрешённых →
+    hallucination («квалифицируйте алиасом», retry оправдан), ровно 1 → resolved,
+    0 → denied.
+    """
+    for column in audit.columns:
+        table_candidates = [
+            c for c in column.candidates if c.kind == "table" and c.name in data_catalog
+        ]
+        if not table_candidates:
+            continue
+        permitted_in = [
+            c for c in table_candidates if _column_permitted(column.name, c.name, permissions)
+        ]
+        if len(permitted_in) >= 2:
+            issues_hallucination.append(
+                f"колонка {column.name} неоднозначна — разрешена таблицам "
+                f"{', '.join(c.name for c in permitted_in)}; квалифицируйте алиасом"
+            )
+        elif not permitted_in:
+            issues_denied.append(
+                f"колонка {column.name} вне прав — таблицы запроса: "
+                f"{', '.join(c.name for c in table_candidates)}"
+            )
+
+
+def _column_permitted(column: str, table: str, permissions: Mapping[str, Sequence[str]]) -> bool:
+    """Право на колонку: явное вхождение в список или '*' (все колонки, R5 S05)."""
+    permitted = permissions.get(table)
+    if permitted is None:
+        return False
+    return "*" in permitted or column in permitted
+
+
+def _check_stars(
+    audit: SqlAudit,
+    permissions: Mapping[str, Sequence[str]],
+    issues_denied: list[str],
+) -> None:
+    """ACL литеральных звёзд проекции (ruling R2 ARCH-GATE, ADR-005 §4 п.2).
+
+    Звезда НЕ отклоняется — разворачивается в разрешённые колонки (подстановку
+    в текст выполняет services: ``star_expansion_columns`` + механика AST).
+    Отказ — только звезда над таблицей без разрешённых колонок: литеральная
+    '*' у БД вернула бы весь набор (ACL-байпас). Звёзды над CTE/подзапросами
+    безопасны — тело проверено, звезда открывает лишь его собственную проекцию.
+    """
+    for sources in audit.star_sources:
+        for source in sources:
+            if source.kind != "table":
+                continue
+            if not permissions.get(source.name):
+                issues_denied.append(
+                    f"звезда '*' над {source.name} — нет разрешённых колонок, "
+                    "литеральная звезда открыла бы весь набор"
+                )
+
+
+def star_expansion_columns(
+    source_name: str,
+    source_kind: str,
+    permissions: Mapping[str, Sequence[str]],
+) -> tuple[str, ...] | None:
+    """Политика разворота звезды — парная к ``_check_stars`` (ruling R2).
+
+    Возвращает колонки подстановки или None — звезда остаётся литералом:
+    CTE/производный источник — None (его тело уже проверено); '*'-разрешённая
+    таблица — None (права и так открывают все колонки — суб-звезда ``ref.*``
+    безопасна); явный список — сам список (подстановка в текст закрывает
+    ACL-байпас литеральной звезды). Таблица вне прав → None — ветка
+    недостижима при ok-вердикте (``_check_stars`` уже дал denied).
+    """
+    if source_kind != "table":
+        return None
+    permitted = permissions.get(source_name)
+    if permitted is None or "*" in permitted:
+        return None
+    return tuple(permitted)
 
 
 def _enforced_limit(original: int | None, row_limit: int) -> int:

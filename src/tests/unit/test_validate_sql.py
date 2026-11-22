@@ -273,16 +273,8 @@ class TestNestedTraversal:
 
 
 # --- Task 2: ACL — схемы, таблицы, колонки, '*' (ruling R2, BL-014) ---
-# Скоуп коммита — Task 1 (директива владельца «после task 1 остановиться»):
-# тесты Task 2/3 коммитятся как ЗАФИКСИРОВАННЫЙ КОНТРАКТ поведения (skip) —
-# следующий инкремент снимает марки и доводит их до зелёного.
-
-_SKIP_TASK2 = pytest.mark.skip(
-    reason="Task 2 (ACL) — следующий инкремент; контракт поведения зафиксирован"
-)
 
 
-@_SKIP_TASK2
 class TestSchemaDenyList:
     @pytest.mark.parametrize(
         "sql",
@@ -306,7 +298,6 @@ class TestSchemaDenyList:
         assert result.verdict.outcome is ValidationOutcome.DENIED
 
 
-@_SKIP_TASK2
 class TestTableAcl:
     def test_existing_table_outside_permissions_denied(self):
         # bonuses существует в мире (каталог), но не в правах — degrade без retry
@@ -326,7 +317,6 @@ class TestTableAcl:
         assert result.verdict.outcome is ValidationOutcome.DENIED
 
 
-@_SKIP_TASK2
 class TestColumnAcl:
     def test_column_outside_permissions_denied(self):
         result = _validate(
@@ -382,7 +372,6 @@ class TestColumnAcl:
         assert result.verdict.outcome is ValidationOutcome.DENIED
 
 
-@_SKIP_TASK2
 class TestStarExpansion:
     """ADR-005 §4 п.2 (ruling R2): '*' разворачивается в разрешённые колонки."""
 
@@ -423,7 +412,6 @@ class TestStarExpansion:
         assert "count(*)" in result.sql.lower()
 
 
-@_SKIP_TASK2
 class TestPermissionsContract:
     def test_str_columns_value_rejected_fail_closed(self):
         # BL-014: CSV-строка в правах — нарушение контракта стыка; нормализация —

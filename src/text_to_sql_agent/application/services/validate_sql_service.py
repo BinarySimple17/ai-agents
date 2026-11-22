@@ -16,6 +16,10 @@ fail-closed превращает неполноту из молчаливой у
 каждый скоуп обрабатывается теми же правилами; резолюция алиасов идёт по
 скоуп-цепочке (корреляция подзапросов), граница корреляции — тело CTE (семантика
 PostgreSQL: WITH не видит внешние алиасы).
+
+Подстановки текста при ok-вердикте: внешний LIMIT (ruling R1 ARCH-GATE) и
+разворот литеральных звёзд проекции в разрешённые колонки (ruling R2) —
+значения решает domain, механику AST выполняет здесь.
 """
 
 from collections.abc import Iterator, Mapping, Sequence
@@ -33,8 +37,10 @@ from text_to_sql_agent.domain.sql_validation import (
     SqlAudit,
     SqlColumn,
     SqlJoin,
+    SqlSource,
     ValidationOutcome,
     ValidationVerdict,
+    star_expansion_columns,
     validate_sql,
 )
 
@@ -195,13 +201,10 @@ def _build_audit(tree: exp.Expression) -> SqlAudit:
 
     scopes = list(tree.find_all(exp.Select))
     sources_by_scope = {id(s): _scope_sources(s, cte_names) for s in scopes}
-    maps_by_scope = {
-        id(s): [{src.ref: src for src in sources_by_scope[id(m)]} for m in _scope_chain(s)]
-        for s in scopes
-    }
+    maps_by_scope = {id(s): _scope_maps(s, cte_names) for s in scopes}
 
     columns: list[SqlColumn] = []
-    seen_columns: set[tuple[str, tuple[str, ...]]] = set()
+    seen_columns: set[tuple[str, tuple[SqlSource, ...]]] = set()
     for scope in scopes:
         local_sources = sources_by_scope[id(scope)]
         for node in _local_nodes(scope):
@@ -210,20 +213,18 @@ def _build_audit(tree: exp.Expression) -> SqlAudit:
             if isinstance(node.this, exp.Star):
                 continue  # t.* — проекция звёздами, собирается в star_sources
             candidates = _resolve_candidates(node, maps_by_scope[id(scope)], local_sources)
-            key = (node.name.lower(), candidates)
+            sources = tuple(SqlSource(name=s.name, kind=s.kind) for s in candidates)
+            key = (node.name.lower(), sources)
             if key not in seen_columns:
                 seen_columns.add(key)
-                columns.append(SqlColumn(name=node.name.lower(), candidates=candidates))
+                columns.append(SqlColumn(name=node.name.lower(), candidates=sources))
 
-    star_sources: list[tuple[str, ...]] = []
+    star_sources: list[tuple[SqlSource, ...]] = []
     for scope in scopes:
-        maps = maps_by_scope[id(scope)]
-        for item in scope.args.get("expressions") or []:
-            if isinstance(item, exp.Star):
-                star_sources.append(tuple(src.name for src in sources_by_scope[id(scope)]))
-            elif isinstance(item, exp.Column) and isinstance(item.this, exp.Star):
-                source = _resolve_qualifier((item.table or "").lower(), maps)
-                star_sources.append((source.name,))
+        for _, sources in _projection_stars(
+            scope, sources_by_scope[id(scope)], maps_by_scope[id(scope)]
+        ):
+            star_sources.append(tuple(SqlSource(name=s.name, kind=s.kind) for s in sources))
 
     return SqlAudit(
         from_table=_from_table(root_select, cte_names),
@@ -287,6 +288,35 @@ def _scope_chain(scope: exp.Select) -> list[exp.Select]:
     return chain
 
 
+def _scope_maps(scope: exp.Select, cte_names: frozenset[str]) -> list[dict[str, _Source]]:
+    """Карты резолюции алиасов по скоуп-цепочке (внутренний → внешний)."""
+    return [
+        {src.ref: src for src in _scope_sources(node, cte_names)} for node in _scope_chain(scope)
+    ]
+
+
+def _projection_stars(
+    scope: exp.Select,
+    sources: list[_Source],
+    maps: list[dict[str, _Source]],
+) -> Iterator[tuple[exp.Expression, list[_Source]]]:
+    """Звёзды проекции скоупа: bare ``*`` — все источники скоупа, ``t.*`` — один.
+
+    Общий источник IR (``_build_audit``) и разворота (``_expand_stars``) — они
+    видят ровно одни и те же звёзды. Звёзды внутри выражений (COUNT(*)) проекцией
+    не являются — не собираются (ruling R2: агрегат колонок не раскрывает).
+    Bare-звезда без источников FROM — форм-отказ (postgres такой SELECT не
+    исполняет — «не существует в мире агента»).
+    """
+    for item in scope.args.get("expressions") or []:
+        if isinstance(item, exp.Star):
+            if not sources:
+                raise SqlAuditError("звезда '*' без источников FROM — форма не поддерживается")
+            yield item, list(sources)
+        elif isinstance(item, exp.Column) and isinstance(item.this, exp.Star):
+            yield item, [_resolve_qualifier((item.table or "").lower(), maps)]
+
+
 def _local_nodes(scope: exp.Select) -> Iterator[exp.Expression]:
     """Узлы скоупа без спуска во вложенные SELECT (CTE/подзапросы/ветки UNION —
     каждый обрабатывается собственным скоупом с теми же правилами)."""
@@ -318,15 +348,15 @@ def _resolve_candidates(
     column: exp.Column,
     maps: list[dict[str, _Source]],
     local_sources: list[_Source],
-) -> tuple[str, ...]:
+) -> tuple[_Source, ...]:
     """Кандидаты-источники колонки (Ловушка 5): квалифицированная — один,
     unqualified — все источники СВОЕГО скоупа (не «повезёт с дефолтом»)."""
     qualifier = (column.table or "").lower()
     if qualifier:
-        return (_resolve_qualifier(qualifier, maps).name,)
+        return (_resolve_qualifier(qualifier, maps),)
     if not local_sources:
         raise SqlAuditError(f"колонка {column.name!r} без источников FROM/JOIN в скоупе")
-    return tuple(source.name for source in local_sources)
+    return tuple(local_sources)
 
 
 def _from_table(root_select: exp.Select | None, cte_names: frozenset[str]) -> str:
@@ -480,6 +510,43 @@ def _enforce_limit(tree: exp.Expression, enforced: int) -> bool:
     return True
 
 
+def _expand_stars(tree: exp.Expression, permissions: Mapping[str, Sequence[str]]) -> bool:
+    """Разворот литеральных звёзд проекции в разрешённые колонки (ruling R2 ARCH-GATE).
+
+    Политика значений — ``domain.star_expansion_columns`` (какие колонки разрешены;
+    None — суб-звезда ``ref.*`` остаётся); ЗДЕСЬ механика подстановки в AST:
+    элемент проекции заменяется на колонки своих источников скоупа — литеральная
+    звезда не доходит до БД (ACL-байпас закрыт). Вызывается только при ok-вердикте
+    (``_check_stars`` домена уже одобрил каждую звезду). True — дерево менялось
+    (текст перегенерирован), False — звёзд для разворота нет.
+    """
+    changed = False
+    cte_names = frozenset(cte.alias.lower() for cte in tree.find_all(exp.CTE))
+    for scope in tree.find_all(exp.Select):
+        expressions = scope.args.get("expressions")
+        if not expressions:
+            continue
+        sources = _scope_sources(scope, cte_names)
+        stars = list(_projection_stars(scope, sources, _scope_maps(scope, cte_names)))
+        for item, star_sources in stars:
+            replacement: list[exp.Expression] = []
+            for source in star_sources:
+                columns = star_expansion_columns(source.name, source.kind, permissions)
+                if columns is None:
+                    replacement.append(
+                        exp.Column(this=exp.Star(), table=exp.to_identifier(source.ref))
+                    )
+                else:
+                    replacement.extend(
+                        exp.Column(this=exp.to_identifier(c), table=exp.to_identifier(source.ref))
+                        for c in columns
+                    )
+            index = expressions.index(item)
+            expressions[index : index + 1] = replacement
+            changed = True
+    return changed
+
+
 class ValidateSqlResult(BaseModel):
     """Результат валидации: вердикт + итоговый SQL (в ok — с исполненным LIMIT)."""
 
@@ -530,6 +597,9 @@ class ValidateSqlService:
             row_limit=row_limit,
         )
         final_sql = sql
-        if verdict.outcome is ValidationOutcome.OK and _enforce_limit(tree, verdict.enforced_limit):
-            final_sql = tree.sql(dialect="postgres")
+        if verdict.outcome is ValidationOutcome.OK:
+            expanded = _expand_stars(tree, permissions)
+            limited = _enforce_limit(tree, verdict.enforced_limit)
+            if expanded or limited:
+                final_sql = tree.sql(dialect="postgres")
         return ValidateSqlResult(verdict=verdict, sql=final_sql)
