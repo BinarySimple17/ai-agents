@@ -56,6 +56,16 @@ EVENT_GENERATE_SQL_UNAVAILABLE = "generate_sql.unavailable"
 # SQL-текста (D-022-аналог)
 EVENT_VALIDATE_SQL_VERDICT = "validate_sql.verdict"
 EVENT_VALIDATE_SQL_UNAVAILABLE = "validate_sql.unavailable"
+# FSM diagnose_error (S14): вердикт разбора (класс/подсказка в state.diagnosis,
+# futile → degrade без ретрая — ADR-005) + сбой разбора (шлюз/M1 — ретрай не
+# назначается, деталь оператору); payload факты (error_class/retry_futile/
+# llm_calls), БЕЗ SQL-текста (D-022-аналог)
+EVENT_DIAGNOSE_VERDICT = "diagnose.verdict"
+EVENT_DIAGNOSE_UNAVAILABLE = "diagnose.unavailable"
+# FSM execute_sql (S14): факт COUNT-пробы при 0 строк (state-agent v1.7 — probe
+# не узел, код визита execute_sql); payload факты (tables/counts/verdict), БЕЗ
+# SQL-текста (D-022-аналог)
+EVENT_EXECUTE_PROBE = "execute.probe"
 
 # BL-004 (требование владельца): результат тулa показывается строками данных,
 # хоть обрезанными; единый контракт эмиссии (apps.cli) и рендера (ConsoleTracer)

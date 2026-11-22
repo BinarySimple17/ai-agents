@@ -33,6 +33,7 @@ CONTRACT_1_FIELDS = {
     "row_count",
     "compact",
     "error",
+    "diagnosis",  # {error_class, hint, retry_futile} — разбор ошибки (S14, D-016)
     "retry_count",
     "budget_used",
     "route_flags",

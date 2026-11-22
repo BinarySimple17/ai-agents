@@ -100,6 +100,16 @@ def make_generate_sql_node(
         start_attempt = retry_count + 1 if on_fsm_retry else 1
         # Контекст ретрая — только на FSM-ретрае (ревью minor): затерявшийся
         # error другого узла не должен превращаться в «Ошибка предыдущей попытки»
+        # S14 (D-016): разбор ошибки — последний SQL + текст ошибки + подсказка
+        # диагностики (state.diagnosis пишет diagnose_error — S9: hint внутренний,
+        # пользовательский state.error.message не смешивается)
+        last_error = None
+        if on_fsm_retry:
+            raw_error = (state.get("error") or {}).get("message")
+            hint = (state.get("diagnosis") or {}).get("hint")
+            last_error = raw_error
+            if raw_error and hint:
+                last_error = f"{raw_error}\nПодсказка регенерации: {hint}"
         result = service.generate(
             skeleton=skeleton,
             question=question,
@@ -107,7 +117,7 @@ def make_generate_sql_node(
             assumptions=state.get("assumptions") or [],
             permissions=state.get("permissions") or {},
             last_sql=state.get("sql") if on_fsm_retry else None,
-            last_error=(state.get("error") or {}).get("message") if on_fsm_retry else None,
+            last_error=last_error,
             start_attempt=start_attempt,
         )
         if tracer is not None:
