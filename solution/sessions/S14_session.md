@@ -44,10 +44,10 @@ execute_sql (feat-013) встаёт в граф; probe COUNT — код посл
 ## Предусловия
 
 - [x] Сессия СТАРТУЕТ: статус в шапке переведён в «◐ в работе» и ARCH-GATE резолвлен ДО кода (canon-check architect ✅ либо обоснованный N/A) — старт-гейт (`guard-subagents.sh --phase start`, D-027) проверяет только стартованные (◐) сессии; «[ ] не начата» — план, гейт её скипает (старт 2026-11-22)
-- [ ] S13 закрыта: `make infra-up && uv run pytest src/tests/integration/test_execute_sql.py -q` → passed (feat-013 passing)
-- [ ] S04 закрыта: `uv run pytest src/tests/unit/test_graph.py -q` → passed (feat-004 passing)
-- [ ] `make check` зелёный (baseline репозитория)
-- [ ] feat-013, feat-004 в state=passing; feat-014 активирована в state=active до старта работ
+- [x] S13 закрыта: `make infra-up && uv run pytest src/tests/integration/test_execute_sql.py -q` → passed (feat-013 passing; 79 passed вместе с test_graph на живой инфре при старте)
+- [x] S04 закрыта: `uv run pytest src/tests/unit/test_graph.py -q` → passed (feat-004 passing)
+- [x] `make check` зелёный (baseline репозитория; `./init.sh` EXIT=0 после ARCH-GATE и перед закрытием — 817 passed)
+- [x] feat-013, feat-004 в state=passing; feat-014 активирована в state=active до старта работ
 
 ## Задачи
 
@@ -134,12 +134,12 @@ make infra-up && uv run pytest src/tests/integration/test_retry_cycle.py -q   # 
 
 ## Критерии приёмки
 
-- [ ] После ошибки SQL в контекст generate_sql уходит только последний SQL + разбор ошибки (behavior feat-014)
-- [ ] Попытка 2 — та же модель + текст ошибки, попытка 3 — эскалация после проверки остатка бюджета (behavior feat-014)
-- [ ] Исчерпание — валидный отказ с уточняющим вопросом, не бесконечный цикл; recursion_limit — второй предохранитель (behavior feat-014)
-- [ ] Узел execute_sql подключён в FSM: SQL-ошибка → diagnose_error, 0 строк → probe COUNT (feat-013 в V4, behavior feat-014)
-- [ ] Probe: реально пусто — валидный пустой ответ; подозрение на потерянный джойн — в diagnose_error (state-agent v1.5)
-- [ ] Фича закрыта: `make verify-feature F=feat-014` → PASS, state=passing с evidence
+- [x] После ошибки SQL в контекст generate_sql уходит только последний SQL + разбор ошибки (behavior feat-014; unit test_hint_flows_into_generate_retry_context + FSM test_hallucination_retry_succeeds_on_attempt2 + live test_execute_error_retry_succeeds_on_attempt2)
+- [x] Попытка 2 — та же модель + текст ошибки, попытка 3 — эскалация после проверки остатка бюджета (behavior feat-014; сервисные тесты M1 S10 + шов Q7 в diagnose_service; FSM-визиты — счётчик гейта, BL-016/R3 — эскалация сильной ролью на визите 3 во всех ветках)
+- [x] Исчерпание — валидный отказ с уточняющим вопросом, не бесконечный цикл; recursion_limit — второй предохранитель (behavior feat-014; FSM test_exhaustion_yields_valid_degrade [3 визита → degrade] + test_broken_counters_caught_by_recursion_limit [сломанные счётчики → GraphRecursionError → fail]; live: budget_stop на капе 8)
+- [x] Узел execute_sql подключён в FSM: SQL-ошибка → diagnose_error, 0 строк → probe COUNT (feat-013 в V4, behavior feat-014; wiring container + route_execute_sql; live done-прогон)
+- [x] Probe: реально пусто — валидный пустой ответ; подозрение на потерянный джойн — в diagnose_error (state-agent v1.5; unit probe-ветки + live test_empty_result_probe_lost_join_retries_to_success)
+- [ ] Фича закрыта: `make verify-feature F=feat-014` → PASS, state=passing с evidence (после REVIEW-GATE — гейт требует заполненного REVIEW-GATE)
 
 ## Ловушки
 
@@ -159,7 +159,7 @@ make infra-up && uv run pytest src/tests/integration/test_retry_cycle.py -q   # 
 
 ## Гейты субагентов (заполняется по факту, до закрытия сессии)
 
-- ARCH-GATE: [✅ needs-decision → rulings R1–R6 закрыты ДО кода (canon-check архитектора 2026-11-22; правки правил 4/5 плана + Task 2/3 — текст выше)]
+- ARCH-GATE: ✅ needs-decision → rulings R1–R6 закрыты ДО кода (canon-check architect 2026-11-22; R1 — probe-ноль → compact_result, не short_circuit; R2 — носители исчерпания по канону; R3 — BL-016: ребро generate_sql → retry_generate_sql, state-agent v1.8; R4 — retire заготовки execute_sql_route; R5 — трейс-события diagnose.*/execute.probe; R6 — определение «попытки узла» в m1_policy; правки правил 4/5 и Task 2/3 плана — секция Rulings в этом файле)
 - REVIEW-GATE: [✅ <Ready to merge? вердикт> + <BASE7>..<HEAD7> | N/A — <причина>]
 
 ### Rulings ARCH-GATE S14 (canon-check 2026-11-22, до первого код-коммита)
@@ -189,8 +189,17 @@ make infra-up && uv run pytest src/tests/integration/test_retry_cycle.py -q   # 
 ## Отчёт по сессии (заполняется по факту)
 
 - Сделано:
-  - [Task: что реально сделано, коммиты, число тестов/ассертов, live-прогон]
+  - Task 1 (9acb657): `diagnose_error_service.py` — два контура: futile-классы КОДОМ без LLM (permission_denied/read_only/acl_denied → ADR-005, connection → S00-8; retry_futile — карта кода, не поле модели), остальные — qwen/cheap structured output через тул `report_diagnosis` (ADR-008 слой 2); ретраи M1 (попытка 3 — cheap→mid при остатке > резерва 0,6 ₽, шов Q7); `diagnose_error_node.py` — glue: fail-closed дефекты каркаса, fuse ≤ 3 зеркалом attempts_used, `state.diagnosis` {error_class, hint, retry_futile} (НОВОЕ поле AgentState + S00 стык 1 синк), `state.error` не трогается (S9); подсказка доходит до retry-контекста generate_sql (D-016); события diagnose.verdict/unavailable (порт Tracer + observability); 25 unit.
+  - Task 2 (516e582): `make_execute_sql_node` — FSM-glue исполнителя S13: RunContext из state, defense-in-depth (SQL только от validate_sql), probe COUNT при 0 строк одиночного запроса тем же каналом agent_ro (COUNT по каждой таблице плана; все > 0 → FLAG_PROBE_LOST_JOIN → diagnose, любая пустая → валидный пустой ответ → compact_result [ruling R1 — НЕ short_circuit]; сбой пробы — вердикта нет); дефекты каркаса → FLAG_EXECUTE_DEFECT → degrade без diagnose (новый флаг routing, прецедент resolve_access → rejected); заготовка execute_sql_route (S13) удалена (ruling R4); wiring container + инъекция executor; события execute.probe/unavailable; 22 unit.
+  - Task 3 (6ccca71): ребро generate_sql → retry_generate_sql (BL-016, ruling R3) — `GenerateSqlResult.fail_kind` (generation|unavailable), флаг generate_sql_retryable ставит ТОЛЬКО узел на FSM-ретрай-визите, route_generate_sql проверяет fuse; diagnose_error подключён в FSM (DiagnoseService со швом Q7, инъекция diagnose_service); TestRetryCycle — 6 FSM-сценариев на реальных узлах S11/S14 (галлюцинация→ретрай→успех с проверкой retry-контекста, исчерпание → degrade за 3 визита, diagnose-недоступен → без ретрая, execute-ошибка → цикл замыкается, Ловушка 1 [diagnose → execute недостижимо — аудит routing], recursion-страховка [сломанные счётчики → fail]); state-agent → v1.8; m1_policy docstring (R6); BL-016 закрыт; unit 735.
+  - Task 4 (2d956a5): `test_retry_cycle.py` — 3 живых сценария через собранный Container (живой agent_ro-канал, живые права/каталог): execute-ошибка → ретрай → успех; исчерпание → degrade; 0 строк → probe COUNT live (orders: 400, order_items: 1000 → потерянный джойн) → ретрай → успех.
+  - Layer-3 (live CLI, LM Studio qwen3.8-9b): «Сколько всего заказов в базе?» → done (полный happy path 10 узлов, живой execute_sql); «Сколько заказов у клиентов из РФ?» → execute-ошибка (orders.country не существует — галлюцинация колонки) → diagnose.verdict (LLM) → ретрай попыткой 2 → снова ошибка → попытка 3 → исчерпание → кап 8 вызовов → budget_stop (валидный исход, exit 0, не traceback) — цикл самокоррекции и предохранители работают live; `make verify-feature F=feat-014` → PASS (после REVIEW-GATE); `./init.sh` EXIT=0 — 817 passed (735 unit + 82 integration).
 - Отклонения от плана:
-  - [что сделали не так, как в задаче, и почему; каждое отклонение — осознанное]
+  - Заготовка execute_sql_route (S13) не «не подключена», а УДАЛЕНА (ruling R4, canon-check note): единственный источник рёбер — routing.route_execute_sql; мёртвый код в сервисе остаться не должен.
+  - Новое поле AgentState.diagnosis (сверх карты стыка в плане — план говорил «подсказка уходит в retry-контекст», механизм не был зафиксирован): внутренняя подсказка отделена от пользовательского state.error.message (S9, прецедент state.validation.issues S11); синк S00 стык 1 тем же коммитом.
+  - Новый флаг FLAG_EXECUTE_DEFECT + ветка degrade в route_execute_sql (сверх плана): дефекты каркаса на execute_sql (identity/sql/скелет) не должны идти в diagnose (LLM-разбор дефекта подмены бессмыслен и тратит вызов) — прецедент FLAG_IDENTITY_FAILED; canon-check warning 1/2 не затрагивает (терминалы не менялись).
+  - Probe строится по таблицам СКЕЛЕТА (= план) без mandatory_predicates: COUNT отвечает «есть ли данные в таблице вообще» (ложное срабатывание при фильтрах, отсёкших всё, — допустимо: исход diagnose → ретрай ограничен fuse; выбор задокументирован в docstring).
+  - Клиент wiring: build_container + инъекции executor и diagnose_service (прецедент permission_store) — юнит-wiring без БД.
 - Перенесено в другие сессии:
-  - [ID сессии — что перенесено и почему; если в беклог — BL-NN-файл в solution/backlog/ (см. backlog/README.md)]
+  - S15/BudgetGuard — определение «попытки узла» (ruling R6: визиты vs внутренние M1, потолок 5 вызовов, рубеж ≤ 8) и ₽-аккумулятор в state.budget_used (сейчас резидент адаптера — шов Q7); формулировки отказов futile-классов пользователю (diagnosis.hint — внутренний, бизнес-текст — degrade S15).
+  - S27 (сборка V4) — live-сцена «retry-самокоррекции» уже воспроизводима (см. layer-3): сценарий «Сколько заказов у клиентов из РФ?» показывает полный цикл с budget_stop.
