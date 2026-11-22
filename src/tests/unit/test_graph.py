@@ -716,8 +716,12 @@ class TestAnswerQuestion:
         assert "без терминального исхода" in result.state["error"]["message"]
 
     def test_fsm_result_answer_property(self) -> None:
-        result = FSMResult(outcome="done", state={"compact": {"row_count": 5}})
-        assert result.answer == {"row_count": 5}
+        # S15: наружный payload — final_answer (interpret/degrade); compact —
+        # внутренний вид для промпта интерпретатора, наружу не идёт
+        payload = {"text": "Всего 5 заказов.", "row_count": 5}
+        result = FSMResult(outcome="done", state={"final_answer": payload, "compact": {"x": 1}})
+        assert result.answer == payload
+        assert FSMResult(outcome="done", state={"compact": {"row_count": 5}}).answer is None
 
     def test_paused_result_carries_thread_id_for_resume(self) -> None:
         # Ревью S08 Important-1: пауза с ненаружным thread_id — тупик (resume

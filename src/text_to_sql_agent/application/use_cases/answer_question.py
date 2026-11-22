@@ -65,7 +65,10 @@ class FSMResult:
 
     @property
     def answer(self) -> dict[str, Any] | None:
-        return self.state.get("compact")
+        """Финальный payload исхода (S15): interpret_result/degrade пишут
+        ``final_answer`` (текст + SQL + допущения + флаги + стоимость);
+        compact — внутренний вид для промпта, наружу не идёт."""
+        return self.state.get("final_answer")
 
 
 class AnswerQuestion:

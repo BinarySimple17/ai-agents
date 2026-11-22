@@ -17,11 +17,16 @@ from text_to_sql_agent.application.ports.tracer import Tracer
 from text_to_sql_agent.application.services.build_skeleton_node import make_build_skeleton_node
 from text_to_sql_agent.application.services.clarify_node import make_clarify_node
 from text_to_sql_agent.application.services.clarify_service import ClarifyService
+from text_to_sql_agent.application.services.compact_result_node import make_compact_result_node
+from text_to_sql_agent.application.services.degrade_node import make_degrade_node
+from text_to_sql_agent.application.services.degrade_service import DegradeService
 from text_to_sql_agent.application.services.diagnose_error_node import make_diagnose_error_node
 from text_to_sql_agent.application.services.diagnose_error_service import DiagnoseService
 from text_to_sql_agent.application.services.execute_sql_node import make_execute_sql_node
 from text_to_sql_agent.application.services.generate_sql_node import make_generate_sql_node
 from text_to_sql_agent.application.services.generate_sql_service import GenerateSqlService
+from text_to_sql_agent.application.services.interpret_result_node import make_interpret_result_node
+from text_to_sql_agent.application.services.interpret_result_service import InterpretService
 from text_to_sql_agent.application.services.plan_joins_node import make_plan_joins_node
 from text_to_sql_agent.application.services.plan_joins_service import PlanJoinsService
 from text_to_sql_agent.application.services.resolve_access_node import make_resolve_access_node
@@ -66,6 +71,8 @@ class Container:
     validate_sql_service: ValidateSqlService
     clarify_service: ClarifyService
     diagnose_service: DiagnoseService
+    interpret_service: InterpretService
+    degrade_service: DegradeService
     auth_provider: AuthProvider
     resolve_access_service: ResolveAccessService
     # Сессии interrupt (S08, ruling R2): ValkeyCheckpointer в проде;
@@ -85,6 +92,8 @@ def build_container(
     checkpointer: object | None = None,
     clarify_service: ClarifyService | None = None,
     diagnose_service: DiagnoseService | None = None,
+    interpret_service: InterpretService | None = None,
+    degrade_service: DegradeService | None = None,
     plan_joins_service: PlanJoinsService | None = None,
     generate_sql_service: GenerateSqlService | None = None,
     validate_sql_service: ValidateSqlService | None = None,
@@ -203,6 +212,13 @@ def build_container(
             llm=llm,
             budget_remaining_roubles=budget_guard.remaining_rub,
         )
+    # Финальный контур (S15/feat-015): compact_result — код; interpret_result —
+    # strong по компакту (final_answer + ₽-снапшот guard'а R6); degrade — отказ
+    # бизнес-понятиями (mid + санитайзер R1). Инъекции — юнит-тесты wiring
+    if interpret_service is None:
+        interpret_service = InterpretService(llm=llm)
+    if degrade_service is None:
+        degrade_service = DegradeService(llm=llm)
     # Сессии interrupt (S08, ruling R2 ARCH-GATE): Valkey + TTL из Settings;
     # инъекция фейка/MemorySaver — юнит-тесты без инфры (S00 правило 7)
     checkpointer = checkpointer or ValkeyCheckpointer(
@@ -242,6 +258,14 @@ def build_container(
             # (диагноз qwen/cheap; futile-классы — код без LLM; замыкает цикл
             # самокоррекции ADR-002 §4: generate → validate → execute → diagnose → generate)
             "diagnose_error": make_diagnose_error_node(diagnose_service, tracer=tracer),
+            # S15/feat-015: компакт (код) → объяснение (strong) → done; отказ
+            # правами — degrade (формулировка mid + шаблон-fallback) → degrade-
+            # терминал; ₽-снапшот budget_guard (R6) в обоих узлах
+            "compact_result": make_compact_result_node(tracer=tracer),
+            "interpret_result": make_interpret_result_node(
+                interpret_service, budget_guard=budget_guard, tracer=tracer
+            ),
+            "degrade": make_degrade_node(degrade_service, budget_guard=budget_guard, tracer=tracer),
             "validate_sql": make_validate_sql_node(
                 validate_sql_service,
                 catalog_provider=permission_store.data_catalog,
@@ -265,6 +289,8 @@ def build_container(
         validate_sql_service=validate_sql_service,
         clarify_service=clarify_service,
         diagnose_service=diagnose_service,
+        interpret_service=interpret_service,
+        degrade_service=degrade_service,
         auth_provider=auth_provider,
         resolve_access_service=resolve_access_service,
         checkpointer=checkpointer,

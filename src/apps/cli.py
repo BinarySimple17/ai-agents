@@ -738,6 +738,40 @@ def main(argv: list[str] | None = None) -> int:
             checkpointer_close()
 
 
+def _print_final_answer(result: object) -> None:
+    """Финальный payload исхода (S15, FSMResult.answer): ответ + контракт feat-015.
+
+    done — текст + SQL + допущения/usage_notes + флаги + стоимость; degrade —
+    текст отказа + причина. Печатается только содержимое final_answer — S9-
+    инварианты текста гарантированы узлом (санитайзер/шаблоны), CLI ничего не
+    переформулирует. ASCII-вывод (ревью S04 M3): без «→» в строках печати.
+    """
+    answer = getattr(result, "answer", None) or {}
+    text = answer.get("text")
+    if text:
+        print("Ответ: " + str(text))
+    sql = answer.get("sql")
+    if sql:
+        print("SQL: " + str(sql))
+    notes = [*(answer.get("assumptions") or []), *(answer.get("usage_notes") or [])]
+    for note in notes:
+        print("Допущение: " + str(note))
+    flags = [
+        label
+        for label, value in (
+            ("усечение", answer.get("truncated")),
+            ("approximate", answer.get("approximate")),
+            ("неполный", answer.get("incomplete")),
+        )
+        if value
+    ]
+    if flags:
+        print("Флаги: " + ", ".join(flags))
+    cost = answer.get("cost_rub")
+    if cost is not None:
+        print("Стоимость: " + format(float(cost), ".4f") + " руб.")
+
+
 def _run_fsm(container: Container, question: str, *, token: str) -> int:
     """FSM-прогон (S04/S05/S08): verify токена → порядок обхода узлов + исход.
 
@@ -780,6 +814,7 @@ def _run_fsm(container: Container, question: str, *, token: str) -> int:
     # « → » дал бы UnicodeEncodeError (ревью S04 M3)
     print("Маршрут: " + " -> ".join(result.visited_nodes))
     print("Исход: " + str(result.outcome))
+    _print_final_answer(result)
     error = result.state.get("error")
     if error:
         # Сообщение отказа — фиксированный текст узла (S9): деталей настройки
