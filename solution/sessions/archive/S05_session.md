@@ -1,6 +1,6 @@
 # S05 — resolve_access: права из таблиц настроек + DevTokenAuth (веха V4, ДЗ-05)
 
-Этап: Веха V4 (ДЗ-05: первый узел FSM — детерминированный, без LLM) | Владелец: агент | Зависимости: S02, S04 | Оценка: 1 | Статус: ◐ в работе (2026-11-21)
+Этап: Веха V4 (ДЗ-05: первый узел FSM — детерминированный, без LLM) | Владелец: агент | Зависимости: S02, S04 | Оценка: 1 | Статус: ✅ 2026-11-22
 Фичи: feat-005 — resolve_access; зависимости feat-002 (passing), feat-004 (закрывается S04 до старта)
 Роль по фиче: закрывает feat-005 — финальная сессия, через make verify-feature
 
@@ -172,7 +172,7 @@ uv run pytest src/tests/unit/test_graph.py src/tests/integration/test_resolve_ac
 ## Гейты субагентов (заполняется по факту, до закрытия сессии)
 
 - ARCH-GATE: ✅ verdict violations → rulings R1–R6 закрыты до кода (canon-check architect 2026-11-21, план S05_session.md: гранты 0002 достаточны — R1; порт `PermissionStore` + S00-строка — R2; ОБА счётчика settings_version + тест revoke — R3; identity-проводка verify→state — R4; CSV/'\*' на границе — R5; rejected/пустая карта/graph_version=0 — R6)
-- REVIEW-GATE: [pending — диспетчеризация code-reviewer оборвана дневным лимитом API-ключа (75,18/75,00 ₽, субагент не завершил вердикт); решение владельца 2026-11-21 — пауза до 2026-11-22. Повторить: BASE=298e36c HEAD=1aa3aa0, вердикт → fix-волна → verify-feature]
+- REVIEW-GATE: ✅ Ready to merge: Yes (0C/0I) — ревью 298e36c..0eb77ae «With fixes» (0C/3I/9M: I1 утечка psycopg-деталей в пользовательский отказ [S9], I2 токены plain-str в repr(Settings), I3 R5-нормализация без тестов) → fix-волна 61204a8 (регрессы I1/I2 кусают до-фикс — stash-прогон 2 failed; M1–M8 закрыты, M9 → BL-014) → scoped re-review 0eb77ae..61204a8 **Yes** (I1/I2 закрыты по существу, регрессионная сила подтверждена по диффу; M3-schema/M1-versions defense-in-depth тесты + exit-code fail — доводка 52905a4 с bite-проверкой M3) | контекст: первичная диспетчеризация 2026-11-21 оборвана дневным лимитом API-ключа — пауза по решению владельца, континуация 2026-11-22
 
 ## Отчёт по сессии (заполняется по факту)
 
@@ -202,10 +202,22 @@ uv run pytest src/tests/unit/test_graph.py src/tests/integration/test_resolve_ac
   - Юнит-файл переименован в `test_resolve_access_node.py` — коллизия import-file-mismatch
     с integration `test_resolve_access.py` (одинаковый basename без __init__.py);
     verification-команду фичи это не затрагивает.
-  - **Сессия не завершена** (осознанная пауза): дневной лимит API-ключа (75,18/75,00 ₽)
-    оборвал code-reviewer на середине вердикта (3,3М субагент-токенов); решение владельца
-    2026-11-21 — остановиться до завтра в чистом состоянии.
+  - Сессия шла в два дня: дневной лимит API-ключа (75,18/75,00 ₽) оборвал code-reviewer
+    2026-11-21 на середине вердикта — пауза по решению владельца, континуация 2026-11-22
+    (ревью по тому же диапазону прошло целиком).
 - Перенесено в другие сессии:
-  - Континуация S05 (2026-11-22): code-reviewer по 298e36c..1aa3aa0 → fix-волна при
-    находках → REVIEW-GATE ✅ → `make verify-feature F=feat-005` → merge
-    `feat-005-resolve-access` в `milestone/v4` (D-031) → End of Session + make archive.
+  - BL-014 (P3): единая нормализация CSV-прав — fail-closed адаптер (S05) vs lenient
+    plan_joins_service/демо (S09); разъедутся при правке R5-семантики.
+- Континуация 2026-11-22 (завершение):
+  - Ревью 298e36c..0eb77ae: **With fixes** (0C/3I/9M) → fix-волна 61204a8: I1 отказ
+    без утечки psycopg-деталей (S9) + деталь в resolve.rights_unavailable трейс,
+    I2 agent_dev_tokens → SecretStr (repr не печатает токен), I3 юнит-тесты
+    fail-closed CSV/слияния (14), M1–M8 (сверка по RIGHTS_VERSION_KEYS, whitespace
+    identity, schema_name='public', CLI exit-коды, типизация runner, revoke-тест);
+    регрессы I1/I2 кусают до-фикс (stash-прогон 2 failed).
+  - Scoped re-review 0eb77ae..61204a8: **Ready to merge: Yes** (0C/0I) → доводка
+    остаточных миноров 52905a4: defense-in-depth тесты M3-schema (bite-проверка:
+    без фильтра 'secrets' попадает в карту) и M1-versions (пустой словарь store
+    не морозит кэш), exit-code `fail` → 1, косметика.
+  - `make verify-feature F=feat-005` → **PASS** (12 integration, state=passing,
+    evidence записан); layer-3 в feature_list дополнен живой командой --fsm --token.
