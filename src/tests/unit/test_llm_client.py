@@ -348,6 +348,14 @@ def test_real_sdk_finish_reason_length_does_not_promote_reasoning() -> None:
     assert provider2.complete("mid", _MESSAGES).text is None
 
 
+def test_llm_response_carries_finish_reason() -> None:
+    # S15 (S19-хвост): буферный путь раньше терял finish_reason — интерпретатор
+    # не отличал «length» с текстом (тихая усечённость шлюза) от полного ответа;
+    # поле доходит до LLMResponse (ruling ARCH-GATE S15, D-021-прецедент).
+    provider, _, _, _ = _provider([_sdk_completion("length", "оборванная мысль…")])
+    assert provider.complete("mid", _MESSAGES).finish_reason == "length"
+
+
 def test_real_sdk_finish_reason_tool_calls_without_tools_no_reasoning_text() -> None:
     # Re-review Minor-4: finish_reason заявляет tool-ход, а тулов в сообщении нет
     # (несогласованный шлюз) — reasoning такого хода не финальный ответ, путь

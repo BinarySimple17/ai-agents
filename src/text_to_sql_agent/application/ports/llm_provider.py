@@ -52,12 +52,20 @@ class Usage(BaseModel):
 
 
 class LLMResponse(BaseModel):
-    """Ответ шлюза: текст и/или tool_calls + usage + фактическая модель."""
+    """Ответ шлюза: текст и/или tool_calls + usage + фактическая модель.
+
+    ``finish_reason`` — статус завершения шлюза, если отдал (S15: ``"length"``
+    с текстом — тихая усечённость: интерпретатор обязан пометить ответ
+    incomplete, «неполное не выдаётся за полное» — хвост S19, ruling
+    ARCH-GATE S19; буферный путь раньше терял поле, стримовый нёс его в
+    StreamFinal). None — шлюз поле не отдаёт.
+    """
 
     text: str | None = None
     tool_calls: list[ToolCall] = Field(default_factory=list)
     usage: Usage = Field(default_factory=Usage)
     model: str  # фактическое имя модели — роль → модель резолвит адаптер из Settings
+    finish_reason: str | None = None
 
 
 class StreamChunk(BaseModel):

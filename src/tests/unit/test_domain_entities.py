@@ -32,6 +32,7 @@ CONTRACT_1_FIELDS = {
     "rows",
     "row_count",
     "compact",
+    "final_answer",  # финальный payload исхода (S15: interpret_result/degrade пишут)
     "error",
     "diagnosis",  # {error_class, hint, retry_futile} — разбор ошибки (S14, D-016)
     "retry_count",

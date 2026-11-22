@@ -554,6 +554,9 @@ class OpenAIProvider:
             tool_calls=tool_calls,
             usage=usage,
             model=response.model,
+            # S15: «length» с текстом — тихая усечённость → incomplete у
+            # интерпретатора (S19-хвост; стримовый путь нёс поле в StreamFinal)
+            finish_reason=finish_reason,
         )
         self._emit(
             "llm.complete",
