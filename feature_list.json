@@ -194,9 +194,9 @@
       "dependencies": [
         "feat-004"
       ],
-      "state": "not_started",
-      "status": "not-started",
-      "evidence": "",
+      "state": "passing",
+      "status": "done",
+      "evidence": "command «uv run pytest src/tests/unit/test_clarify.py -q» exited 0 at 2026-11-22T11:24:23+03:00 (scripts/verify-feature.sh)",
       "layers": [
         {
           "label": "layer-1-static",
@@ -206,7 +206,12 @@
         {
           "label": "layer-2-runtime",
           "cmd": "uv run pytest src/tests/unit/test_clarify.py -q",
-          "repair": "Read failing test (LLM мокается); fix prompt/проверку однозначности и re-run."
+          "repair": "Read failing test (LLM мокается); fix prompt/проверку однозначности and re-run."
+        },
+        {
+          "label": "layer-3-e2e",
+          "cmd": "uv run python -m apps.cli \"вопрос\" --fsm --token <dev-токен> (неоднозначный вопрос → interrupt → ответ со stdin → resume того же прогона)",
+          "repair": "Fix composition wiring / CLI interrupt loop, re-run manually."
         }
       ]
     },

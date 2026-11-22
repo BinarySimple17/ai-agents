@@ -223,12 +223,32 @@ class TestRightsFreshness:
             admin_conn.commit()
 
 
+class _ScriptedClarify:
+    """Сессия S05 тестирует resolve_access, не clarify (S08): вердикт — мок (S00-7)."""
+
+    def clarify(self, question: str, *, ctx: object, permissions: object) -> object:
+        from text_to_sql_agent.application.services.clarify_service import (
+            ClarifyOutcome,
+            ClarifyResult,
+        )
+
+        return ClarifyResult(outcome=ClarifyOutcome.UNAMBIGUOUS)
+
+
 class TestFSMThroughContainer:
     """Task 4: FSM-путь жив — тест через собранный Container, не напрямую сервис."""
 
     @pytest.fixture()
     def container(self, tmp_path, postgres_available):
-        return build_container(_settings(tmp_path))
+        # clarify — скриптовый сервис (реальный узел зовёт LLM; здесь проверяется
+        # resolve_access); checkpointer — MemorySaver (живой Valkey — test_clarify_resume)
+        from langgraph.checkpoint.memory import MemorySaver
+
+        return build_container(
+            _settings(tmp_path),
+            checkpointer=MemorySaver(),
+            clarify_service=_ScriptedClarify(),  # type: ignore[arg-type]
+        )
 
     def test_known_user_done_with_permissions_in_state(self, container) -> None:
         state = initial_state("Сколько заказов у клиентов из РФ?", user_id="u_analyst")

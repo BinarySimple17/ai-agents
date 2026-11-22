@@ -10,20 +10,38 @@ state СИМУЛИРУЮТ кодовое решение будущих сесс
 from typing import Any
 
 import pytest
+from langgraph.checkpoint.memory import MemorySaver
 from langgraph.errors import GraphRecursionError
 
+from text_to_sql_agent.application.ports.checkpointer import CheckpointStoreError
 from text_to_sql_agent.application.ports.llm_provider import BudgetExceededError, LLMRequestError
+from text_to_sql_agent.application.services.clarify_node import make_clarify_node
+from text_to_sql_agent.application.services.clarify_service import (
+    ClarifyOutcome,
+    ClarifyResult,
+)
 from text_to_sql_agent.application.services.stub_nodes import initial_state
 from text_to_sql_agent.application.use_cases.answer_question import AnswerQuestion, FSMResult
-from text_to_sql_agent.domain.entities import TERMINAL_OUTCOMES
+from text_to_sql_agent.domain.entities import TERMINAL_OUTCOMES, Assumption
 from text_to_sql_agent.orchestration.graph import RETRY_GATES, build_fsm_app
+from text_to_sql_agent.orchestration.interrupt_gate import LangGraphInterruptGate
 from text_to_sql_agent.orchestration.routing import (
+    FLAG_CLARIFICATION_NEEDED,
+    FLAG_PLAN_JOINS_CLARIFY,
+    FLAG_PLAN_JOINS_INVALID,
     LLM_NODES,
     MAX_NODE_RETRIES,
+    TRANSITION_FLAGS,
     FSMGuardCaps,
     attempts_used,
+    route_clarify,
+    route_plan_joins,
 )
-from text_to_sql_agent.orchestration.runner import RECURSION_LIMIT_ERROR_CLASS, LangGraphRunner
+from text_to_sql_agent.orchestration.runner import (
+    RECURSION_LIMIT_ERROR_CLASS,
+    LangGraphRunner,
+    build_fsm_runner,
+)
 
 QUESTION = "Сколько заказов у клиентов из РФ?"
 CAPS = FSMGuardCaps(max_llm_calls=8, budget_rub=2.0)
@@ -299,6 +317,297 @@ class TestBinderTransitionFlags:
         assert updates["route_flags"]["step_empty_keyset"] is True
 
 
+class TestClarifyRouting:
+    """Ветвление после clarify (S08/feat-008, rulings R1-R3): вопрос в state —
+    само-ребро interrupt-механики; флаг без вопроса — честный отказ; иначе —
+    план_joins. Ребро plan_joins -> clarify — равные кандидаты (FIX-009/R1)."""
+
+    def test_pending_question_loops_back_into_clarify(self) -> None:
+        assert route_clarify({"clarify_question": "Уточните период"}) == "clarify"
+
+    def test_flag_without_question_is_honest_clarification_terminal(self) -> None:
+        # Узел не смог сформулировать вопрос (LLM-сбой) — валидный исход (S00-8)
+        state = {"route_flags": {FLAG_CLARIFICATION_NEEDED: True}, "clarify_question": None}
+        assert route_clarify(state) == "terminal_clarification"
+
+    def test_neither_question_nor_flag_goes_to_plan_joins(self) -> None:
+        assert route_clarify({"route_flags": {}}) == "plan_joins"
+        assert route_clarify({"route_flags": {FLAG_CLARIFICATION_NEEDED: False}}) == "plan_joins"
+
+    def test_plan_joins_clarify_flag_routes_back_to_clarify(self) -> None:
+        # Равные кандидаты пути (S10 активирует) — повторный вход clarify
+        state = {"route_flags": {FLAG_PLAN_JOINS_CLARIFY: True, FLAG_PLAN_JOINS_INVALID: True}}
+        assert route_plan_joins(state) == "clarify"
+
+    def test_plan_joins_exhausted_still_wins_over_clarify(self) -> None:
+        state = {
+            "route_flags": {FLAG_PLAN_JOINS_CLARIFY: True, "plan_joins_exhausted": True},
+            "retry_count": 0,
+        }
+        assert route_plan_joins(state) == "terminal_fail"
+
+    def test_plan_joins_clarify_flag_is_one_shot_transition(self) -> None:
+        # Одноразовый переход (биндером гасится на ре-входе) — иначе после resume
+        # clarify стейл-True уводил бы прогон в clarify повторно
+        assert FLAG_PLAN_JOINS_CLARIFY in TRANSITION_FLAGS
+
+
+class _ScriptedClarifyService:
+    """Скриптовый clarify-сервис: один вердикт на прогон (LLM — мок, S00-7)."""
+
+    def __init__(self, result: ClarifyResult) -> None:
+        self._result = result
+        self.called = 0
+
+    def clarify(self, question: str, *, ctx: Any, permissions: Any) -> ClarifyResult:
+        self.called += 1
+        return self._result
+
+
+def _rights_passing_node(state: dict[str, Any]) -> dict[str, Any]:
+    # Минимальная подмена resolve_access: права в state, identity-флаг не ставится
+    return {"permissions": {"orders": ["*"]}, "graph_version": 0}
+
+
+class _RecordingTracer:
+    """Фейковый Tracer: копит записи для проверок (прецедент test_clarify)."""
+
+    def __init__(self) -> None:
+        self.records: list[Any] = []
+
+    def record(self, trace: Any) -> None:
+        self.records.append(trace)
+
+
+class TestInterruptFlow:
+    """interrupt()/checkpointer (Task 2 S08, rulings R2/R3/R6): пауза -> resume
+    ТОГО ЖЕ прогона; TTL истёк -> clarification-терминал; misuse — fail, не
+    traceback. Checkpointer в unit — MemorySaver; живой Valkey — integration."""
+
+    def _runner(
+        self, result: ClarifyResult, tracer: Any | None = None
+    ) -> tuple[Any, _ScriptedClarifyService]:
+        service = _ScriptedClarifyService(result)
+        return (
+            build_fsm_runner(
+                tracer=tracer,
+                caps=CAPS,
+                checkpointer=MemorySaver(),
+                deadline_s=90.0,
+                recursion_limit=50,
+                node_overrides={
+                    "resolve_access": _rights_passing_node,
+                    "clarify": make_clarify_node(service, LangGraphInterruptGate()),
+                },
+            ),
+            service,
+        )
+
+    def test_ambiguous_question_pauses_graph_with_marker(self) -> None:
+        runner, _ = self._runner(
+            ClarifyResult(outcome=ClarifyOutcome.CLARIFY, question="За какой период?")
+        )
+        final = runner.run(initial_state(QUESTION, user_id="u_analyst"), thread_id="t-int")
+        assert final["interrupted"] is True
+        assert final.get("outcome") is None  # не терминал — пауза (ruling R3)
+        assert final["clarify_question"] == "За какой период?"
+
+    def test_resume_same_thread_continues_same_run(self) -> None:
+        # Ловушка 2 S08: resume по тому же thread_id — ТОТ ЖЕ прогон (допущение
+        # user_answer в state, прогон доходит до done, не новый invocation)
+        tracer = _RecordingTracer()
+        runner, service = self._runner(
+            ClarifyResult(outcome=ClarifyOutcome.CLARIFY, question="За какой период?"),
+            tracer=tracer,
+        )
+        paused = runner.run(initial_state(QUESTION, user_id="u_analyst"), thread_id="t-same")
+        assert paused["interrupted"] is True
+        final = runner.resume("за 2026 год", thread_id="t-same")
+        assert final["outcome"] == "done"
+        assert final["interrupted"] is False
+        # Событие фактической паузы — ровно одно на прогон (зона раннера;
+        # тот же tracer несёт и graph.node-спаны биндера)
+        pauses = [e for e in tracer.records if e.event == "clarify.interrupt"]
+        assert len(pauses) == 1
+        assert pauses[0].payload["question"] == "За какой период?"
+        assert pauses[0].payload["thread_id"] == "t-same"
+        answers = [a for a in final["assumptions"] if a.source == "user_answer"]
+        assert [a.text for a in answers] == ["за 2026 год"]
+        # Классификация выполнялась РОВНО ОДИН раз (visit 1) — ruling R6:
+        # повторный LLM-вызов на resume недопустим
+        assert service.called == 1
+        assert final["visited_nodes"].count("clarify") == 2  # классификация + interrupt
+
+    def test_expired_session_synthesizes_clarification_terminal(self) -> None:
+        # TTL истёк (ruling R3): валидный clarification-исход, не исключение;
+        # state восстановить неоткуда — payload из question
+        runner, _ = self._runner(ClarifyResult(outcome=ClarifyOutcome.CLARIFY, question="Уточните"))
+        runner.run(initial_state(QUESTION, user_id="u_analyst"), thread_id="t-exp")
+        runner._app.checkpointer.delete_thread("t-exp")  # имитация истёкшего TTL
+        final = runner.resume("ответ", thread_id="t-exp", question=QUESTION)
+        assert final["outcome"] == "clarification"
+        assert final["interrupted"] is False
+        assert final["error"]["class"] == "clarify_session_expired"
+        assert final["question"] == QUESTION
+
+    def test_resume_without_interrupt_is_fail_not_crash(self) -> None:
+        # Resume по завершённому прогону — дефект протокола вызова; граница
+        # движка: fail-payload, не ValueError наружу
+        runner, _ = self._runner(ClarifyResult(outcome=ClarifyOutcome.UNAMBIGUOUS))
+        runner.run(initial_state(QUESTION, user_id="u_analyst"), thread_id="t-done")
+        final = runner.resume("ответ", thread_id="t-done")
+        assert final["outcome"] == "fail"
+        assert final["error"]["class"] == "resume_without_interrupt"
+
+    def test_interrupt_without_checkpointer_is_fail_not_traceback(self) -> None:
+        # Ловушка 1 S08: interrupt без checkpointer = GraphInterrupt наружу —
+        # раннер переводит в честный fail (misuse сборки)
+        service = _ScriptedClarifyService(
+            ClarifyResult(outcome=ClarifyOutcome.CLARIFY, question="Уточните")
+        )
+        runner = build_fsm_runner(
+            caps=CAPS,
+            checkpointer=None,  # сессии нет
+            deadline_s=90.0,
+            recursion_limit=50,
+            node_overrides={
+                "resolve_access": _rights_passing_node,
+                "clarify": make_clarify_node(service, LangGraphInterruptGate()),
+            },
+        )
+        final = runner.run(initial_state(QUESTION, user_id="u_analyst"))
+        assert final["outcome"] == "fail"
+        assert final["error"]["class"] == "interrupt_without_checkpointer"
+
+    def test_unambiguous_question_never_pauses(self) -> None:
+        runner, _ = self._runner(
+            ClarifyResult(
+                outcome=ClarifyOutcome.UNAMBIGUOUS,
+                assumptions=[Assumption(source="classifier", text="период — 2026")],
+            )
+        )
+        final = runner.run(initial_state(QUESTION, user_id="u_analyst"), thread_id="t-ok")
+        assert final["outcome"] == "done"
+        assert final["interrupted"] is False
+        assert [a.text for a in final["assumptions"]] == ["период — 2026"]
+
+    def test_resume_rewinds_deadline(self, monkeypatch) -> None:
+        # Ruling R6 (ревью S08 Important-3a): дедлайн 90 s — кап ОБРАБОТКИ, не
+        # ожидания пользователя; раннер перевзводит deadline_at при resume.
+        # Управляемые часы: пауза при t=100 (дедлайн 190), «ожидание» до t=200 —
+        # без перевзвода гвард капов остановил бы продолжение budget_stop-ом
+        clock = _FakeClock(100.0)
+        monkeypatch.setattr("text_to_sql_agent.orchestration.runner.time.monotonic", clock)
+        runner, _ = self._runner(ClarifyResult(outcome=ClarifyOutcome.CLARIFY, question="Уточните"))
+        paused = runner.run(initial_state(QUESTION, user_id="u_analyst"), thread_id="t-dl")
+        assert paused["interrupted"] is True
+        assert paused["deadline_at"] == 190.0
+        clock.t = 200.0  # старый дедлайн (190) истёк за время «ожидания»
+        final = runner.resume("ответ", thread_id="t-dl")
+        assert final["outcome"] == "done"  # перевзвод: дедлайн 290, гвард пропускает
+        assert final["deadline_at"] == 290.0
+
+    def test_resume_keeps_budget_counters(self) -> None:
+        # Ruling R6 (ревью S08 Important-3b): капы персистятся в checkpointer'е —
+        # resume НЕ сбрасывает budget_used; исчерпанный кап останавливает
+        # продолжение budget_stop-ом, а не начинает «свежий» прогон
+        runner, _ = self._runner(
+            ClarifyResult(outcome=ClarifyOutcome.CLARIFY, question="Уточните", llm_calls=0)
+        )
+        state = initial_state(QUESTION, user_id="u_analyst")
+        state["budget_used"] = {"llm_calls": CAPS.max_llm_calls - 1, "rub": 0.0}
+        paused = runner.run(state, thread_id="t-cap")
+        assert paused["interrupted"] is True
+        final = runner.resume("ответ", thread_id="t-cap")
+        # plan_joins-заглушка платит вызов (7→8), гвард на ребре в generate_sql
+        # останавливает прогон: счётчик пережил паузу
+        assert final["outcome"] == "budget_stop"
+        assert final["budget_used"]["llm_calls"] == CAPS.max_llm_calls
+
+
+class _FakeClock:
+    """Управляемые часы (детерминизм тестов R6): runner/routing читают monotonic."""
+
+    def __init__(self, start: float) -> None:
+        self.t = float(start)
+
+    def __call__(self) -> float:
+        return self.t
+
+
+class _BrokenPutSaver(MemorySaver):
+    """Хранилище сессий недоступно на записи (Valkey упал) — I2."""
+
+    def put(self, *args: Any, **kwargs: Any) -> Any:
+        raise CheckpointStoreError(
+            "хранилище сессий недоступно: 127.0.0.1:6379 соединение разорвано"
+        )
+
+
+class TestInterruptStoreFailure:
+    """I2 (ревью S08): сбой Valkey в FSM-пути — валидный fail-исход, не traceback
+    (S00-8); пользовательский текст фиксированный, деталь — операторскому трейсу."""
+
+    def _runner(self, checkpointer: Any, tracer: Any | None = None) -> Any:
+        service = _ScriptedClarifyService(
+            ClarifyResult(outcome=ClarifyOutcome.CLARIFY, question="Уточните")
+        )
+        return build_fsm_runner(
+            tracer=tracer,
+            caps=CAPS,
+            checkpointer=checkpointer,
+            deadline_s=90.0,
+            recursion_limit=50,
+            node_overrides={
+                "resolve_access": _rights_passing_node,
+                "clarify": make_clarify_node(service, LangGraphInterruptGate()),
+            },
+        )
+
+    def test_store_failure_on_run_is_valid_fail(self) -> None:
+        tracer = _RecordingTracer()
+        runner = self._runner(_BrokenPutSaver(), tracer=tracer)
+        final = runner.run(initial_state(QUESTION, user_id="u_analyst"), thread_id="t-broken")
+        assert final["outcome"] == "fail"
+        assert final["error"]["class"] == "checkpoint_unavailable"
+        assert final["error"]["message"] == "хранилище сессий недоступно — повторите запрос позже"
+        assert "127.0.0.1" not in final["error"]["message"]  # S9: деталь не пользователю
+        store_events = [e for e in tracer.records if e.event == "checkpoint.unavailable"]
+        assert len(store_events) == 1
+        assert "127.0.0.1" in store_events[0].payload["detail"]  # оператору — диагностика
+
+    def test_store_failure_on_resume_is_valid_fail(self, monkeypatch) -> None:
+        runner = self._runner(MemorySaver())
+        paused = runner.run(initial_state(QUESTION, user_id="u_analyst"), thread_id="t-b2")
+        assert paused["interrupted"] is True
+        saver = runner._app.checkpointer
+
+        def broken(*args: Any, **kwargs: Any) -> Any:
+            raise CheckpointStoreError("соединение разорвано при чтении сессии")
+
+        monkeypatch.setattr(saver, "get_tuple", broken)
+        final = runner.resume("ответ", thread_id="t-b2", question=QUESTION)
+        assert final["outcome"] == "fail"
+        assert final["error"]["class"] == "checkpoint_unavailable"
+        assert "127.0.0.1" not in final["error"]["message"]
+
+    def test_value_error_on_resume_is_honest_engine_error(self, monkeypatch) -> None:
+        # Re-review M-r2 (Minor-8): остаточный ValueError движка — engine_error,
+        # НЕ маскируется под resume_without_interrupt (тот случай — гвард tasks)
+        runner = self._runner(MemorySaver())
+        paused = runner.run(initial_state(QUESTION, user_id="u_analyst"), thread_id="t-ve")
+        assert paused["interrupted"] is True
+
+        def broken_invoke(*args: Any, **kwargs: Any) -> Any:
+            raise ValueError("канал не принял обновление дедлайна")
+
+        monkeypatch.setattr(runner._app, "invoke", broken_invoke)
+        final = runner.resume("ответ", thread_id="t-ve", question=QUESTION)
+        assert final["outcome"] == "fail"
+        assert final["error"]["class"] == "engine_error"
+        assert "канал не принял" in final["error"]["message"]
+
+
 class TestRunner:
     def test_recursion_limit_becomes_fail_outcome(self) -> None:
         # Второй предохранитель (ADR-002 §4): GraphRecursionError на границе
@@ -342,15 +651,26 @@ class _StubLLM:
 
 
 class _StubRunner:
-    """Двойник GraphRunner: возвращает заданный state или бросает."""
+    """Двойник GraphRunner: возвращает заданный state или бросает.
+
+    Сигнатура с ``thread_id`` — расширение порта ruling R3 ARCH-GATE S08
+    (interrupt-сессия; каркасные тесты его не передают).
+    """
 
     def __init__(self, outcome_state: dict[str, Any] | None = None, error: Exception | None = None):
         self.seen: list[dict[str, Any]] = []
+        self.resumed: list[tuple[str, str, str | None]] = []
         self.outcome_state = outcome_state
         self.error = error
 
-    def run(self, state: dict[str, Any]) -> dict[str, Any]:
+    def run(self, state: dict[str, Any], *, thread_id: str | None = None) -> dict[str, Any]:
         self.seen.append(dict(state))
+        if self.error is not None:
+            raise self.error
+        return dict(self.outcome_state or {})
+
+    def resume(self, answer: str, *, thread_id: str, question: str | None = None) -> dict[str, Any]:
+        self.resumed.append((answer, thread_id, question))
         if self.error is not None:
             raise self.error
         return dict(self.outcome_state or {})
@@ -398,3 +718,36 @@ class TestAnswerQuestion:
     def test_fsm_result_answer_property(self) -> None:
         result = FSMResult(outcome="done", state={"compact": {"row_count": 5}})
         assert result.answer == {"row_count": 5}
+
+    def test_paused_result_carries_thread_id_for_resume(self) -> None:
+        # Ревью S08 Important-1: пауза с ненаружным thread_id — тупик (resume
+        # нечем вызвать); use case генерирует id сам и ВОЗВРАЩАЕТ его
+        llm = _StubLLM()
+        paused_state = {"interrupted": True, "clarify_question": "Уточните"}
+        use_case = AnswerQuestion(runner=_StubRunner(paused_state), llm=llm)
+        result = use_case.run(QUESTION)  # thread_id не передан
+        assert result.paused is True  # реальная пауза (маркер раннера в payload)
+        assert result.thread_id, "FSMResult.thread_id пуст — resume нечем вызвать"
+        runner = use_case._runner  # noqa: SLF001
+        assert isinstance(runner, _StubRunner)
+        assert runner.resumed == []  # сам resume не вызывался
+        resumed = use_case.resume("ответ", thread_id=result.thread_id)
+        assert runner.resumed[0][1] == result.thread_id  # тот же id — тот же прогон
+        assert resumed.thread_id == result.thread_id  # инвариант поля и на resume
+
+    def test_repaused_resume_carries_same_thread_id(self) -> None:
+        # Ревью S08 re-review Minor-1: resume может снова приостановиться
+        # (ребро plan_joins → clarify, S10) — thread_id сохраняется, иначе
+        # второй раунд был бы непродолжаем
+        llm = _StubLLM()
+        runner = _StubRunner()
+        runner.resume = (  # type: ignore[method-assign]
+            lambda answer, *, thread_id, question=None: {
+                "interrupted": True,
+                "clarify_question": "Равные кандидаты: X или Y?",
+            }
+        )
+        use_case = AnswerQuestion(runner=runner, llm=llm)
+        result = use_case.resume("ответ", thread_id="t-second")
+        assert result.paused is True
+        assert result.thread_id == "t-second"

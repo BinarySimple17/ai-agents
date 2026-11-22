@@ -658,3 +658,34 @@ def test_main_plain_runs_tool_loop_buffered(monkeypatch: pytest.MonkeyPatch, cap
     assert captured.out == "Ответ 5\n"  # буферный путь: print(answer)
     assert len(plain_calls) == 1 and agent_calls == []  # дефолтный флоу не вызывался
     assert plain_calls[0]["tool"] is container.run_sql_tool
+
+
+# --- FSM interrupt-цикл (S08): EOF на stdin — валидный отказ, не traceback ---
+def test_fsm_eof_on_stdin_is_valid_refusal(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Ревью S08 Minor-6a: закрытый stdin (pipe без ответа) при ожидании ответа —
+    # clarification-исход презентационного слоя, не EOFError-traceback
+    from text_to_sql_agent.application.use_cases.answer_question import FSMResult
+
+    fsm = SimpleNamespace(
+        run=lambda q, *, user_id="", thread_id=None: FSMResult(
+            outcome=None,
+            state={"clarify_question": "Уточните период", "interrupted": True},
+            thread_id=thread_id or "t-fsm",
+        ),
+        resume=lambda a, *, thread_id, question=None: FSMResult(outcome="done", state={}),
+    )
+    container = SimpleNamespace(
+        auth_provider=SimpleNamespace(verify=lambda token: "u_analyst"),
+        answer_question=fsm,
+        graph_store=SimpleNamespace(close=lambda: None),
+        checkpointer=None,
+    )
+    monkeypatch.setattr(cli_module, "_run_fsm", cli_module._run_fsm)  # живая функция
+    monkeypatch.setattr("builtins.input", lambda *a: (_ for _ in ()).throw(EOFError()))
+    exit_code = cli_module._run_fsm(container, "Заказы", token="tok")
+    captured = capsys.readouterr()
+    assert exit_code == 0  # clarification — содержательный исход с ответом-вопросом
+    assert "Исход: clarification" in captured.out
+    assert "не получен" in captured.out

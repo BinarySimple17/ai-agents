@@ -150,3 +150,17 @@
 **Где исправлено:** [docs/diagrams/state-agent.md](../docs/diagrams/state-agent.md) → v1.5 (входящие рёбра overflow/short_circuit + ребро шагового цикла merge_results → generate_step_sql + примечание «Чтение схемы»), `solution/sessions/S00_session.md` стык 1 (обвязочные поля state, состав терминалов, гвард капов, перехват GraphRecursionError в orchestration — ruling R2), orchestration/routing.py (константы флагов — единственный источник имён).
 
 **Статус:** ЗАКРЫТ — подтверждение владельца 2026-11-21 (сразу после clock-out S04): правка диаграммы v1.5 и wiring feat-004 остаются каноном (диаграмма v1.4 → v1.5 не откатывается).
+
+---
+
+## FIX-009 — Canon-check S08: ребро plan_joins → clarify не существует ни в диаграмме state-agent v1.5, ни в routing.py — при этом hw-01 §4.2 и план S08 утверждают обратное
+
+**Дата:** 2026-11-22 · **Сессия:** S08 (старт, гейт ARCH-GATE — architect canon-check, verdict needs-decision) · **Затрагивает:** [docs/diagrams/state-agent.md](../docs/diagrams/state-agent.md), `solution/sessions/S08_session.md`, orchestration/routing.py (feat-008)
+
+**Противоречие (архитектор).** (a) План S08 (Task 3) утверждает «ребро plan_joins → clarify существует в FSM v1.4 — проверить, что заглушка S04 его уже несёт» — фактически ребра нет нигде: routing.py (route_plan_joins: fail/retry/T1/build_skeleton) clarify-ветки не имеет, диаграмма state-agent v1.5 ребро не рисует («равные кандидаты пути» свернуты в метку ребра clarify → clarification). (b) Канонный текст hw-01/README.md §4.2 при этом говорит «на равных кандидатах — clarify» — канон расходится сам с собой (текст против диаграммы). (c) S09-сервис отдаёт PlanOutcome.CLARIFY с clarifying_question («уточнение контентом узла, interrupt — V4/S08») — механике подъема до interrupt некуда идти: узел plan_joins в FSM остаётся заглушкой до S10, ветки его исхода «уточнение» не существует.
+
+**Решение (ruling R1 ARCH-GATE S08 по рекомендации архитектора, 2026-11-22).** Ребро plan_joins → clarify закладывается в S08 по прецеденту S04 Ловушка-1 («ветки в каркасе, активируют будущие сессии»): новый флаг `FLAG_PLAN_JOINS_CLARIFY` (владение — планер; переиспользование `FLAG_CLARIFICATION_NEEDED` запрещено — флаг узла clarify, карта владения state), ветка route_plan_joins → clarify; диаграмма state-agent → v1.6 (ребро нарисовано, метка clarify → clarification уточнена) в том же коммите; активирует S10 (FSM-подключение plan_joins). Текст hw-01/README.md не переписывается (артефакт сданного ДЗ-1) — противоречие фиксируется этой записью; диаграмма v1.6 — канонная схема.
+
+**Где исправлено:** [docs/diagrams/state-agent.md](../docs/diagrams/state-agent.md) → v1.6, orchestration/routing.py (флаг + ветка), `solution/sessions/S08_session.md` (Task 3 переформулирован «заложить», граница скоупа R4).
+
+**Статус:** ОТКРЫТ — закрывается в S08 диаграммой v1.6 + ребром в routing.py (тот же коммит); подтверждение владельца — при clock-out S08.

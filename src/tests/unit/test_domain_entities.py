@@ -14,12 +14,14 @@ from text_to_sql_agent.domain.entities import (
     RunContext,
 )
 
-# Контракт стыка 1 S00 дословно (плюс обвязочные поля orchestration — R3/R4)
+# Контракт стыка 1 S00 дословно (плюс обвязочные поля orchestration — R3/R4;
+# interrupt-механика S08 — rulings R1–R3 ARCH-GATE)
 CONTRACT_1_FIELDS = {
     "question",
     "user_id",  # verified identity (R4 S05) — точка входа, resolve_access читает
     "rewritten_question",
-    "assumptions",
+    "assumptions",  # list[Assumption] — VO с провенансом (R5 ARCH-GATE S08)
+    "clarify_question",  # вопрос пользователю — interrupt-механика (R1/R2 S08)
     "permissions",
     "graph_version",
     "join_plan",
@@ -42,6 +44,10 @@ CONTRACT_1_FIELDS = {
     "visited_nodes",
     "outcome",
     "deadline_at",
+    # Обвязка orchestration S08 (rulings R2/R3 ARCH-GATE): корреляция прогона
+    # и маркер приостановки interrupt
+    "trace_id",
+    "interrupted",
 }
 
 

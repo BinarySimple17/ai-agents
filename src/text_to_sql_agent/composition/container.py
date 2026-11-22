@@ -6,17 +6,21 @@
 """
 
 from dataclasses import dataclass
+from typing import Any
 
 from text_to_sql_agent.application.ports.auth_provider import AuthProvider
 from text_to_sql_agent.application.ports.llm_provider import LLMProvider
 from text_to_sql_agent.application.ports.permission_store import PermissionStore
 from text_to_sql_agent.application.ports.tracer import Tracer
+from text_to_sql_agent.application.services.clarify_node import make_clarify_node
+from text_to_sql_agent.application.services.clarify_service import ClarifyService
 from text_to_sql_agent.application.services.plan_joins_service import PlanJoinsService
 from text_to_sql_agent.application.services.resolve_access_node import make_resolve_access_node
 from text_to_sql_agent.application.services.resolve_access_service import ResolveAccessService
 from text_to_sql_agent.application.services.run_sql_tool import RunSqlTool
 from text_to_sql_agent.application.use_cases.answer_question import AnswerQuestion
 from text_to_sql_agent.config.settings import Settings, load_settings
+from text_to_sql_agent.infrastructure.cache.valkey_checkpointer import ValkeyCheckpointer
 from text_to_sql_agent.infrastructure.graph.neo4j_graph_store import Neo4jGraphStore
 from text_to_sql_agent.infrastructure.llm.openai_provider import OpenAIProvider
 from text_to_sql_agent.infrastructure.memory.pgvector_store import PgVectorStore
@@ -27,6 +31,7 @@ from text_to_sql_agent.infrastructure.persistence.dev_token_auth import DevToken
 from text_to_sql_agent.infrastructure.persistence.edge_proposal_store import PgEdgeProposalStore
 from text_to_sql_agent.infrastructure.persistence.pg_permission_store import PgPermissionStore
 from text_to_sql_agent.infrastructure.persistence.postgres_executor import PostgresExecutor
+from text_to_sql_agent.orchestration.interrupt_gate import LangGraphInterruptGate
 from text_to_sql_agent.orchestration.routing import FSMGuardCaps
 from text_to_sql_agent.orchestration.runner import LangGraphRunner, build_fsm_runner
 
@@ -44,8 +49,12 @@ class Container:
     graph_store: Neo4jGraphStore
     edge_proposal_store: PgEdgeProposalStore
     plan_joins_service: PlanJoinsService
+    clarify_service: ClarifyService
     auth_provider: AuthProvider
     resolve_access_service: ResolveAccessService
+    # Сессии interrupt (S08, ruling R2): ValkeyCheckpointer в проде;
+    # MemorySaver/фейк в тестах — контракт сейвера задан LangGraph (Any)
+    checkpointer: Any
     fsm_runner: LangGraphRunner
     answer_question: AnswerQuestion
 
@@ -57,6 +66,8 @@ def build_container(
     knowledge_writer: bool = False,
     rrf_alpha_dense: float | None = None,
     permission_store: PermissionStore | None = None,
+    checkpointer: object | None = None,
+    clarify_service: ClarifyService | None = None,
 ) -> Container:
     """Дефолтная сборка; `settings=None` → fail-fast чтение окружения.
 
@@ -64,6 +75,11 @@ def build_container(
     BL-004/D-022); JSONL-персистентность включена всегда. `knowledge_writer=True` —
     только офлайн-индексатор (make index-knowledge): runtime-контур не держит
     сервисный DSN записи в память знаний (ruling W1, ревью S06 Important-2).
+    `checkpointer` — сессии interrupt-механики (S08/feat-008, ruling R2 ARCH-GATE):
+    None → ValkeyCheckpointer (TTL из Settings); инъекция фейка — юнит-тесты без
+    инфры (S00 правило 7, прецедент permission_store). `clarify_service` —
+    инъекция скриптового сервиса юнит-тестов wiring (S00 правило 7 — LLM в тестах
+    только моки; реальный контур собирает ClarifyService со швом бюджета Q7).
     """
     settings = settings or load_settings()
     tracer: Tracer = JsonlTracer(settings.trace_jsonl_path)
@@ -125,6 +141,19 @@ def build_container(
     permission_store = permission_store or PgPermissionStore(settings.agent_planner_dsn)
     resolve_access_service = ResolveAccessService(permission_store)
     auth_provider: AuthProvider = DevTokenAuth(settings.dev_token_map)
+    # Узел clarify (S08/feat-008): классификация однозначности + interrupt-
+    # механика. Шов бюджета — ruling Q7 (тот же, что у plan_joins: остаток =
+    # кап запроса − резидентный аккумулятор адаптера; FSM замена — S15 BudgetGuard).
+    clarify_service = clarify_service or ClarifyService(
+        llm=llm,
+        vector_store=vector_store,
+        budget_remaining_roubles=lambda: settings.budget_per_request_rub - llm.budget_used_rub,
+    )
+    # Сессии interrupt (S08, ruling R2 ARCH-GATE): Valkey + TTL из Settings;
+    # инъекция фейка/MemorySaver — юнит-тесты без инфры (S00 правило 7)
+    checkpointer = checkpointer or ValkeyCheckpointer(
+        settings.valkey_url, ttl_s=settings.clarify_session_ttl_s
+    )
     # FSM-каркас (S04/feat-004): граф на заглушках-транзитах; содержательные
     # сервисы подменяются в последующих сессиях вехи V4 (S05/S08/S10/S11/S14/S15)
     # — сборка остаётся здесь (composition — единственное место сборки). Гвард
@@ -136,12 +165,16 @@ def build_container(
             max_llm_calls=settings.fsm_max_llm_calls,
             budget_rub=settings.budget_per_request_rub,
         ),
+        checkpointer=checkpointer,
         deadline_s=settings.fsm_deadline_s,
         recursion_limit=settings.fsm_recursion_limit,
         # S05/feat-005: resolve_access — содержательный узел (права из настроек);
-        # заглушки остаются для юнит-тестов каркаса (test_graph строит граф сам)
+        # S08/feat-008: clarify — классификация + interrupt (шлюз-адаптер —
+        # orchestration, ruling R2); заглушки остаются для юнит-тестов каркаса
+        # (test_graph строит граф сам)
         node_overrides={
-            "resolve_access": make_resolve_access_node(resolve_access_service, tracer=tracer)
+            "resolve_access": make_resolve_access_node(resolve_access_service, tracer=tracer),
+            "clarify": make_clarify_node(clarify_service, LangGraphInterruptGate(), tracer=tracer),
         },
     )
     answer_question = AnswerQuestion(runner=fsm_runner, llm=llm)
@@ -155,8 +188,10 @@ def build_container(
         graph_store=graph_store,
         edge_proposal_store=edge_proposal_store,
         plan_joins_service=plan_joins_service,
+        clarify_service=clarify_service,
         auth_provider=auth_provider,
         resolve_access_service=resolve_access_service,
+        checkpointer=checkpointer,
         fsm_runner=fsm_runner,
         answer_question=answer_question,
     )

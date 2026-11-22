@@ -303,3 +303,12 @@ def test_fsm_caps_reject_nonpositive() -> None:
         Settings(**REQUIRED_ENV, _env_file=None, fsm_deadline_s=-1)
     with pytest.raises(ValidationError):
         Settings(**REQUIRED_ENV, _env_file=None, fsm_recursion_limit=0)
+
+
+def test_clarify_session_ttl_default_is_canon() -> None:
+    # S08/feat-008: TTL сессии interrupt в Valkey — канон 10 мин (S00 стык 1);
+    # инъекция короткого значения — integration-тесты (Ловушка 5 S08)
+    settings = Settings(**REQUIRED_ENV, _env_file=None)
+    assert settings.clarify_session_ttl_s == 600
+    with pytest.raises(ValidationError):
+        Settings(**REQUIRED_ENV, _env_file=None, clarify_session_ttl_s=0)
