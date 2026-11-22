@@ -83,7 +83,7 @@ def test_plan_joins_budget_shlew_wired_to_adapter(tmp_path) -> None:
     assert container.edge_proposal_store is not None  # очередь заявок собрана (миграция 0009)
 
 
-def test_generate_sql_budget_selew_wired_to_adapter(tmp_path) -> None:
+def test_generate_sql_budget_seam_wired_to_adapter(tmp_path) -> None:
     # Шов бюджета узла generate_sql (ruling Q7 — тот же, что plan_joins/clarify):
     # эскалация mid→strong проверяет остаток = кап − аккумулятор адаптера
     # (ревью S10 minor — без wiring-теста регресс молча отключил бы резерв)

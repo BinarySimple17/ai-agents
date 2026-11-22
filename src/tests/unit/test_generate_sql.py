@@ -158,6 +158,63 @@ class TestBuildSkeleton:
         # та же топология под другой версией снапшота — тот же скелет
         assert other.skeleton_hash == skeleton.skeleton_hash
 
+    def test_stored_hash_matches_digest_of_stored_skeleton(self) -> None:
+        # Re-review I-r2: дайджест считается по ТОМУ ЖЕ дедуплицированному
+        # списку, что хранится — иначе S11-сверка давала фантом на любом
+        # многотабличном пути (до-фикса падает на shared-table плане)
+        first = JoinPlanEdge(
+            rel_id="e_orders_items",
+            from_table="orders",
+            to_table="order_items",
+            from_columns=("order_id",),
+            to_columns=("order_id",),
+            join_type="inner",
+        )
+        second = JoinPlanEdge(
+            rel_id="e_customers_orders",
+            from_table="orders",
+            to_table="customers",
+            from_columns=("customer_id",),
+            to_columns=("customer_id",),
+            join_type="inner",
+        )
+        plan = _plan(
+            tables=["orders", "order_items", "customers"],
+            edges=[first, second],
+            mandatory_predicates={
+                "e_orders_items": {"mandt": "100"},
+                "e_customers_orders": {"mandt": "100"},
+            },
+        )
+        skeleton = build_skeleton(plan)
+        # Канонический контракт S11: digest(хранённого скелета) == хранённый хэш
+        assert (
+            skeleton_digest(skeleton.join_sections, skeleton.mandatory_predicates)
+            == skeleton.skeleton_hash
+        )
+
+    def test_reintroduced_table_in_chain_is_defect(self) -> None:
+        # Re-review minor: повторный ввод таблицы (параллельное a→b) — дублирующий
+        # JOIN; честный ValueError, не невалидный SQL
+        first = JoinPlanEdge(
+            rel_id="r1",
+            from_table="a",
+            to_table="b",
+            from_columns=("k",),
+            to_columns=("k",),
+            join_type="inner",
+        )
+        second = JoinPlanEdge(
+            rel_id="r2",
+            from_table="a",
+            to_table="b",
+            from_columns=("k",),
+            to_columns=("k",),
+            join_type="inner",
+        )
+        with pytest.raises(ValueError, match="повторно вводит таблицу"):
+            build_skeleton(_plan(tables=["a", "b"], edges=[first, second]))
+
     def test_hash_preserves_case_inside_string_literals(self) -> None:
         # I2 (ревью S10): lowercase НЕ трогает литералы — 'EN' и 'en' в
         # case-sensitive коллации разные значения; хэш обязан их различать
@@ -175,6 +232,17 @@ class TestBuildSkeleton:
         a = build_skeleton(_plan(mandatory_predicates={"e_orders_items": set_a}))
         b = build_skeleton(_plan(mandatory_predicates={"e_orders_items": set_b}))
         assert a.skeleton_hash == b.skeleton_hash  # регистр-шум не меняет дайджест
+
+    def test_hash_preserves_whitespace_inside_literals(self) -> None:
+        # Re-review minor: «литералы святы» полно — пробелы ВНУТРИ литерала
+        # не нормализуются (кавычки разрезают до collapse-whitespace)
+        a = build_skeleton(
+            _plan(mandatory_predicates={"e_orders_items": {"orders.status": "in progress"}})
+        )
+        b = build_skeleton(
+            _plan(mandatory_predicates={"e_orders_items": {"orders.status": "in  progress"}})
+        )
+        assert a.skeleton_hash != b.skeleton_hash
 
     def test_first_table_outside_first_edge_is_defect(self) -> None:
         # I1 (ревью S10): первая таблица плана ≠ начало первого ребра — fail-closed
@@ -568,6 +636,32 @@ class TestGenerateSqlService:
         assert result.outcome == GenerateSqlOutcome.SQL
         assert [c[0] for c in llm.calls] == ["mid", "mid", "strong"]
 
+    def test_fsm_retry_visit_is_exactly_one_attempt(self) -> None:
+        # Re-review I-r3: визит FSM-ретрая = РОВНО одна попытка (внутренний
+        # цикл — только первый визит); иначе attempt 3 дважды и кап «≤ 3 на
+        # узел» ломается (до-фикса визит 2 вгонял попытки 2 и 3 = 2 вызова)
+        broken = LLMResponse(text="думаю…", usage=Usage(), model="deepseek")
+        llm = _ScriptedLLM([broken, _tool_response(select="count(*)")])
+        service = _service(llm, budget_remaining_roubles=lambda: 1.0)
+        visit2 = service.generate(
+            skeleton=build_skeleton(_plan()),
+            question=QUESTION,
+            ctx=CTX,
+            last_sql="SELECT broken",
+            last_error="колонка broken не существует",
+            start_attempt=2,
+        )
+        assert visit2.outcome == GenerateSqlOutcome.FAIL  # битый выход — fail визита
+        assert visit2.llm_calls == 1  # БЕЗ внутривизитного ретрая на попытку 3
+        visit3 = service.generate(
+            skeleton=build_skeleton(_plan()), question=QUESTION, ctx=CTX, start_attempt=3
+        )
+        assert visit3.outcome == GenerateSqlOutcome.SQL
+        assert visit3.llm_calls == 1
+        # Суммарно по узлу: визит 1 (успех, 1) + визит 2 (1) + визит 3 (1) = 3 ≤ 3
+        assert visit2.llm_calls + visit3.llm_calls == 2  # + 1 первого визита
+        assert [c[0] for c in llm.calls] == ["mid", "strong"]  # 2-я попытка mid, 3-я strong
+
     def test_llm_provider_error_is_honest_fail(self) -> None:
         # Политика провайдера исчерпана — ретрай M1 поверх неё бессмыслен (S00-8)
         llm = _ScriptedLLM([], fail_after=0)
@@ -647,8 +741,10 @@ class TestGenerateSqlService:
 
     def test_subquery_in_where_is_rejected(self) -> None:
         # Регресс C1: подзапрос в WHERE — та же «структура SQL от модели»
+        # Подзапрос по таблицам СКЕЛЕТА — bite по outcome (не по тексту ошибки):
+        # R5 таблицы не ловит (обе в плане), только структурная проверка
         hostile = _tool_response(
-            select="count(*)", where="customer_id IN (SELECT id FROM customers)"
+            select="count(*)", where="order_id IN (SELECT order_id FROM order_items)"
         )
         llm = _ScriptedLLM([hostile, hostile, hostile])
         result = _service(llm).generate(
@@ -666,6 +762,17 @@ class TestGenerateSqlService:
             skeleton=build_skeleton(_plan()), question=QUESTION, ctx=CTX, permissions=PERMISSIONS
         )
         assert result.outcome == GenerateSqlOutcome.FAIL
+
+    def test_select_into_is_rejected(self) -> None:
+        # Re-review I-r1: SELECT … INTO — DDL-класс, модель создаёт таблицы тем
+        # более не может; до-фикса (барьер без Into) outcome=sql
+        hostile = _tool_response(select="* INTO evil")
+        llm = _ScriptedLLM([hostile, hostile, hostile])
+        result = _service(llm).generate(
+            skeleton=build_skeleton(_plan()), question=QUESTION, ctx=CTX, permissions=PERMISSIONS
+        )
+        assert result.outcome == GenerateSqlOutcome.FAIL
+        assert "структуру SQL" in result.error
 
     def test_valid_fill_with_function_calls_still_passes(self) -> None:
         # Уровень строгости: агрегаты/выражения/скобки валидны — барьер не

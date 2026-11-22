@@ -263,10 +263,17 @@ def _validate_fill_structure(field: str, text: str) -> None:
         # ParseError, но тот же исход — отклонение поля (ревью C1-регресс)
         raise ValueError(f"поле {field} — не валидный SQL-фрагмент: {exc}") from None
     nested = [node for node in tree.find_all(sql_exp.Select) if node is not tree]
+    # Into — DDL-класс SELECT … INTO (ревью S10 re-review I-r1): модель пишет
+    # только содержимое секций, создавать таблицы тем более не может
     forbidden = [
         node.sql()
         for node in tree.find_all(
-            sql_exp.Join, sql_exp.Subquery, sql_exp.Union, sql_exp.Intersect, sql_exp.Except
+            sql_exp.Join,
+            sql_exp.Subquery,
+            sql_exp.Union,
+            sql_exp.Intersect,
+            sql_exp.Except,
+            sql_exp.Into,
         )
     ]
     if nested or forbidden:
@@ -359,13 +366,22 @@ class GenerateSqlService:
 
         # --- Наполнение: ретраи M1 (попытка 1 — mid; 2 — mid + ошибка;
         # 3 — strong при достатке бюджета с резервом) ---
+        # Ревью S10 re-review I-r3: внутренний цикл — только на первом визите
+        # (попытки 1→2→3 внутри); FSM-ретрай визит (start_attempt > 1, S14)
+        # = РОВНО ОДНА попытка — иначе attempt 3 исполняется дважды (визит 2
+        # вгоняет 2 и 3, визит 3 — 3 снова) и кап «≤ 3 на узел» ломается
         world_tables = set(permissions or {})
         role: Role = start_role
         error_text: str | None = last_error
         last_output: str | None = last_sql
         calls = 0
         escalated = False
-        for attempt in range(max(start_attempt, 1), MAX_ATTEMPTS + 1):
+        first_visit = max(start_attempt, 1) == 1
+        if first_visit:
+            attempt_numbers = range(1, MAX_ATTEMPTS + 1)
+        else:
+            attempt_numbers = range(max(start_attempt, 1), max(start_attempt, 1) + 1)
+        for attempt in attempt_numbers:
             if attempt == ESCALATION_ATTEMPT and role != ROLE_UP[role]:
                 # Эскалация — только вверх и только при остатке бюджета с
                 # резервом (ADR-007 §4.3); не хватает — честный отказ
@@ -427,8 +443,7 @@ class GenerateSqlService:
                 escalated=escalated,
             )
         return self._fail(
-            f"наполнение скелета не удалось за {MAX_ATTEMPTS - max(start_attempt, 1) + 1} "
-            f"попытки (M1): последняя ошибка: {error_text}",
+            f"наполнение скелета не удалось (M1): последняя ошибка: {error_text}",
             llm_calls=calls,
             clarifying_question=_FAIL_CLARIFY_QUESTION,
         )

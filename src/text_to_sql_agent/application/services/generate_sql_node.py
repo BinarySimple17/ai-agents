@@ -94,18 +94,20 @@ def make_generate_sql_node(
         # состояние «вне ретрая»). Сервис нумерует попытки непрерывно:
         # визит FSM-ретрая стартует с попытки 2 (та же роль + ошибка) или 3
         # (эскалация) — суммарно ≤ 3 на узел, не 3×3.
-        flags_map = flags
-        retry_target = flags_map.get(RETRY_TARGET_FLAG)
+        retry_target = flags.get(RETRY_TARGET_FLAG)
         retry_count = state.get("retry_count") or 0
-        start_attempt = retry_count + 1 if retry_target == "generate_sql" else 1
+        on_fsm_retry = retry_target == "generate_sql"
+        start_attempt = retry_count + 1 if on_fsm_retry else 1
+        # Контекст ретрая — только на FSM-ретрае (ревью minor): затерявшийся
+        # error другого узла не должен превращаться в «Ошибка предыдущей попытки»
         result = service.generate(
             skeleton=skeleton,
             question=question,
             ctx=ctx,
             assumptions=state.get("assumptions") or [],
             permissions=state.get("permissions") or {},
-            last_sql=state.get("sql"),
-            last_error=(state.get("error") or {}).get("message"),
+            last_sql=state.get("sql") if on_fsm_retry else None,
+            last_error=(state.get("error") or {}).get("message") if on_fsm_retry else None,
             start_attempt=start_attempt,
         )
         if tracer is not None:

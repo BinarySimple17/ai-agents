@@ -78,21 +78,33 @@ def build_skeleton(plan: JoinPlan) -> Skeleton:
                 f"ребро {edge.rel_id} начинается с {edge.from_table}, не введённой "
                 "в цепочку джойнов — план не является цепочкой (дрейф сборки плана)"
             )
+        if edge.to_table in introduced:
+            # Ревью S10 re-review minor: повторный ввод таблицы (цикл a→b, b→a
+            # или параллельное a→b) — дублирующий JOIN и невалидный SQL вместо
+            # честного ValueError; легитимный путь S09 таблицы не повторяет
+            raise ValueError(
+                f"ребро {edge.rel_id} повторно вводит таблицу {edge.to_table} — "
+                "план не является цепочкой джойнов (дрейф сборки плана)"
+            )
         introduced.add(edge.to_table)
         join_sections.append(_join_section(edge))
     predicates: list[str] = []
     for rel_id, raw in plan.mandatory_predicates.items():
         edge = _edge_by_rel(plan, rel_id)
         predicates.extend(_edge_predicates(edge, raw))
+    # Дедуп: неквалифицированный предикат (mandt) рендерится на ОБЕ таблицы
+    # КАЖДОГО ребра — общая таблица двух рёбер получила бы дубль (ревью S10,
+    # minor). dict.fromkeys — дедуп с сохранением детерминированного порядка.
+    # Ревью S10 re-review I-r2: дайджест считается по ТОМУ ЖЕ дедуплицированному
+    # списку, что хранится в Skeleton — иначе S11-сверка скелета давала бы
+    # фантом «скелет изменён» на любом многотабличном пути
+    deduped = tuple(dict.fromkeys(predicates))
     return Skeleton(
         tables=tuple(plan.tables),
         from_table=plan.tables[0],
         join_sections=tuple(join_sections),
-        # Дедуп: неквалифицированный предикат (mandt) рендерится на ОБЕ таблицы
-        # КАЖДОГО ребра — общая таблица двух рёбер получила бы дубль (ревью S10,
-        # minor). dict.fromkeys — дедуп с сохранением детерминированного порядка
-        mandatory_predicates=tuple(dict.fromkeys(predicates)),
-        skeleton_hash=skeleton_digest(join_sections, predicates),
+        mandatory_predicates=deduped,
+        skeleton_hash=skeleton_digest(join_sections, deduped),
     )
 
 
@@ -192,10 +204,17 @@ def skeleton_digest(join_sections: Sequence[str], mandatory_predicates: Sequence
 
 
 def _normalize_fragment(text: str) -> str:
-    """collapse-whitespace + lowercase вне одинарных кавычек (литералы святы)."""
-    collapsed = " ".join(text.split())
-    parts = collapsed.split("'")
-    return "'".join(part.lower() if index % 2 == 0 else part for index, part in enumerate(parts))
+    """collapse-whitespace + lowercase вне одинарных кавычек (литералы святы).
+
+    Ревью S10 re-review minor: кавычки разрезают ДО collapse-whitespace —
+    пробельные изменения ВНУТРИ литерала ('a  b' vs 'a b') не нормализуются,
+    «литералы святы» полно, а не только по регистру.
+    """
+    parts = text.split("'")
+    return "'".join(
+        " ".join(part.lower().split()) if index % 2 == 0 else part
+        for index, part in enumerate(parts)
+    )
 
 
 def _join_section(edge: JoinPlanEdge) -> str:
