@@ -250,9 +250,9 @@
       "dependencies": [
         "feat-009"
       ],
-      "state": "not_started",
-      "status": "not-started",
-      "evidence": "",
+      "state": "passing",
+      "status": "done",
+      "evidence": "command «uv run pytest src/tests/unit/test_generate_sql.py -q» exited 0 at 2026-11-22T13:38:55+03:00 (scripts/verify-feature.sh)",
       "layers": [
         {
           "label": "layer-1-static",

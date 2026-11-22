@@ -41,6 +41,12 @@ from text_to_sql_agent.application.ports.vector_store import (
     VectorStore,
     VectorStoreError,
 )
+from text_to_sql_agent.application.services.m1_policy import (
+    ESCALATION_ATTEMPT,
+    ESCALATION_RESERVE_ROUBLES,
+    MAX_ATTEMPTS,
+    ROLE_UP,
+)
 from text_to_sql_agent.domain.entities import Assumption, RunContext
 
 # --- Константы (AGENTS.md: магические числа — именованные, с «почему») ---
@@ -53,19 +59,12 @@ _SNIPPET_CHARS = 240
 # Кап суммарного контекста БЗ в промпте (классификация дешёвого входа — экономия
 # бюджета; вопрос пользователя — главный сигнал, контекст лишь уточняет сущности)
 _CONTEXT_MAX_CHARS = 1200
-# Ретраи M1: три попытки на узел (ADR-007 §4.1; per-node кап ≤ 3 — S00 стык 1)
-_MAX_CLARIFY_ATTEMPTS = 3
-# Резерв бюджета: эскалация только при остатке ВЫШЕ резерва (ADR-007 §4.3;
-# значение канона — дубль plan_joins_service._ESCALATION_RESERVE_ROUBLES,
-# унификация — кандидат BL-014-стиля при третьем потребителе, S10)
-_ESCALATION_RESERVE_ROUBLES = 0.6
-# Номер попытки с эскалацией роли вверх (D-016: попытка 3 — уровень вверх)
-_ESCALATION_ATTEMPT = 3
+# Ретраи M1 / резерв эскалации / роль попытки 3 — общие константы политики
+# (application/services/m1_policy.py; унификация при третьем потребителе
+# generate_sql — S10, как и предсказывал этот комментарий в S08)
 # Роль попытки 1 — матрица ADR-007 §4: clarify = дешёвая модель (классификация
 # + один вопрос; вызывается на каждый запрос — скорость и минимальная цена)
 _CLASSIFIER_ROLE_START: Role = "cheap"
-# D-016: попытка 3 — роль вверх (cheap→mid→strong); вершина — сама на себя
-_ROLE_UP: dict[Role, Role] = {"cheap": "mid", "mid": "strong", "strong": "strong"}
 # Кап допущений вердикта: их сверяет кэш (S16 — ключ кэша) и раскрывает
 # interpret (S15) — рост числа раздувает ключ и ответ
 _MAX_ASSUMPTIONS = 5
@@ -280,19 +279,19 @@ class ClarifyService:
         last_output: str | None = None
         role: Role = _CLASSIFIER_ROLE_START
         calls = 0
-        for attempt in range(1, _MAX_CLARIFY_ATTEMPTS + 1):
-            if attempt == _ESCALATION_ATTEMPT:
+        for attempt in range(1, MAX_ATTEMPTS + 1):
+            if attempt == ESCALATION_ATTEMPT:
                 if (
                     self._budget_remaining_roubles is not None
-                    and self._budget_remaining_roubles() <= _ESCALATION_RESERVE_ROUBLES
+                    and self._budget_remaining_roubles() <= ESCALATION_RESERVE_ROUBLES
                 ):
                     return self._fail(
-                        f"эскалация попытки {_ESCALATION_ATTEMPT} отклонена: остаток "
-                        f"бюджета не покрывает резерв {_ESCALATION_RESERVE_ROUBLES} ₽ "
+                        f"эскалация попытки {ESCALATION_ATTEMPT} отклонена: остаток "
+                        f"бюджета не покрывает резерв {ESCALATION_RESERVE_ROUBLES} ₽ "
                         "(ADR-007 §4.3) — ретраи исчерпаны",
                         llm_calls=calls,
                     )
-                role = _ROLE_UP[role]
+                role = ROLE_UP[role]
             messages = self._messages(question, context, error_text, last_output)
             try:
                 response = self._llm.complete(role, messages, tools=[_CLARIFY_TOOL_SPEC])
@@ -324,7 +323,7 @@ class ClarifyService:
                 llm_calls=calls,
             )
         return self._fail(
-            f"классификация не удалась за {_MAX_CLARIFY_ATTEMPTS} попытки (M1): "
+            f"классификация не удалась за {MAX_ATTEMPTS} попытки (M1): "
             f"последняя ошибка: {error_text}",
             llm_calls=calls,
         )

@@ -20,6 +20,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from text_to_sql_agent.application.services.m1_policy import MAX_ATTEMPTS
 from text_to_sql_agent.domain.entities import TERMINAL_OUTCOMES, TerminalOutcome
 
 State = Mapping[str, Any]
@@ -29,6 +30,7 @@ FLAG_CLARIFICATION_NEEDED = "clarification_needed"  # clarify (S08)
 FLAG_IDENTITY_FAILED = "identity_failed"  # resolve_access (S05) → rejected
 FLAG_PLAN_JOINS_INVALID = "plan_joins_invalid"  # plan_joins: ретрай по M1
 FLAG_PLAN_JOINS_EXHAUSTED = "plan_joins_exhausted"  # plan_joins → fail
+FLAG_PLAN_JOINS_NO_PATH = "plan_joins_no_path"  # plan_joins: нет активного пути → degrade (S10, R2)
 FLAG_PLAN_JOINS_CLARIFY = "plan_joins_clarify"  # планер: равные кандидаты → clarify (S10, FIX-009)
 FLAG_T1_DECOMPOSE = "t1_decompose"  # порог T1 (feat-017) — код, не модель
 FLAG_QUERY_PLAN_VALID = "query_plan_valid"  # plan_query: False → откат к одиночному SQL
@@ -45,6 +47,8 @@ FLAG_PROBE_LOST_JOIN = "probe_lost_join"  # probe (S14): 0 строк — пот
 FLAG_RETRY_GENERATE_SQL = "retry_generate_sql"  # diagnose: попытка 2/3 генератора (M1)
 FLAG_RETRY_GENERATE_STEP_SQL = "retry_generate_step_sql"  # diagnose: ретрай шага (D-019)
 FLAG_RETRY_TARGET = "retry_target"  # гейт: чей счётчик ретраев активен
+FLAG_GENERATE_SQL_FAILED = "generate_sql_failed"  # генерация невозможна (исчерпание
+# генератора / дефект скелета) → degrade (S10, ruling R2 ARCH-GATE)
 
 # Одноразовые флаги перехода (шаговый цикл): описывают завершённый переход,
 # а не вердикт узла — на ре-входе в узел гасятся биндером (graph.py), иначе
@@ -66,8 +70,10 @@ TRANSITION_FLAGS: frozenset[str] = frozenset(
 # --- Предохранители (оба уровня — код; ADR-002 §4) ---
 # Per-node ≤ 3: попытка 1 + та же модель + эскалация уровнем вверх — политика M1
 # (D-016, ADR-007 §4.1); почему 3 — канонная конвенция «≤ 3 попыток на узел»
-# (S00 стык 1, hw-01 §6), не конфигурируется моделью.
-MAX_NODE_RETRIES = 3
+# (S00 стык 1, hw-01 §6), не конфигурируется моделью. Единый источник значения —
+# m1_policy (ревью S10 I4: расхождение с сервисными ретраями молча сломало бы
+# «≤ 3 на узел» — fuse FSM и внутренние ретраи сервисов считают общую политику).
+MAX_NODE_RETRIES = MAX_ATTEMPTS
 
 # Бюджетный учёт прогона в state.budget_used
 BUDGET_LLM_CALLS_KEY = "llm_calls"
@@ -151,17 +157,21 @@ def route_clarify(state: State) -> str:
 
 
 def route_plan_joins(state: State) -> str:
-    """plan_joins → build_skeleton | plan_query (T1) | clarify (равные кандидаты) | ретрай | fail.
+    """plan_joins → build_skeleton | plan_query (T1) | clarify | degrade (нет пути) | ретрай | fail.
 
     Fuse «per-node ≤ 3 попыток» (S00 стык 1) срабатывает раньше флага ретрая;
     флаг exhausted — решение узла (M1: «попытки исчерпаны»). Ребро
     plan_joins → clarify — равные кандидаты пути (hw-01 §4.2; FIX-009: ребро
-    закладывается S08 по прецеденту «ветки в каркасе», активирует S10).
+    заложено S08 по прецеденту «ветки в каркасе», активирует S10). Ребро
+    plan_joins → degrade — «нет активного пути» (behavior feat-009 + заявка
+    владельцу; hw-01 §3.1:113; отказ формулирует S15 — ruling R2 ARCH-GATE S10).
     """
     flags = state.get("route_flags") or {}
     exhausted = attempts_used(state, "plan_joins") >= MAX_NODE_RETRIES
     if flags.get(FLAG_PLAN_JOINS_EXHAUSTED) or exhausted:
         return "terminal_fail"
+    if flags.get(FLAG_PLAN_JOINS_NO_PATH):
+        return "degrade"  # нет активного пути — отказ + заявка (S15 формулирует)
     if flags.get(FLAG_PLAN_JOINS_CLARIFY):
         return "clarify"  # равные кандидаты → уточнение (interrupt, S08/S10)
     if flags.get(FLAG_PLAN_JOINS_INVALID):
@@ -172,8 +182,16 @@ def route_plan_joins(state: State) -> str:
 
 
 def route_build_skeleton(state: State) -> str:
-    """build_skeleton → generate_sql | plan_query (T1 переоценён на скелете)."""
-    if (state.get("route_flags") or {}).get(FLAG_T1_DECOMPOSE):
+    """build_skeleton → generate_sql | plan_query (T1) | degrade (скелет не собран).
+
+    Скелет не собрался — дефект каркаса (узел build_skeleton fail-closed):
+    генерация невозможна, честная деградация (ruling R2 ARCH-GATE S10 — единый
+    флаг FLAG_GENERATE_SQL_FAILED с отказом генератора).
+    """
+    flags = state.get("route_flags") or {}
+    if flags.get(FLAG_GENERATE_SQL_FAILED):
+        return "degrade"
+    if flags.get(FLAG_T1_DECOMPOSE):
         return "plan_query"
     return "generate_sql"
 
@@ -191,11 +209,16 @@ def route_plan_query(state: State) -> str:
 
 
 def route_generate_sql(state: State) -> str:
-    """generate_sql → validate_sql (безусловно: валидация не перепрыгивается).
+    """generate_sql → validate_sql | degrade (исчерпание M1 — ruling R2 ARCH-GATE S10).
 
-    Единственное ребро к исполнению проходит через validate_sql — свойство
-    структуры (ADR-002 §5: «ребро execute_sql существует только из validate_sql»).
+    Валидация не перепрыгивается: единственное ребро к исполнению проходит через
+    validate_sql — свойство структуры (ADR-002 §5: «ребро execute_sql существует
+    только из validate_sql»). Отказ генератора (ретраи исчерпаны/бюджет/дефект
+    скелета) → degrade: носитель отказа генератора при исчерпании — канон
+    degrade (state-agent; отказ формулирует S15 бизнес-понятиями).
     """
+    if (state.get("route_flags") or {}).get(FLAG_GENERATE_SQL_FAILED):
+        return "degrade"
     return "validate_sql"
 
 

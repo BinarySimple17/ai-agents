@@ -38,6 +38,18 @@ EVENT_CLARIFY_UNAVAILABLE = "clarify.unavailable"
 # FSM (S08, ревью Important-2): сбой хранилища сессий (Valkey) — деталь оператору,
 # не пользователю; раннер переводит в валидный fail-исход
 EVENT_CHECKPOINT_UNAVAILABLE = "checkpoint.unavailable"
+# FSM plan_joins (S10): вердикт планера (исходы PlanJoinsResult) + сбой ноги
+# (retrieval/граф/ранжирование) — деталь оператору в JSONL, не пользователю (S9);
+# payload — факты (outcome/graph_version/candidate_tables), без текстов плана
+EVENT_PLAN_JOINS_VERDICT = "plan_joins.verdict"
+EVENT_PLAN_JOINS_UNAVAILABLE = "plan_joins.unavailable"
+# FSM build_skeleton (S10): дефект каркаса на узле чистого кода (план не дошёл/
+# не валиден) — fail-closed в degrade, деталь дефекта оператору (S9-прецедент)
+EVENT_SKELETON_UNAVAILABLE = "skeleton.unavailable"
+# FSM generate_sql (S10): вердикт генератора (sql/fail, эскалация M1) + сбой —
+# payload факты (outcome/llm_calls/escalated/tables), БЕЗ SQL-текста (D-022-аналог)
+EVENT_GENERATE_SQL_VERDICT = "generate_sql.verdict"
+EVENT_GENERATE_SQL_UNAVAILABLE = "generate_sql.unavailable"
 
 # BL-004 (требование владельца): результат тулa показывается строками данных,
 # хоть обрезанными; единый контракт эмиссии (apps.cli) и рендера (ConsoleTracer)

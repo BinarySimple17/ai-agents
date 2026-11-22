@@ -24,7 +24,8 @@
 | [BL-012](BL-012-bench-dataset-discrimination.md) | Датасет bench_retrieval: вопросы, где FTS обыгрывает dense + MRR/recall@8 (насыщенный baseline 14/14 не различает режимы) | открыт | S26 (REVIEW-GATE Set aside) | P3 |
 | [BL-013](BL-013-customer-deployment-onboarding.md) | Развёртывание у заказчика с его БД/схемой: режим «агент рядом» (ADR-003 один Postgres), хардкод схемы в промптах, диалект SQL, контур онбординга семантического слоя | открыт | — (обсуждение с владельцем 2026-11-21) | P3 |
 | [BL-014](BL-014-csv-normalization-unify.md) | Единая нормализация CSV-прав: fail-closed адаптер (S05) vs lenient plan_joins_service/демо (S09) — при правке R5-семантики разъедутся | открыт | S05 (REVIEW-GATE Minor-9) | P3 |
-| [BL-015](BL-015-escalation-policy-unify.md) | Единый модуль политики эскалации M1: 0,6 ₽/ROLE_UP/шов бюджета дублируются в plan_joins (S09) и clarify (S08); S10/S14 добавят потребителей — не откладывать | открыт | S08 (REVIEW-GATE Minor-7) | P3 |
+| [BL-015](BL-015-escalation-policy-unify.md) | Единый модуль политики эскалации M1: 0,6 ₽/ROLE_UP/шов бюджета дублируются в plan_joins (S09) и clarify (S08); S10/S14 добавят потребителей — не откладывать | решён (S10: m1_policy.py — константы едины для 3 потребителей; остаток — лямбды шва в container, зона S15 BudgetGuard) | S08 (REVIEW-GATE Minor-7) | P3 |
+| [BL-016](BL-016-s14-retry-escalation-semantics.md) | Семантика FSM-ретрая генератора: generation-fail на retry-визите → degrade без попытки 3 (strong) — S14 решает, считать ли поводом для diagnose/эскалации; «попытка узла» (визиты vs внутренние вызовы) | открыт | re-review-2 S10 (Minor-5 + set aside) | P2 |
 
 При создании записи — добавить строку в реестр; при закрытии — обновить статус в реестре (файл уедет в archive/, строка остаётся как история).
 
