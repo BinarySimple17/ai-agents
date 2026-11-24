@@ -17,7 +17,7 @@
 | Подключение к агенту | retrieval-блок в системный промпт тул-контура, ≈2К токенов с резкой только по границе документа: [run_agent_flow в src/apps/cli.py](../src/apps/cli.py) (retrieval недоступен → деградация контекста, прогон продолжается) |
 | Streaming | [complete_stream в порте LLMProvider](../src/text_to_sql_agent/application/ports/llm_provider.py): дельты текста — в stdout по мере генерации, тул-вызовы модели собираются из дельт стрима в `StreamFinal.tool_calls` и исполняются ([RunSqlTool](../src/text_to_sql_agent/application/services/run_sql_tool.py), канал agent_ro с LIMIT/timeout/RLS — паритет ДЗ-02), Observation возвращается в историю, следующий ход |
 | Сценарий | вопрос «Сколько клиентов из РФ пришло из рекламных кампаний всего?» — воспроизводится командой ниже (фиксированный вопрос + сиды; правильный ответ: 5). Вариант из исходного плана «новые клиенты из Германии в октябре» даёт честный 0: в сиде клиенты созданы в ноябре 2026 |
-| Фиксация архитектуры | [ADR-003](../docs/adr/ADR-003-single-postgres.md) (pgvector как истина данных), [ADR-005](../docs/adr/ADR-005-rbac-as-data.md) (права проверяются в SQL поиска), [ADR-008](../docs/adr/ADR-008-structured-outputs-tools.md) (тулы параметром), выжимка внизу страницы |
+| Фиксация архитектуры | [ADR-003](../docs/adr/ADR-003-single-postgres.md) (pgvector как истина данных), [ADR-005](../docs/adr/ADR-005-rbac-as-data.md) (права проверяются в SQL поиска), [ADR-008](../docs/adr/ADR-008-structured-output.md) (тулы параметром), выжимка внизу страницы |
 
 Запись стриминга для сдачи: [stream-timeline.txt](stream-timeline.txt) показывает
 прибытие чанков с метками времени (71 чанк ответа) и структуру ходов

@@ -603,6 +603,36 @@
           "repair": "Fix wiring composition → app, re-run manually."
         }
       ]
+    },
+    {
+      "id": "feat-023",
+      "name": "Fan-out guard: защита от двойного счёта (validate_sql)",
+      "description": "Инвариант ADR-006 §4.6 / ADR-004 / hw-01 §3.3 принят без реализации (аудит 2026-11-23, E3a): fanout_guard хранится в реестре и читается адаптером графа, но ни один узел его не использует. Агрегация поверх fan-out ребра плана (fanout_guard=true: e_orders_items, e_products_items) без предагрегации не пропускается валидатором. Детекция — в IR валидатора (агрегаты корневого скоупа и колонки GROUP BY — аддитивное расширение SqlAudit), политика — domain.sql_validation, исход — hallucination (retry с детерминированной подсказкой), не исполнение. Планёр получает fanout_guard рядом с cardinality (сейчас в промпт ранжирования уходит только cardinality).",
+      "behavior": "SQL с чувствительным агрегатом (SUM/AVG/COUNT) над колонкой стороны «1» fan-out ребра плана без группировки по её ключу и без предагрегации в подзапросе не исполняется: валидатор даёт retry-вердикт с подсказкой. Тот же запрос с GROUP BY по ключу стороны «1», с нечувствительным агрегатом (COUNT(DISTINCT)/MIN/MAX) или с агрегацией в подзапросе проходит; JOIN без агрегата и агрегация только по колонкам стороны «n» проходят.",
+      "verification": "uv run pytest src/tests/unit/test_fanout_guard.py src/tests/unit/test_validate_sql.py -q",
+      "dependencies": [
+        "feat-011"
+      ],
+      "state": "not_started",
+      "status": "not-started",
+      "evidence": "",
+      "layers": [
+        {
+          "label": "layer-1-static",
+          "cmd": "uv run ruff check src && uv run ruff format --check src",
+          "repair": "Read the ruff output, fix the reported issues, then re-run."
+        },
+        {
+          "label": "layer-2-runtime",
+          "cmd": "uv run pytest src/tests/unit/test_fanout_guard.py src/tests/unit/test_validate_sql.py -q",
+          "repair": "Read failing test; fix IR-extraction (services) or fan-out policy (domain) and re-run."
+        },
+        {
+          "label": "layer-3-e2e",
+          "cmd": "uv run --env-file .env python -m apps.cli \"<вопрос с суммой по заказам и позициям>\" --fsm --token <dev-токен> — живой прогон: двойной счёт не исполняется, виден retry с подсказкой (ручной прогон)",
+          "repair": "Fix wiring plan edges → validate_sql (fanout_guard из path_semantics), re-run manually."
+        }
+      ]
     }
   ]
 }
