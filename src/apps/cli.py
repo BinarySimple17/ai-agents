@@ -76,7 +76,11 @@ SYSTEM_PROMPT = (
     "orders(order_id, customer_id, campaign_id, order_date, status, total); "
     "order_items(order_item_id, order_id, product_id, quantity, unit_price); "
     "employees(employee_id, name, department, salary); "
-    "bonuses(bonus_id, employee_id, period, amount)."
+    "bonuses(bonus_id, employee_id, period, amount).\n"
+    # Коды стран — из сида (миграция 0003). Без подсказки модель угадывала литерал
+    # ('Россия'/'Russia' при сиде 'RU') и уверенно отвечала «0 заказов» при реальных 100
+    "Значения справочника стран в демо-данных — кодами: country = 'RU'/'KZ'/'DE'/'BY' "
+    "(не «Россия»/«Russia»/«Казахстан»)."
 )
 DEGRADED_ANSWER = (
     "Не удалось получить ответ: модель не вернула ни текста, ни вызова тулa. "

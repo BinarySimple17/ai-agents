@@ -355,6 +355,14 @@ def test_task6_rows_last_and_prompt_semantics() -> None:
     assert "row_count/shown_rows" in SYSTEM_PROMPT
 
 
+def test_system_prompt_carries_country_codes() -> None:
+    # Коды стран — из сида (миграция 0003); без фразы модель угадывала литерал
+    # ('Россия'/'Russia' при сиде 'RU') и уверенно отвечала «0 заказов» при 100.
+    # Пин: откат фразы должен падать тестом, а не живым прогоном
+    assert "'RU'/'KZ'/'DE'/'BY'" in SYSTEM_PROMPT
+    assert "«Россия»/«Russia»" in SYSTEM_PROMPT  # негативные примеры в промпте
+
+
 def test_main_quiet_flag_disables_console_trace(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     # Ревью S21 (Minor): проводка --quiet → build_container(console_trace=False)
     # держалась только живым прогоном; переворот флага при рефакторинге — тест
