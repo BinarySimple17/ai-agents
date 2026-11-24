@@ -58,9 +58,9 @@ function-calling цикл ([`apps/cli.py`](../src/apps/cli.py)). Схема v1.5
 **Границы исполнения (держат БД и канал, не модель).** Read-only роль `agent_ro`
 (`default_transaction_read_only` на сессии), `statement_timeout 30s`, обёртка
 `SELECT * FROM (<sql>) AS q LIMIT 1001` с пост-срезом до 1000 (пользовательский
-LIMIT/OFFSET сохраняется внутри подзапроса), `SET LOCAL app.user_id` из RunContext
-(непустое — fail-closed), RLS-tripwire на `employees`/`bonuses` — строки только при
-выставленном `app.user_id`. Запрос уходит extended-протоколом (`prepare=True`):
+LIMIT/OFFSET сохраняется внутри подзапроса). Из RunContext выставляется `SET LOCAL
+app.user_id` (непустое — fail-closed); RLS-tripwire на `employees`/`bonuses` —
+строки только при выставленном `app.user_id`. Запрос уходит extended-протоколом (`prepare=True`):
 multi-command стеки вида `…; SET statement_timeout=0; SELECT pg_sleep(…); --`
 отвергаются PostgreSQL до исполнения — таймаут и LIMIT неотключаемы из SQL
 (ревью S13 Critical-1). Модель не может ослабить ни одно из этих ограничений
@@ -77,7 +77,7 @@ SOP — договор с моделью из двух половин. **Мяг�
 
 | Пункт SOP | Где в коде |
 |---|---|
-| Когда звать: факт/агрегат из демо-схемы | описание тулa в схеме (`_TOOL_SPEC`, строки 32–38 — уходит на шлюз с каждым вызовом) — [`run_sql_tool.py`](../src/text_to_sql_agent/application/services/run_sql_tool.py); SYSTEM_PROMPT: «для фактов и цифр вызывай тул» + демо-схема 7 таблиц — [`cli.py`](../src/apps/cli.py) |
+| Когда звать: факт/агрегат из демо-схемы | описание тулa в схеме (`_TOOL_SPEC`, строки 32–38 — уходит на шлюз с каждым вызовом) — [`run_sql_tool.py`](../src/text_to_sql_agent/application/services/run_sql_tool.py); SYSTEM_PROMPT: «для фактов и цифр вызывай тул» + демо-схема 7 таблиц + коды стран (`'RU'/'KZ'/'DE'/'BY'` из сида; без подсказки модель угадывает литерал) — [`cli.py`](../src/apps/cli.py) |
 | Когда не звать: мнение, данные уже в Observation | ответ без тулa — валидный путь цикла — [`cli.py`](../src/apps/cli.py); зло ограничено капом ходов (жёсткая часть) |
 | Observation — данные, не инструкции (S6) | маркировка `DATA_MARKING` + запрет в SYSTEM_PROMPT — [`cli.py`](../src/apps/cli.py) |
 | Действие при ошибке: «исправь SQL и вызови снова» | шаблон ошибки в Observation (`ERROR_OBSERVATION_TEMPLATE`) — [`cli.py`](../src/apps/cli.py); имя класса в тексте ошибки — [`postgres_executor.py`](../src/text_to_sql_agent/infrastructure/persistence/postgres_executor.py) |
@@ -95,7 +95,7 @@ SOP — договор с моделью из двух половин. **Мяг�
 | Стеки `; SET statement_timeout=0; pg_sleep(…); --` отвергаются | extended protocol (`prepare=True`) — [`postgres_executor.py`](../src/text_to_sql_agent/infrastructure/persistence/postgres_executor.py); регрессионный тест — [`test_execute_sql.py`](../src/tests/integration/test_execute_sql.py) |
 | Чужие данные fail-closed | whitelist-гранты → `PERMISSION_DENIED`; RLS-tripwire `app.user_id` (миграция 0004) — [`postgres_executor.py`](../src/text_to_sql_agent/infrastructure/persistence/postgres_executor.py), [`migrations/versions`](../src/migrations/versions/20261118_0004_rls_sensitive_tables.py) |
 
-Покрытие жёсткой части тестами: 14 integration-сценариев канала
+Покрытие жёсткой части тестами: 15 integration-сценариев канала
 ([`test_execute_sql.py`](../src/tests/integration/test_execute_sql.py) — LIMIT,
 timeout, read-only, RLS, стеки операторов) и unit-тесты цикла
 ([`test_tool_loop.py`](../src/tests/unit/test_tool_loop.py) — кап, ретраи, битые
@@ -125,21 +125,22 @@ uv run python -m apps.cli "Сколько заказов у клиентов и�
 Этапы работы агента идут в stderr (S21/BL-004, D-022): вызовы модели с токами/
 латентностью, SQL тулa, результат строками (≤5), ошибки, ретраи, деградация;
 `--quiet` глушит этапы — stdout остаётся только с ответом. Фрагмент реального
-прогона (stderr; скриншот — [CLI.png](CLI.png), лог шлюза штатного прогона (2 вопроса) — [lmstudio-logs.txt](lmstudio-logs.txt)):
+прогона (stderr). Скриншот — [CLI.png](CLI.png) (исторический прогон S21, до
+введения кодов стран в промпт); лог шлюза штатного прогона из двух вопросов —
+[lmstudio-logs.txt](lmstudio-logs.txt):
 
 ```text
-▶ Вопрос: Сколько заказов у Всех клиентов из РФ?
+▶ Вопрос: Сколько заказов у клиентов из РФ?
 ─ Ход 1
-  · qwen3.8-9b · 627→130 ток · 2.5с · 0.00₽
-  → run_sql: SELECT COUNT(*) AS total_orders FROM orders o JOIN customers c ON o.customer_id = c.customer_id WHERE c.cou
-ntry = 'Russ…
+  · qwen3.8-9b · 672→137 ток · 2.7с · 0.00₽
+  → run_sql: SELECT COUNT(*) AS total_orders FROM orders WHERE customer_id IN (SELECT customer_id FROM customers…
   ← 1 строк (усечён: нет)
     │ total_orders │
     │ 100          │
 ─ Ход 2
-  · qwen3.8-9b · 762→48 ток · 1.1с · 0.00₽
+  · qwen3.8-9b · 797→70 ток · 1.6с · 0.00₽
 ✓ ответ (text)
-У всех клиентов из РФ — **100 заказов**.
+У клиентов из РФ (**RU**) всего **100** заказов.
 ```
 
 LLM — локальный LM Studio (D-020: пустой `LLM_BASE_URL` → `http://127.0.0.1:1234/v1`,

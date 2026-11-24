@@ -11,7 +11,7 @@
 | `domain/` (validate/rbac) | — | — | — | — | feat-005, feat-011 |
 | `services/vector` | — | — | — | — | feat-006 |
 | `services/join_graph` | — | — | — | — | feat-007 |
-| `services/db` (execute/seed) | A | A | A | A | feat-002 ✅ + feat-013 ✅ (миграции 0001–0004; исполнитель agent_ro — extended protocol, LIMIT 1001+пост-срез, SET LOCAL timeout, RLS-tripwire — 14 integration; чистая комната); заявки/ETL-гранты — S07/S10 |
+| `services/db` (execute/seed) | A | A | A | A | feat-002 ✅ + feat-013 ✅ (миграции 0001–0004; исполнитель agent_ro — extended protocol, LIMIT 1001+пост-срез, SET LOCAL timeout, RLS-tripwire — 15 integration; чистая комната); заявки/ETL-гранты — S07/S10 |
 | `services/cache` | — | — | — | — | feat-016 |
 | `cli/` | A | A | A | A | feat-013 ✅ + S21 ✅ (function-calling цикл: кап 3 хода, ретраи пустых/битых не расходуют кап, деградация шлюза — 26 unit; события `agent.*` через порт Tracer + рендер ConsoleTracer/TeeTracer в stderr — 12 unit, observability §2.4, D-022; layer-3 живые прогоны на LM Studio D-020); FSM-подключение — feat-004 |
 | `harness/` (scripts/, init.sh, Makefile — гейты процесса) | A | A | A | A | S22 ✅ (D-023: двухфазный guard-subagents.sh — start-фаза в make check, самовосстановление чекбоксов, end-фаза без мутаций; self-test 53 assert-а в init.sh; негативный контроль и живой сценарий пройдены; REVIEW-GATE «С оговорками» (0C/2I/9M) → fix-волна 2I+minors → re-review «Принято»); BL-006 — полная связка коммит↔сессия |
