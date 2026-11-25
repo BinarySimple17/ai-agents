@@ -42,6 +42,10 @@ if [ -f pyproject.toml ]; then
   uv run ruff check src
   uv run ruff format --check src
 
+  # Layer 1 — контракты импортов слоёв (S30, canon-check F1–F3): границы из AGENTS.md
+  # «Architecture Boundaries» механически; нарушение границы роняет make check как lint
+  uv run lint-imports
+
   # Layer 2 — тесты. Тесты, требующие PostgreSQL/Valkey, скипаются,
   # если инфра не поднята (см. src/tests/conftest.py) — make check остаётся зелёным.
   # pytest exits 5 when no tests are collected — not a failure for a fresh project.

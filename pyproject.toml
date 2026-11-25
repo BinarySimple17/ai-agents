@@ -18,6 +18,7 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+    "import-linter>=2.17",
     "pytest>=8.3",
     "ruff>=0.9",
 ]
@@ -42,3 +43,116 @@ target-version = "py313"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "W", "UP", "B"]
+
+# --- Контракты импортов слоёв (S30): механическая защита границ из AGENTS.md
+# «Architecture Boundaries». Пометка «производное» = правила, которых нет дословно
+# в каноне, но которые следуют из него (решение ARCH-GATE S30, canon-check F1–F3).
+[tool.importlinter]
+root_packages = ["text_to_sql_agent", "apps"]
+include_external_packages = true
+
+[[tool.importlinter.contracts]]
+name = "Слои presentation: apps -> composition -> orchestration -> application -> domain"
+type = "layers"
+layers = [
+    "apps",
+    "text_to_sql_agent.composition",
+    "text_to_sql_agent.orchestration",
+    "text_to_sql_agent.application",
+    "text_to_sql_agent.domain",
+]
+
+[[tool.importlinter.contracts]]
+name = "Слои adapters: apps -> composition -> infrastructure -> application -> domain"
+type = "layers"
+layers = [
+    "apps",
+    "text_to_sql_agent.composition",
+    "text_to_sql_agent.infrastructure",
+    "text_to_sql_agent.application",
+    "text_to_sql_agent.domain",
+]
+
+[[tool.importlinter.contracts]]
+name = "Независимость: orchestration <-> infrastructure"
+type = "independence"
+modules = [
+    "text_to_sql_agent.orchestration",
+    "text_to_sql_agent.infrastructure",
+]
+
+[[tool.importlinter.contracts]]
+name = "Приложение не зависит от адаптеров, графа и точек входа (производное F2: и от config — настройки только через composition)"
+type = "forbidden"
+source_modules = ["text_to_sql_agent.application"]
+forbidden_modules = [
+    "text_to_sql_agent.infrastructure",
+    "text_to_sql_agent.orchestration",
+    "text_to_sql_agent.composition",
+    "apps",
+    "text_to_sql_agent.config",
+]
+
+[[tool.importlinter.contracts]]
+name = "Оркестрация не читает конфиг (производное F2: канон запрещает env мимо Settings только явно; orchestration получает настройки из composition)"
+type = "forbidden"
+source_modules = ["text_to_sql_agent.orchestration"]
+forbidden_modules = ["text_to_sql_agent.config"]
+
+[[tool.importlinter.contracts]]
+name = "Точка входа apps не зависит от адаптеров НАПРЯМУЮ (производное F1: layers пропускает apps -> любой нижний слой; allow_indirect_imports — легальная цепочка apps -> composition -> infrastructure не нарушение)"
+type = "forbidden"
+source_modules = ["apps"]
+forbidden_modules = ["text_to_sql_agent.infrastructure"]
+allow_indirect_imports = true
+
+[[tool.importlinter.contracts]]
+name = "Инфраструктура зависит внутрь: orchestration/composition/apps и содержимое application запрещены (F3: ports разрешены — их она реализует; новый подпакет application добавить сюда вручную)"
+type = "forbidden"
+source_modules = ["text_to_sql_agent.infrastructure"]
+forbidden_modules = [
+    "text_to_sql_agent.orchestration",
+    "text_to_sql_agent.composition",
+    "apps",
+    "text_to_sql_agent.application.services",
+    "text_to_sql_agent.application.use_cases",
+]
+
+[[tool.importlinter.contracts]]
+name = "Domain ни от чего внутреннего не зависит"
+type = "forbidden"
+source_modules = ["text_to_sql_agent.domain"]
+forbidden_modules = [
+    "text_to_sql_agent.application",
+    "text_to_sql_agent.infrastructure",
+    "text_to_sql_agent.orchestration",
+    "text_to_sql_agent.composition",
+    "text_to_sql_agent.config",
+    "apps",
+]
+
+[[tool.importlinter.contracts]]
+name = "Config — точка чтения env, ничего внутреннего не импортирует"
+type = "forbidden"
+source_modules = ["text_to_sql_agent.config"]
+forbidden_modules = [
+    "text_to_sql_agent.application",
+    "text_to_sql_agent.infrastructure",
+    "text_to_sql_agent.orchestration",
+    "text_to_sql_agent.composition",
+    "text_to_sql_agent.domain",
+    "apps",
+]
+
+[[tool.importlinter.contracts]]
+name = "langgraph НАПРЯМУЮ только в orchestration и infrastructure (FSM-адаптеры; allow_indirect_imports — composition легально импортирует orchestration, который внутри использует langgraph)"
+type = "forbidden"
+source_modules = [
+    "apps",
+    "text_to_sql_agent.domain",
+    "text_to_sql_agent.application",
+    "text_to_sql_agent.composition",
+    "text_to_sql_agent.config",
+]
+forbidden_modules = ["langgraph"]
+allow_indirect_imports = true

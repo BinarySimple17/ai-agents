@@ -3,7 +3,7 @@
 
 SHELL := /bin/bash
 
-.PHONY: setup dev check test lint e2e infra-up infra-down infra-migrate index-knowledge sync-graph bench-retrieval verify-feature vcr archive new-session close-session session-start session-end clean-check
+.PHONY: setup dev check test lint lint-imports e2e infra-up infra-down infra-migrate index-knowledge sync-graph bench-retrieval verify-feature vcr archive new-session close-session session-start session-end clean-check
 
 # Полная установка + верификация с чистого состояния
 # (в Makefile — через `bash init.sh`: на Windows make гоняет рецепты через
@@ -23,6 +23,11 @@ test:
 lint:
 	uv run ruff check src
 	uv run ruff format --check src
+
+# Контракты импортов слоёв (S30, import-linter): тот же чек, что в init.sh между
+# ruff и pytest — отдельно для быстрой обратной связи при правке импортов
+lint-imports:
+	uv run lint-imports
 
 # E2E: сквозные проверки (запускаются при изменениях через границы компонентов;
 # пустая папка — «no tests collected», не ошибка)
