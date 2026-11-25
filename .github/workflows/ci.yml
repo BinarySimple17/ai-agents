@@ -1,0 +1,71 @@
+# CI — второй контур поверх ./init.sh (S30, ловушка 5): критерий консистентности
+# тот же — `bash init.sh`; CI добавляет к нему инфраструктуру и миграции ДО него
+# (ловушка 2: доступная БД без схемы роняет тесты, а не скипает их).
+# Инфра поднимается тем же docker-compose.yml — пины образов и healthcheck'и в одном
+# месте (правило 10 S00); `--wait` держит шаг до bolt-готовности Neo4j (ловушка 3).
+# Секретов в workflow нет: .env создаётся из коммитимого шаблона .env.example —
+# тестовые значения (пароли ролей, dev-токены демо-пользователей).
+# Защита веток на GitHub НЕ включается (решение владельца, D-034): CI — контур
+# наблюдаемости, «не мержить при красном CI» исполняется процедурно на слиянии.
+name: CI
+
+on:
+  push:
+    branches:
+      - "milestone/**"
+      - "feat-**"
+      - "harness/**"
+  pull_request:
+    branches:
+      - "main"
+      - "dev"
+      - "milestone/**"
+
+jobs:
+  check:
+    name: make check (sync + ruff + lint-imports + pytest + self-tests)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      # init.sh требует `python` в PATH (`command -v python`, canon-check F7)
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      # uv запинен на версию локального окружения — один резолв локально и в CI
+      - uses: astral-sh/setup-uv@v10
+        with:
+          version: "0.11.24"
+          enable-cache: true
+
+      # .env не в git (.gitignore); `make infra-migrate` (--env-file .env) и
+      # интерполяция compose требуют файл (canon-check F6, проверено на uv 0.11.24:
+      # без файла — «error: No environment file found»)
+      - name: Create .env from committed template (test values only)
+        run: cp .env.example .env
+
+      - name: Sync dependencies (frozen lockfile)
+        run: uv sync --frozen
+
+      # Healthcheck'и compose: postgres pg_isready, neo4j cypher-shell (bolt),
+      # valkey ping — шаг ждёт реальной готовности всех трёх
+      - name: Start infrastructure (docker compose up --wait)
+        run: docker compose up -d --wait
+
+      # Миграции ДО init.sh (ловушка 2)
+      - name: Migrate database (alembic upgrade head)
+        run: make infra-migrate
+
+      # Ревью S30 C1 (второй рубеж): на раннере нет глобального git-identity, а
+      # init.sh гоняет self-test'ы, делающие git-коммиты (ritual-scripts в
+      # worktree-песочнице). Сами self-test'ы герметичны (env-identity внутри),
+      # явная identity — защита для любых будущих коммитящих шагов цепочки
+      - name: Configure git identity (self-test commits)
+        run: git config --global user.name "ci" && git config --global user.email "ci@example.invalid"
+
+      # Единый критерий консистентности (feat-001): uv sync --frozen + ruff +
+      # lint-imports + pytest + self-test'ы гвардов
+      - name: Verify (bash init.sh)
+        run: bash init.sh

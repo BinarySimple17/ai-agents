@@ -21,6 +21,8 @@
 #   I1-регресс: красный clean-state (placeholder progress.md) → exit 1 ДО мутаций
 #   пустой MSG-файл → exit 2 до мутаций
 #   EOL: вставка в CRLF-реестр сохраняет CRLF (Windows-чекахаут)
+#   C1 (ревью S30): коммит в песочнице при стерильном git-конфиге (env-identity —
+#               GIT_CONFIG_GLOBAL/SYSTEM → пустые файлы = чистый CI-раннер)
 #   happy path: полный цикл close-session (статус/реестр/«Текущее состояние»/archive/
 #               commit из MSG-файла) в песочнице
 #
@@ -42,6 +44,16 @@ WORK="$(mktemp -d)"
 cleanup() { git worktree remove --force "$WORK" >/dev/null 2>&1; rm -rf "$WORK" 2>/dev/null; }
 trap cleanup EXIT
 
+# Ревью S30 C1: CI-раннер и свежий клон без глобального git-identity — setup-коммит
+# и happy-path close-session (git commit внутри песочницы) падали бы rc=128
+# «Author identity unknown». env-identity герметична: не пишет в config (worktree
+# делит .git/config с основным репо — repo-local `git config` загрязнил бы его),
+# приоритет env выше config — все коммиты self-test'а работают в чистом окружении.
+export GIT_AUTHOR_NAME="ritual-selftest"
+export GIT_AUTHOR_EMAIL="ritual-selftest@example.invalid"
+export GIT_COMMITTER_NAME="ritual-selftest"
+export GIT_COMMITTER_EMAIL="ritual-selftest@example.invalid"
+
 git worktree add --detach "$WORK" HEAD >/dev/null 2>&1 || {
   echo "ERROR: не удалось создать песочницу-worktree от HEAD" >&2
   exit 1
@@ -54,6 +66,35 @@ cp "$ROOT/Makefile" "$WORK/Makefile"
 git -C "$WORK" add scripts/ Makefile
 git -C "$WORK" commit -m "self-test setup: тестируемые скрипты" >/dev/null
 cd "$WORK"
+
+# --- Регрессия C1 (ревью S30): герметичность git-identity песочницы ---
+# CI-раннер и свежий клон не имеют глобального git-конфига: коммиты self-test'а
+# (setup выше и happy-path close-session ниже) обязаны проходить в стерильном
+# окружении. Красный на коде до фикса: rc=128 «Author identity unknown»
+# (воспроизведено ревьюером в чистом HOME; локально зелёный только из-за
+# глобальной конфигурации разработчика).
+_identity_probe="$(mktemp)"; : > "$_identity_probe"
+(
+  cd "$WORK"
+  export GIT_CONFIG_GLOBAL="$_identity_probe" GIT_CONFIG_SYSTEM="$_identity_probe"
+  printf '\n# self-test C1: probe (ревью S30 — git-identity)\n' >> Makefile
+  git add Makefile
+  git commit -m "self-test C1: коммит в стерильном окружении identity" >/dev/null
+  _rc=$?
+  # провал регрессии не должен каскадить: песочница чиста и при красном кейсе
+  git reset --hard -q HEAD >/dev/null 2>&1
+  exit "$_rc"
+) && ok "C1: коммит в песочнице при стерильном git-конфиге (env-identity)" \
+  || bad "C1: коммит в песочнице при стерильном git-конфиге (env-identity не задана)"
+rm -f "$_identity_probe"
+# Ревью-2 S30 Minor-4: repo-local identity (общий .git/config с worktree) замаскировал бы
+# провал регрессии — кейс остался бы зелёным даже после удаления env-identity. Fail-closed:
+# обнаружено маскирование — Suite красная с внятной причиной (не «чинить» пробу config'ом)
+if [ -n "$(git config --local --get user.name 2>/dev/null || true)" ]; then
+  bad "C1: repo-local identity в .git/config — bite регрессии замаскирован (не задавать user.name в config проекта; env-identity self-test'а — единственный источник)"
+else
+  ok "C1: repo-local identity отсутствует — bite регрессии жив"
+fi
 
 # Сентинел против рекурсии self-test → clean-state → init.sh → self-test (ревью I-2)
 export RITUAL_SELFTEST=1

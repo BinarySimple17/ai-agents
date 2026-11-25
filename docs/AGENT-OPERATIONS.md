@@ -12,7 +12,7 @@
 - `milestone/v4` — ветка вехи V4 (ДЗ-05 «State machine», `hw-05-agent-logic`): отпочкована от `milestone/v3`, живёт параллельно и ждёт приёмки вехи V4. Рабочие ветки для V4 почкуются от `milestone/v4` и мержатся в неё напрямую; сама `milestone/v4` никуда не сливается (`dev`/`main`) без явной команды владельца — реинтеграция через PR по модели D-024 (D-031). Хотфиксы V3 — рабочая ветка от `milestone/v3` → merge в `milestone/v3`; хотфиксы V2/V1 — по прежним правилам.
 - Вся работа — в рабочих ветках: `feat-0XX-<slug>` (фичи), `harness/<тема>` (обвязка). Пуш рабочей ветки в origin свободен; попадание в `dev`/`main` — только PR (`gh pr create --base dev`, release — `--base main`).
 - Release: PR `dev` → `main` + тег версии. Хотфикс: рабочая ветка от `main` → PR → `main`, затем перенос в `dev`.
-- Локальные гварды: `.githooks/pre-commit` (коммит на `main`/`dev` невозможен) и `.githooks/pre-push` (пуш в `main`/`dev` невозможен); подключаются идемпотентно в `init.sh` (`core.hooksPath`). Серверный уровень — GitHub branch protection на `main` и `dev`.
+- Локальные гварды: `.githooks/pre-commit` (коммит на `main`/`dev` невозможен) и `.githooks/pre-push` (пуш в `main`/`dev` и force-push невозможен); подключаются идемпотентно в `init.sh` (`core.hooksPath`). Серверного уровня НЕТ — GitHub branch protection не включается (платная функция private-репо; решение владельца D-034): контракт держат локальные хуки, а CI (`.github/workflows/ci.yml`, S30) — контур наблюдаемости поверх `./init.sh` («не мержить при красном CI» — процедурно при слиянии, не машинный запрет).
 
 ## End of Session — полный чеклист закрытия
 

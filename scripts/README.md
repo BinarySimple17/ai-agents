@@ -48,6 +48,7 @@ bash scripts/clean-state-check.sh . feat-002   # многосессионная 
 make new-session S=S12 TITLE="..." F=feat-012   # механика планирования: копия шаблона сессии + строка реестра (S28)
 make close-session S=S12 MSG=msg.txt            # механика закрытия: pre-flight → статус ✅ → реестр → archive → clean-state → commit (S28)
 make check                                # полная верификация (вызывает ./init.sh)
+make lint-imports                         # контракты импортов слоёв, import-linter (тоже внутри ./init.sh между ruff и pytest — S30)
 make vcr                                  # VCR = passing / активированные (цель 1.0)
 ```
 

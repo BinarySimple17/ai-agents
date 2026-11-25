@@ -5,55 +5,56 @@
 
 ## Current Objective
 
-- Goal: хвост триажа [аудита архитектуры 2026-11-23](docs/audit-2026-11-23.md) — зафиксировать решения куратора в журналах, закрыть остаток дрейфа индекса сессий (веха V4, harness-сессия S29)
-- Current status: задачи сессии выполнены (D-033, FIX-010…017, указатель в аудите, дрейф sessions.md, handoff переписан); REVIEW-GATE → `make close-session S=S29` → merge `harness/audit-triage` → `milestone/v4`
-- Branch / commit: `harness/audit-triage` от `milestone/v4` (`460c816` + волна сессии)
+- Goal: механический контур защит до код-сессий долга (S31–S35) — import-linter, CI, документация контура; Task 5 (серверная защита веток) снят владельцем (D-034)
+- Current status: волна (8a99ceb, 4a4b572, b0a1d99) + fix-волна (10447e6) + финализация; REVIEW-GATE: ревью-1 «With fixes» 1C/2I/10M → re-review `b0a1d99..10447e6` **«Ready to merge: Yes» 0C/0I/5M** (миноры финализации закрыты); `make close-session S=S30` → merge `harness/mechanical-guards` → `milestone/v4`
+- Branch / commit: `harness/mechanical-guards` от `milestone/v4` (`3f68c9c` + волна сессии)
 
 ## Completed This Session
 
-- [x] **D-033** (DECISIONS.md): 4 решения куратора 2026-11-24 (вехи = текущая ДЗ; правки ДЗ-02 S1/S3 сделаны 24.11; харнесс-долг — в вехе V4; бэкап-ветка канона + матрица остатка) + **A1 решён 2026-11-25** — диалог S29, вариант A (валидатор и права внутри `RunSqlTool`, дефолт CLI не меняется), реализация S31
-- [x] Пометка «ждёт решения» снята из S31 (блок «Прочитай перед началом») и реестра (строка S31 + примечание графа)
-- [x] **FIX-010…FIX-017** (solution/FIXES.md, всего 17): A1→S31, A3→S33, B3/B4/B5/C1/E7→S36, C6→S38 (ждёт решения куратора)
-- [x] Указатель триажа в шапке [docs/audit-2026-11-23.md](docs/audit-2026-11-23.md) (D-033, S29–S38, BL-021+)
-- [x] Сверка оформленного 24.11 по фактам HEAD: сессии S30–S38 «[ ] не начата» (9), BL-021…033 со «Статус:» (13), «15 integration-сценариев» = 15 тест-функций `test_execute_sql.py`, честная строка hw-02 соответствует коду, файл ADR-008 существует. **Отклонение от плана:** оформление уже закоммичено куратором (`460c816`) — шаг «закоммитить незакоммиченное» вырожден
-- [x] Дрейф sessions.md (C2/C3-остаток): 12 битых ссылок → `sessions/archive/`, плейсхолдеры строки S28 — deps S22, S23 и оценка 0.5 по шапке архивного файла, P1 по соседним harness-сессиям (S22/S23; в шапке архива поля приоритета нет), статус дополнен итогами ревью из progress-свидетельства S28; абзац модели веток `hw-0N-*` → `milestone/vN` (D-024/D-029/D-031), «V6 (main)» → «V6 (выпускная)», заголовок «(ДЗ-1)» → «(вехи V1–V6 = ДЗ-02…06)». Все `](sessions/...)`-ссылки резолвятся (битых 0)
-- [x] `progress.md`: Current State / In Progress / Next Steps — по таблице вех; `session-handoff.md` переписан (был застывшим на середине S05 — находка C3)
-- [x] Таблица «ID аудита → владелец» — в отчёте сессии (`solution/sessions/S29_session.md`, раздел «Отчёт»)
+- [x] **ARCH-GATE**: canon-check архитектора — violations → rulings F1–F10 ДО кода (план дополнен: контракты F1–F3, CI F6/F7, доки F4/F8/F9, беклог F10)
+- [x] **Task 1**: import-linter 2.17 (dev), 10 контрактов в `[tool.importlinter]` (два layers, independence, 7 forbidden — производные F1/F2 помечены в именах), `lint-imports` в init.sh + `make lint-imports`; негативный контроль ×2 RED; Contracts: 10 kept, 0 broken
+- [x] **Task 2**: build_documents → `composition/knowledge_docs.py` (нарушение apps→infrastructure из аудита устранено; parents[3] — F5); guard-тест перепривязан; живой прогон — 324 документа (= S27)
+- [x] **Task 3**: `.github/workflows/ci.yml` compose-based (`up -d --wait`; cp .env.example .env — F6; setup-python 3.13 — F7); neo4j-хелсчек HTTP→bolt в compose; yamllint OK; `--wait` Healthy bite-проверено локально
+- [x] **Task 4**: **D-034**, FIX-018 (c4-l2 выровнен с independence — F4), синх AGENTS×2/AGENT-OPERATIONS/ARCHITECTURE/scripts README/quality-document, BL-035/036/037 + реестр
+- [x] **Task 5 СНЯТ** владельцем до старта (D-034): branch protection платная на private-репо, включаться не будет — «Прямые пуши запрещены» = локальные хуки `.githooks/` (проверены: pre-commit/pre-push блокируют main/dev и force-push через запрет любых пушей) + CI как контур наблюдаемости
+- [x] **Fix-волна + re-review**: C1 git-identity — регресс в ritual self-test (стерильный GIT_CONFIG_GLOBAL/SYSTEM; bite 23+1F → 24P/0F; env-identity — worktree делит config, repo-local нельзя) + git-config шаг в ci.yml; I1 apps→{orchestration,config} в контракт (контроль RED); I2 живой CI отложено с ruling (критерий 3); M1–M10 закрыты/BL-038; re-review «Ready to merge: Yes» 0C/0I/5M — миноры финализации (85/25, quality ×4 RED, c4-l2 три запрета, assert repo-local identity)
 
 ## Verification Evidence
 
 | Check | Command | Result | Notes |
 |---|---|---|---|
-| Старт-гейт | `./init.sh` (start-фаза) | PASS | ARCH-GATE N/A учтён; REVIEW-GATE — WARN до ревью (норма) |
-| Базовая линия | `uv sync --frozen --offline` + ruff + pytest + self-test | см. Evidence S29 | сеть машины недоступна (pypi timeout, и в песочнице, и без) — offline из кэша uv; чистый `./init.sh` повторить при восстановлении сети |
-| FIX-записи | `grep -c "^## FIX-0" solution/FIXES.md` | 17 | 010…017 добавлены, маппинг по плану S29 |
-| Ссылки реестра | grep + проверка существования файлов | битых 0 | 11 прямых ссылок (S00, S29–S38) все резолвятся |
+| Старт-гейт | `bash init.sh` (start-фаза) | PASS | ARCH-GATE canon-check ✅ учтён |
+| Контракты слоёв | `uv run lint-imports` | 10 kept, 0 broken | негативный контроль ×2 RED (application→orchestration; apps→infrastructure) |
+| Живая переиндексация | `make infra-migrate && make index-knowledge` | 324 дока (= S27) | поведение фабрики не изменилось |
+| Compose | `docker compose config -q` + `up -d --wait` | OK; neo4j Healthy | bolt-хелсчек bite-проверен (контейнер пересоздан) |
+| ci.yml | `uvx yamllint` | exit 0 | живой CI-прогон отложен — сеть |
+| Полная верификация | `make check` | EXIT=0 | 899 passed + self-tests 85/25 (ritual 25 после Minor-4 assert) + lint-imports |
 
 ## Files Changed
 
-- `DECISIONS.md` (D-033), `solution/FIXES.md` (FIX-010…017), `docs/audit-2026-11-23.md` (шапка-указатель)
-- `solution/sessions.md` (12 ссылок → archive, строка S28, модель веток, заголовок; строка S31 + примечание графа — снятие «ждёт решения»)
-- `solution/sessions/S31_session.md` (блок «Прочитай перед началом» — решение получено), `solution/sessions/S29_session.md` (статус ◐, предусловия, гейты, отчёт)
-- `progress.md` (Current State / In Progress / Next Steps), `session-handoff.md` (переписан)
+- `pyproject.toml` (+import-linter 2.17, +[tool.importlinter] 10 контрактов), `uv.lock`, `init.sh` (+lint-imports), `Makefile` (+lint-imports)
+- `src/text_to_sql_agent/composition/knowledge_docs.py` (новая фабрика), `src/apps/index_knowledge.py` (переезд на фабрику), `src/tests/unit/test_knowledge_sources.py` (патч-цель — F5)
+- `.github/workflows/ci.yml` (новый), `docker-compose.yml` (neo4j healthcheck → bolt)
+- `DECISIONS.md` (D-034), `solution/FIXES.md` (FIX-018), `AGENTS.md` (×3), `docs/AGENT-OPERATIONS.md`, `docs/ARCHITECTURE.md`, `docs/diagrams/c4-l2-container.md`, `scripts/README.md`, `docs/quality-document.md`, `solution/backlog/BL-035…037` + реестр
 
 ## Decisions Made
 
-- **D-033** — решения куратора по триажу аудита (пп. 1–4 от 24.11; п. 5 — A1 вариант A от 25.11); детально в [DECISIONS.md](DECISIONS.md), противоречия — FIX-010…017 в [solution/FIXES.md](solution/FIXES.md)
+- **D-034** — серверная защита веток на GitHub не включается (платный тариф private-репо, решение владельца 2026-11-25 в диалоге старта): контракт «Прямые пуши запрещены» = локальные хуки + CI процедурно; prd CI-гейт ACL-leak остаётся требованием, исполнение — при слиянии. Task 5 снят до старта работ
 
 ## Blockers / Risks
 
-- **Сеть машины:** pypi.org недоступен (timeout) — `uv sync --frozen` падает; рабочий путь `--offline` (кэш полный). Если сеть не восстановится, `./init.sh` остаётся красным по сети, не по репо — повторить в S30. **Push закрытой ветки (и milestone/v4 после merge) — тоже при восстановлении сети**
-- **A1 исполнение:** S31 стартует только после S30 (deps) и подтверждения куратора о статусе артефактов hw-02/03 (правило 5 плана S31); окно до 04.12
-- **FIX-017 (C6)** и остатки C3–C5 ждут либо решения куратора, либо S38 — не закрывать досрочно
-- Строка S29 в реестре станет битой после `make archive` (ловушка 4) — чинит S38
-- Ревью S29 (Minor-1) — урок атомарности «журнал ↔ состояние» зафиксирован в BL-034 (практика с S30+, сверка ритуалов — S38)
+- **Сеть машины мерцает** (github/pypi 000↔200): push `harness/mechanical-guards` и живой CI-прогон (Task 3 самопроверка по плану) отложены — workflow синтаксически валиден (yamllint), пины actions сверены через веб (checkout@v4/setup-python@v5/setup-uv@v10). S31: сначала push `milestone/v4` (ahead 6 с S29) + ветки, затем `gh run list` — если красный CI, чинить до кода S31
+- **S31 deps**: S30 ✅ + подтверждение куратора о статусе артефактов hw-02/03 (не заморожены ли сдачей; правило 5 S31); окно до 04.12
+- **FIX-017 (C6)** ждёт решения куратора; остатки C3–C5 — S38, не закрывать досрочно
+- Контрактные комментарии: новый подпакет `application/` добавить в forbidden-контракт infrastructure вручную (комментарий в pyproject.toml, F3)
+- Строка S30 в реестре станет битой после `make archive` (ловушка 4) — чинит S38
 
 ## Next Session Startup
 
 1. Read `AGENTS.md`, `progress.md` (Next Steps), реестр `solution/sessions.md`
-2. Следующая по графу — **S30** (import-linter, CI, защита веток; deps S29 ✅): `make new-session` не нужен — файл существует; старт-ритуал: статус ◐, ARCH-GATE до кода, `./init.sh`
-3. Если сеть восстановилась — сначала чистый `./init.sh` (подтверждение baseline без `--offline`)
+2. Следующая по графу — **S31** (единый рубеж исполнения, вариант A по A1/D-033 п.5): файл существует, `make new-session` не нужен; старт-ритуал: статус ◐, ARCH-GATE до кода, `./init.sh`
+3. Если сеть восстановилась — сначала push (см. Blockers) и `gh run list --branch <ветка>` (живой CI)
 
 ## Recommended Next Step
 
-- Закрыть S29: code-reviewer по диапазону сессии → REVIEW-GATE → `make close-session S=S29` → merge `harness/audit-triage` → `milestone/v4` (по D-031 — без слияния самой milestone-ветки)
+- Закрыть S30: вердикт ревью в REVIEW-GATE → `make close-session S=S30 MSG=<файл>` → merge `harness/mechanical-guards` → `milestone/v4` (по D-031 — без слияния самой milestone-ветки); сетевые хвосты — S31

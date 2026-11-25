@@ -98,8 +98,10 @@ def test_markdown_rejects_foreign_doc_kind(tmp_path: Path) -> None:
 
 def test_build_documents_runs_the_guard(monkeypatch: pytest.MonkeyPatch) -> None:
     # Удаление вызова guard'а в build_documents не должно проходить незамеченным:
-    # кривой документ из любого сборщика -> ValueError на индексации
-    import apps.index_knowledge as app
+    # кривой документ из любого сборщика -> ValueError на индексации.
+    # build_documents живёт в composition (S30 Task 2, canon-check F5) — патчим
+    # имена фабрики, не apps-модуль
+    import text_to_sql_agent.composition.knowledge_docs as docs_mod
 
     leak = KnowledgeDocument(
         doc_kind=DocKind.DDL,
@@ -109,18 +111,18 @@ def test_build_documents_runs_the_guard(monkeypatch: pytest.MonkeyPatch) -> None
         model_version="m",
         source_ref="ddl:orders",
     )
-    monkeypatch.setattr(app, "business_tables_from_catalog", lambda *a, **kw: _TABLES)
-    monkeypatch.setattr(app, "ddl_documents", lambda *a, **kw: [leak])
-    monkeypatch.setattr(app, "relationship_documents", lambda *a, **kw: [])
-    monkeypatch.setattr(app, "markdown_documents", lambda *a, **kw: [])
-    monkeypatch.setattr(app, "generate_noise_corpus", lambda *a, **kw: [])
+    monkeypatch.setattr(docs_mod, "business_tables_from_catalog", lambda *a, **kw: _TABLES)
+    monkeypatch.setattr(docs_mod, "ddl_documents", lambda *a, **kw: [leak])
+    monkeypatch.setattr(docs_mod, "relationship_documents", lambda *a, **kw: [])
+    monkeypatch.setattr(docs_mod, "markdown_documents", lambda *a, **kw: [])
+    monkeypatch.setattr(docs_mod, "generate_noise_corpus", lambda *a, **kw: [])
     container = SimpleNamespace(
         settings=SimpleNamespace(
             embedding_model="m", postgres_dsn=SecretStr("postgresql://u:p@h/db")
         )
     )
     with pytest.raises(ValueError, match="bonuses"):
-        app.build_documents(container)
+        docs_mod.build_documents(container)
 
 
 def test_markdown_unknown_table_in_header_rejected(tmp_path: Path) -> None:

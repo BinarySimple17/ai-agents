@@ -91,13 +91,20 @@ graph TB
 - **Guardrails и порт AuthProvider — библиотеки, не сервисы:** компоненты того же
   кода, что воркер/api (порты приложения); масштаб уровня «учебный проект +
   пет-проект», не микросервисы.
-- **Слои и порты** (code-architecture-draft): `domain` (сущности AgentState, JoinPlan,
-  JoinEdge, QueryPlan, QueryStep, ResultCompact) → `application` (сервисы узлов +
-  порты `LLMProvider`, `VectorStore`, `SchemaGraphStore`, `SQLExecutor`,
-  `SemanticCache`, `AuthProvider`, `Tracer`, `BudgetGuard`) → `infrastructure`
-  (адаптеры: routerai-провайдер, pgvector, neo4j, sqlglot, Valkey, DevToken/OIDC) →
-  `orchestration` (только рёбра графа LangGraph) → `composition` (DI-сборка).
-  Правила импортов проверяются `import-linter`.
+- **Слои и порты** (code-architecture-draft, AGENTS «Architecture Boundaries»):
+  `composition` (DI-сборка) над двумя НЕЗАВИСИМЫМИ ногами — `orchestration`
+  (только рёбра графа LangGraph) и `infrastructure` (адаптеры: routerai-провайдер,
+  pgvector, neo4j, sqlglot, Valkey, DevToken/OIDC; единственный вместе с
+  composition читает `config`) — обе внутрь: `application` (сервисы узлов + порты
+  `LLMProvider`, `VectorStore`, `SchemaGraphStore`, `SQLExecutor`, `SemanticCache`,
+  `AuthProvider`, `Tracer`, `BudgetGuard`; инфраструктура реализует только порты)
+  → `domain` (сущности AgentState, JoinPlan, JoinEdge, QueryPlan, QueryStep,
+  ResultCompact). Точки входа `apps` — над `composition`; `apps → {infrastructure,
+  orchestration, config}` запрещены напрямую (приложение не импортирует адаптеры,
+  граф и конфиг минуя composition). `orchestration` ↔
+  `infrastructure` независимы (линейная цепочка «orchestration → infrastructure»
+  из прежней формулировки — FIX-018). Правила импортов проверяются `import-linter`
+  (`[tool.importlinter]` в pyproject.toml, 10 контрактов — S30).
 - **Роутер моделей — свойство провайдера:** `LLMProvider.complete(role, ...)` с тремя
   ролями `cheap / mid / strong`; узлы не знают конкретных моделей (ADR-007). Смена
   провайдера (routerai ↔ локальный Ollama) — переменная окружения, без правки узлов
