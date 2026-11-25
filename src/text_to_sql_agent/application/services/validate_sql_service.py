@@ -401,36 +401,41 @@ def _build_audit(tree: exp.Expression) -> SqlAudit:
     )
 
 
-def _is_cartesian_join(
+def _join_tie_refs(
     join: exp.Join,
     maps: list[dict[str, _Source]],
     joined_ref: str,
     earlier_refs: set[str],
-) -> bool:
-    """Произведение без связи — функциональный критерий (re-review fix-волны 3–4):
-    присоединяемый источник (``joined_ref`` — sources[idx+1] для joins[idx]) не
-    связан равенством колонок с УЖЕ ПРИСОЕДИНЁННЫМИ (``earlier_refs``) в
-    конъюнктивном скелете ON. Волна 3 (семантика вместо whitelist'а comma/ON
-    TRUE) закрыла CROSS JOIN/ON 1=1/ON (TRUE)/самосравнение, но пропускала:
-    равенство ЧУЖИХ источников (``JOIN c ON m.id = o.id`` — c не тронут,
-    произведение m×c) и равенство под ``OR``/``CASE`` (``ON c.id = o.id OR
-    TRUE`` — тавтология). Не считается связью: comma/CROSS JOIN (ON нет),
-    ``ON TRUE``/``ON 1=1``, самосравнение (один источник по обе стороны),
-    сравнение со скалярным подзапросом (колонки подзапросов — своего скоупа,
-    не резолвятся), равенство внутри подзапроса ON, под Or/Xor/Not/Case/If,
-    квалификатор не из скоупа (корреляция). ``JOIN ... USING (колонки)`` — НЕ
-    произведение: равенство по именованным колонкам утверждено — пара сверяется
-    по цепочке, как у явного ``JOIN ... ON``. NullSafeEQ (IS NOT DISTINCT FROM)
-    не достижим — отбивается whitelist'ом форм раньше (живой прогон)."""
+) -> tuple[bool, list[set[str]]]:
+    """(Связан ли джойн, ref-множества связывающих равенств ON) — функциональный
+    критерий (re-review fix-волн 3–5): связывающее равенство ЗАДЕВАЕТ
+    присоединяемый источник (``joined_ref`` — sources[idx+1] для joins[idx]) и
+    хотя бы один УЖЕ ПРИСОЕДИНЁННЫЙ (``earlier_refs``) и стоит в конъюнктивном
+    скелете ON. Волна 3 (семантика вместо whitelist'а comma/ON TRUE) закрыла
+    CROSS JOIN/ON 1=1/ON (TRUE)/самосравнение, но пропускала: равенство ЧУЖИХ
+    источников (``JOIN c ON m.id = o.id`` — c не тронут, произведение m×c) и
+    равенство под ``OR``/``CASE`` (``ON c.id = o.id OR TRUE`` — тавтология).
+    Не считается связью: comma/CROSS JOIN (ON нет), ``ON TRUE``/``ON 1=1``,
+    самосравнение (один источник по обе стороны), сравнение со скалярным
+    подзапросом (колонки подзапросов — своего скоупа, не резолвятся), равенство
+    внутри подзапроса ON, обёртка вне конъюнкции (``_under_conjunctive_skeleton``),
+    квалификатор не из скоупа (корреляция). ``JOIN ... USING (колонки)`` — связан
+    (равенство по именованным колонкам утверждено), равенств ON нет — пара по
+    цепочке соседей. NullSafeEQ (IS NOT DISTINCT FROM) не достижим — отбивается
+    whitelist'ом форм раньше (живой прогон). Защитная граница: ``joined_ref``
+    вне скоупа (рассинхрон) — связей нет, fail-closed. Ref-множества потребляет
+    ``_collect_join_pairs`` — пары из операндов ON (волна 5)."""
     if join.args.get("using"):
-        return False
+        return True, []
     on = join.args.get("on")
     if on is None:
-        return True
+        return False, []
     nested = {id(s) for s in on.find_all(exp.Select)}
     local_map = maps[0]
+    tied = False
+    tie_refs: list[set[str]] = []
     for eq in on.find_all(exp.EQ):
-        if _under_logical_branch(eq, on) or _inside_nested_select(eq, nested):
+        if not _under_conjunctive_skeleton(eq, on) or _inside_nested_select(eq, nested):
             continue
         refs = _eq_operand_refs(eq.this, local_map, nested) | _eq_operand_refs(
             eq.expression, local_map, nested
@@ -438,8 +443,9 @@ def _is_cartesian_join(
         # связь = равенство ЗАДЕВАЕТ присоединяемый источник и хотя бы один
         # ранее присоединённый (волна 4: «есть EQ двух источников» ≠ «джойн связан»)
         if joined_ref in refs and refs & earlier_refs:
-            return False
-    return True
+            tied = True
+            tie_refs.append(refs)
+    return tied, tie_refs
 
 
 def _inside_nested_select(node: exp.Expression, nested: set[int]) -> bool:
@@ -454,20 +460,26 @@ def _inside_nested_select(node: exp.Expression, nested: set[int]) -> bool:
     return False
 
 
-_LOGICAL_BRANCHES = (exp.Or, exp.Xor, exp.Not, exp.Case, exp.If)
+_CONJUNCTIVE_SKELETON = (exp.And, exp.Paren)
 
 
-def _under_logical_branch(node: exp.Expression, root: exp.Expression) -> bool:
-    """На пути от узла до корня выражения ВКЛЮЧИТЕЛЬНО — дизъюнкция/отрицание/
-    Case: равенство под OR/NOT/CASE связь источников не утверждает (``OR TRUE``
-    делает его тавтологией; re-review fix-волна 4). And и Paren прозрачны —
-    конъюнкция. Корень проверяется тоже: ``ON x OR TRUE`` — сам ON есть Or."""
+def _under_conjunctive_skeleton(node: exp.Expression, root: exp.Expression) -> bool:
+    """Равенство стоит в КОНЪЮНКТИВНОМ скелете ON — whitelist предков до корня
+    ВКЛЮЧИТЕЛЬНО (re-review fix-волна 5): только And/Paren. Инверсия блочного
+    списка волны 4 (Or/Xor/Not/Case/If): список пропускал обёртки вне списка —
+    ``ON (c.id = o.id) IS FALSE`` утверждает НЕравенство (связь отрицается),
+    ``ON coalesce(c.id = o.id, FALSE)`` — условную связку; whitelist закрывает
+    любые обёртки одним правилом. Корень проверяется тоже: ``ON x OR TRUE`` —
+    сам ON есть Or (волна 4); равенство-корень (``ON a.id = b.id``) — скелет
+    тривиально конъюнктивный. And и Paren прозрачны — конъюнкция."""
+    if node is root:
+        return True
     parent = node.parent
     while parent is not None:
-        if isinstance(parent, _LOGICAL_BRANCHES):
-            return True
-        if parent is root:
+        if not isinstance(parent, _CONJUNCTIVE_SKELETON):
             return False
+        if parent is root:
+            return True
         parent = parent.parent
     return False
 
@@ -530,25 +542,33 @@ def _collect_join_pairs(
     pairs: list[tuple[str, str]],
     seen: set[tuple[str, str]],
 ) -> bool:
-    """Пары операндов JOIN по всем скоупам + флаг несверяемых скоупов (S31, R1 ARCH-GATE).
+    """Пары утверждённых связей JOIN по всем скоупам + флаг несверяемых скоупов
+    (S31, R1 ARCH-GATE).
 
-    Цепочка скоупа: FROM → JOIN-секции в порядке появления (cross — тот же Join-узел);
-    пара — соседние операнды-ТАБЛИЦЫ (реестр связывает таблицы, не алиасы). ЛЮБОЙ
-    не-табличный операнд в паре (CTE/производный/смешанный) — ``unresolved``:
-    обёртка CTE не делает связь легальной — ``WITH x AS (…orders…), y AS (…campaigns…)
-    SELECT * FROM x CROSS JOIN y`` соединяет свои таблицы без ребра реестра ровно
-    как прямой джойн (ревью S31 C1, живое воспроизведение; прежний ruling «CTE+CTE —
-    алгебра над телами» отозван). Произведение без СВЯЗЫВАЮЩЕГО равенства
-    (``_is_cartesian_join`` — функционально: присоединяемый источник не связан
-    равенством колонок с уже присоединёнными в конъюнкции ON; comma / голый JOIN /
-    CROSS JOIN / ON TRUE / 1=1 / самосравнение / OR-скелет / равенство чужих
-    источников) на ≥3 табличных источниках — ``unresolved``: «соседние» пары
-    произвольны (и дыра a↔c, и ложный отказ легального хаба — ревью S31 I1 +
-    re-review fix-волны 3–4); на двух — единственная пара цепочки, сверяется.
-    FSM-вход поля не читает: структура джойнов там сверяется со скелетом плана
-    (_check_skeleton). Пары корреляций (включая fail-closed на производном
-    операнде) добавляет цикл колонок в ``_build_audit`` (кандидат из внешнего
-    скоупа).
+    Цепочка скоупа: FROM → JOIN-секции в порядке появления (cross — тот же
+    Join-узел); пара — из ОПЕРАНДОВ связывающего равенства ON (присоединяемый
+    источник × контрагент; реестр связывает таблицы, не алиасы; re-review
+    fix-волна 5): hub-first звезда «FROM факт JOIN изм1 … JOIN изм2 …»
+    утверждает факт×изм1 и факт×изм2, а соседства изм1×изм2 в SQL нет — пары из
+    соседства цепочки давали ложный отказ легального хаба. Равенство-конъюнкт
+    между УЖЕ СВЯЗАННЫМИ таблицами (есть путь по утверждённым парам скоупа) —
+    фильтр, новую связь не заявляет (канон волны 4: «обе уже на рёбрах через
+    o»). Фолбэк для форм без равенств ON (USING; 2-табличное произведение) —
+    соседние операнды цепочки. Произведение без СВЯЗЫВАЮЩЕГО равенства
+    (``_join_tie_refs`` — функционально: присоединяемый источник не связан
+    равенством колонок с уже присоединёнными в конъюнкции ON; comma / голый
+    JOIN / CROSS JOIN / ON TRUE / 1=1 / самосравнение / OR-скелет / равенство
+    чужих источников) на ≥3 табличных источниках — ``unresolved``: пары
+    произвольны (ревью S31 I1 + re-review fix-волн 3–4); на двух — единственная
+    пара цепочки, сверяется. ЛЮБОЙ не-табличный операнд в паре (CTE/производный/
+    смешанный) — ``unresolved``: обёртка CTE не делает связь легальной —
+    ``WITH x AS (…orders…), y AS (…campaigns…) SELECT * FROM x CROSS JOIN y``
+    соединяет свои таблицы без ребра реестра ровно как прямой джойн (ревью S31
+    C1, живое воспроизведение; прежний ruling «CTE+CTE — алгебра над телами»
+    отозван). FSM-вход поля не читает: структура джойнов там сверяется со
+    скелетом плана (_check_skeleton). Пары корреляций (включая fail-closed на
+    производном операнде) добавляет цикл колонок в ``_build_audit`` (кандидат
+    из внешнего скоупа).
     """
     unresolved = False
     for scope in scopes:
@@ -556,34 +576,111 @@ def _collect_join_pairs(
         maps = maps_by_scope[id(scope)]
         joins = scope.args.get("joins") or []
         has_cartesian = False
+        tie_refs_by_idx: dict[int, list[set[str]]] = {}
         for idx, join in enumerate(joins):
             # sources[0] — FROM, joins[i] — sources[i+1] (порядок _scope_sources);
             # защитная граница на рассинхрон — вне диапазона refs не совпадёт
-            # ни с одним равенством → fail-closed
+            # ни с одним равенством → джойн несвязан → fail-closed
             joined_ref = sources[idx + 1].ref if idx + 1 < len(sources) else ""
             earlier_refs = {s.ref for s in sources[: idx + 1]}
-            if isinstance(join, exp.Join) and _is_cartesian_join(
-                join, maps, joined_ref, earlier_refs
-            ):
+            if not isinstance(join, exp.Join):
+                continue
+            tied, tie_refs = _join_tie_refs(join, maps, joined_ref, earlier_refs)
+            if not tied:
                 has_cartesian = True
                 break
+            if tie_refs and idx + 1 < len(sources):
+                tie_refs_by_idx[idx] = tie_refs
         if has_cartesian and sum(1 for s in sources if s.kind == "table") > 2:
             unresolved = True
             continue
+        # пары утверждённых связей скоупа (граф связности — для фильтра
+        # равенств-конъюнктов между уже связанными таблицами)
+        asserted: dict[str, set[str]] = {}
         prev: _Source | None = None
-        for source in sources:
+        for idx, source in enumerate(sources):
             if prev is not None:
-                if prev.kind == "table" and source.kind == "table":
-                    pair = tuple(sorted((prev.name, source.name)))
-                    if pair not in seen:
-                        seen.add(pair)
-                        pairs.append(pair)
+                tie_refs = tie_refs_by_idx.get(idx - 1)
+                if tie_refs is not None:
+                    if not _assert_tie_pairs(tie_refs, source, maps[0], asserted, pairs, seen):
+                        # не-табличный операнд в связывающем равенстве
+                        # (CTE/подзапрос) — пара реестром не выражается (C1)
+                        unresolved = True
+                elif prev.kind == "table" and source.kind == "table":
+                    # фолбэк: равенств ON нет (USING; 2-табличное произведение) —
+                    # пара по цепочке соседей
+                    _assert_pair(prev.name, source.name, asserted, pairs, seen)
                 else:
                     # любой операнд не-таблица (cte/sub, в любой комбинации) —
                     # пара реестром не выражается (C1)
                     unresolved = True
             prev = source
     return unresolved
+
+
+def _assert_tie_pairs(
+    tie_refs: list[set[str]],
+    joined: _Source,
+    local_map: dict[str, _Source],
+    asserted: dict[str, set[str]],
+    pairs: list[tuple[str, str]],
+    seen: set[tuple[str, str]],
+) -> bool:
+    """Пары связывающих равенств джойна: присоединяемый источник × контрагент
+    (``_collect_join_pairs``). False = связывающее равенство держится на
+    не-табличном операнде (CTE/подзапрос) — пара реестром не выражается."""
+    if joined.kind != "table":
+        return False
+    for refs in tie_refs:
+        for ref in refs:
+            if ref == joined.ref:
+                continue
+            other = local_map.get(ref)
+            if other is None or other.kind != "table":
+                return False
+            _assert_pair(joined.name, other.name, asserted, pairs, seen)
+    return True
+
+
+def _assert_pair(
+    a: str,
+    b: str,
+    asserted: dict[str, set[str]],
+    pairs: list[tuple[str, str]],
+    seen: set[tuple[str, str]],
+) -> None:
+    """Утверждение связи a↔b: в граф связности скоупа и в список сверки.
+    Self-join (a==b) пары не даёт — реестр связь таблицы с собой не утверждает
+    (skip на проверке пар, волны 1–2). Путь по утверждённым парам уже есть —
+    равенство-конъюнкт фильтрует, новой связи не заявляет (канон волны 4)."""
+    if a == b or _names_connected(asserted, a, b):
+        return
+    pair = tuple(sorted((a, b)))
+    asserted.setdefault(a, set()).add(b)
+    asserted.setdefault(b, set()).add(a)
+    if pair not in seen:
+        seen.add(pair)
+        pairs.append(pair)
+
+
+def _names_connected(asserted: dict[str, set[str]], a: str, b: str) -> bool:
+    """Есть ли путь a → … → b по утверждённым парам скоупа (BFS по именам
+    таблиц; размер графа — источники одного SELECT, десятки узлов максимум)."""
+    if a == b:
+        return True
+    visited = {a}
+    frontier = [a]
+    while frontier:
+        nxt: list[str] = []
+        for name in frontier:
+            for neighbour in asserted.get(name, ()):
+                if neighbour == b:
+                    return True
+                if neighbour not in visited:
+                    visited.add(neighbour)
+                    nxt.append(neighbour)
+        frontier = nxt
+    return False
 
 
 def _resolve_outer_ref(name: str, maps: list[dict[str, _Source]]) -> _Source | None:

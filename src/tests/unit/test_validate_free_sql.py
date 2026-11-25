@@ -7,8 +7,10 @@
 - инвариант реестра (R1): пары операндов JOIN — рёбра активного снимка
   (выдуманная связь → hallucination; comma/cross — та же цепочка источников);
 - fail-closed несверяемых форм: производный источник (CTE/подзапрос/LATERAL)
-  в операнде JOIN ИЛИ в корреляции, соединение ≥3 источников без равенств
-  колонок — обёртка связь не легализует (ruling «CTE+CTE разрешена» отозван);
+  в операнде JOIN ИЛИ в корреляции, соединение без равенства, связывающего
+  присоединяемый источник с уже присоединёнными в конъюнкции ON (обёртки IS/
+  COALESCE, дизъюнкции/Case скелетом связи не являются) — обёртка связь не
+  легализует (ruling «CTE+CTE разрешена» отозван);
 - adversarial-корпус через validate_free (B2: denied в FSM без скелетной причины
   → denied и здесь; корневые UNION/CTE/LATERAL/подзапрос с чужой таблицей —
   security.md §3, ADR-005 §4 п.8 «adversarial-тесты обязательны»).
@@ -19,10 +21,12 @@
 from typing import Any
 
 import pytest
+import sqlglot
 
 from text_to_sql_agent.application.ports.sql_executor import ROW_LIMIT
 from text_to_sql_agent.application.services.validate_sql_service import (
     ValidateSqlService,
+    _join_tie_refs,
     build_sql_audit,
 )
 from text_to_sql_agent.domain.sql_validation import (
@@ -740,3 +744,77 @@ def test_non_equi_on_is_fail_closed_on_three_tables() -> None:
             join_edges=CHAIN_EDGES,
         )
         assert result.verdict.outcome is ValidationOutcome.HALLUCINATION, condition
+
+
+# --- Re-review fix-волна 5 (I-1 + Minors): пары — из операндов связывающих
+# --- равенств ON, не из соседства цепочки; скелет ON — whitelist (And/Paren)
+
+
+def test_hub_join_fact_first_is_ok() -> None:
+    # Re-review волна 5 (регрессия, кусает 1dbd534: было hallucination — пары
+    # брались из соседства цепочки, а «customers×campaigns» не ребро): hub-first
+    # звезда — самая частая форма многотабличного SQL у LLM; оба ON-равенства
+    # связывают измерения с фактом, оба ребра в реестре
+    ok = _free(
+        "SELECT o.id FROM orders o JOIN customers c ON c.id = o.customer_id "
+        "JOIN campaigns m ON m.id = o.campaign_id",
+        join_edges=CHAIN_EDGES,
+    )
+    assert ok.verdict.outcome is ValidationOutcome.OK
+
+
+def test_hub_join_pair_from_operands_checked() -> None:
+    # Пары из ON-операндов: выдуманное ребро ловится независимо от порядка
+    # источников (m↔c реестром не утверждена; пин — исход тот же, что до волны 5)
+    result = _free(
+        "SELECT o.id FROM orders o JOIN customers c ON c.id = o.customer_id "
+        "JOIN campaigns m ON m.id = c.id",
+        join_edges=CHAIN_EDGES,
+    )
+    assert result.verdict.outcome is ValidationOutcome.HALLUCINATION
+    assert any("campaigns↔customers" in issue for issue in result.verdict.issues)
+
+
+def test_on_non_conjunctive_wrappers_are_not_a_tie() -> None:
+    # Re-review волна 5 Minor (регрессия, кусает 1dbd534: было ok — блочный
+    # список Or/Xor/Not/Case/If пропускал обёртки вне списка): равенство под
+    # IS FALSE — фактическое НЕравенство (связь отрицается), под COALESCE —
+    # условная связка; whitelist-скелет (And/Paren) закрывает любые обёртки
+    for condition in ("(c.id = o.customer_id) IS FALSE", "coalesce(c.id = o.customer_id, FALSE)"):
+        result = _free(
+            f"SELECT c.id FROM campaigns m JOIN orders o ON m.id = o.campaign_id "
+            f"JOIN customers c ON {condition}",
+            join_edges=CHAIN_EDGES,
+        )
+        assert result.verdict.outcome is ValidationOutcome.HALLUCINATION, condition
+    # негатив-компаньон: прозрачная обёртка Paren в конъюнкции — по-прежнему связь
+    ok = _free(
+        "SELECT c.id FROM campaigns m JOIN orders o ON m.id = o.campaign_id "
+        "JOIN customers c ON ((c.id = o.customer_id))",
+        join_edges=CHAIN_EDGES,
+    )
+    assert ok.verdict.outcome is ValidationOutcome.OK
+
+
+def test_xor_in_on_rejected_by_form() -> None:
+    # Пин волны 5 (Minor re-review 4: ветка Xor детектора не покрыта): постгрес-
+    # диалект XOR не парсит — до детектора форма не доходит, fail-closed парсингом
+    result = _free(
+        "SELECT c.id FROM campaigns m JOIN orders o ON m.id = o.campaign_id "
+        "JOIN customers c ON c.id = o.customer_id XOR TRUE",
+        join_edges=CHAIN_EDGES,
+    )
+    assert result.verdict.outcome is ValidationOutcome.HALLUCINATION
+    assert "по форме" in result.verdict.issues[0]
+
+
+def test_join_tie_refs_defensive_empty_joined_ref() -> None:
+    # Пин волны 5 (Minor re-review 4: защитная граница рассинхрона не покрыта):
+    # joined_ref вне скоупа — связей нет, fail-closed; через публичный API
+    # валидным AST невыразим — юнит на приватный хелпер
+    join = sqlglot.parse_one("SELECT * FROM a JOIN b ON a.id = b.id", read="postgres").args[
+        "joins"
+    ][0]
+    tied, tie_refs = _join_tie_refs(join, [{}], "", {"a"})
+    assert tied is False
+    assert tie_refs == []
