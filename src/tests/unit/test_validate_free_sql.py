@@ -648,3 +648,95 @@ def test_cross_join_two_tables_pair_checked() -> None:
     invented = _free("SELECT m.id FROM campaigns m CROSS JOIN customers c", join_edges=CHAIN_EDGES)
     assert invented.verdict.outcome is ValidationOutcome.HALLUCINATION
     assert any("campaigns↔customers" in issue for issue in invented.verdict.issues)
+
+
+# --- Re-review fix-волна 4 (I-1/I-2): функциональный критерий связи —
+# --- равенство обязано ЗАДЕВАТЬ присоединяемый источник и уже присоединённые
+# --- (не «существует EQ двух источников»), и стоять в конъюнктивном скелете ON
+
+
+def test_on_conjunct_not_tied_to_joined_source() -> None:
+    # Re-review волна 4 (регрессия, кусает 6a68c2d: было ok): равенство
+    # m.id = o.campaign_id не задевает присоединяемый c — c соединяется
+    # безусловно, произведение campaign×customer без ребра реестра
+    result = _free(
+        "SELECT c.id FROM campaigns m JOIN orders o ON m.id = o.campaign_id "
+        "JOIN customers c ON m.id = o.campaign_id",
+        join_edges=CHAIN_EDGES,
+    )
+    assert result.verdict.outcome is ValidationOutcome.HALLUCINATION
+    assert any("не сверяется с реестром" in issue for issue in result.verdict.issues)
+    # негатив-компаньон: равенство связывает c с ранее присоединённым o —
+    # локальный фильтр-неравенство ложных отказов не добавляет
+    ok = _free(
+        "SELECT c.id FROM campaigns m JOIN orders o ON m.id = o.campaign_id "
+        "JOIN customers c ON c.id = o.customer_id AND c.region <> 'X'",
+        join_edges=CHAIN_EDGES,
+    )
+    assert ok.verdict.outcome is ValidationOutcome.OK
+
+
+def test_on_same_source_conjunct_not_a_tie() -> None:
+    # Та же дыра: самосравнение c.id = c.id не связывает c, связка в конъюнкте —
+    # между ЧУЖИМИ источниками m/o (кусает 6a68c2d: было ok)
+    result = _free(
+        "SELECT c.id FROM campaigns m JOIN orders o ON m.id = o.campaign_id "
+        "JOIN customers c ON c.id = c.id AND m.id = o.campaign_id",
+        join_edges=CHAIN_EDGES,
+    )
+    assert result.verdict.outcome is ValidationOutcome.HALLUCINATION
+
+
+def test_on_or_true_does_not_tie_join_sources() -> None:
+    # Re-review волна 4 (кусает 6a68c2d: было ok): OR TRUE делает равенство
+    # тавтологией — полный произведение по c при виде «связанного» джойна
+    result = _free(
+        "SELECT c.id FROM campaigns m JOIN orders o ON m.id = o.campaign_id "
+        "JOIN customers c ON c.id = o.customer_id OR TRUE",
+        join_edges=CHAIN_EDGES,
+    )
+    assert result.verdict.outcome is ValidationOutcome.HALLUCINATION
+
+
+def test_or_branches_across_pairs_not_a_tie() -> None:
+    # Re-review волна 4 (кусает 6a68c2d: было ok): дизъюнкция равенств —
+    # ветка m=o не связывает c; связь утверждает только конъюнкция
+    result = _free(
+        "SELECT c.id FROM campaigns m JOIN orders o ON m.id = o.campaign_id "
+        "JOIN customers c ON (c.id = o.customer_id) OR (m.id = o.campaign_id)",
+        join_edges=CHAIN_EDGES,
+    )
+    assert result.verdict.outcome is ValidationOutcome.HALLUCINATION
+    # негатив: связывающее равенство в КОНЪЮНКЦИИ с дополнительным сравнением
+    # (даже с чужой парой c-m, обе уже на рёбрах через o) — проходит
+    ok = _free(
+        "SELECT c.id FROM campaigns m JOIN orders o ON m.id = o.campaign_id "
+        "JOIN customers c ON (c.id = o.customer_id) AND (c.region = m.channel)",
+        join_edges=CHAIN_EDGES,
+    )
+    assert ok.verdict.outcome is ValidationOutcome.OK
+
+
+def test_on_case_is_not_a_tie() -> None:
+    # Re-review волна 4 (кусает 6a68c2d: было ok): равенство внутри CASE —
+    # условная связка, конъюнктивного скелета нет
+    result = _free(
+        "SELECT c.id FROM campaigns m JOIN orders o ON m.id = o.campaign_id "
+        "JOIN customers c ON CASE WHEN TRUE THEN c.id = o.customer_id "
+        "ELSE c.id = o.customer_id END",
+        join_edges=CHAIN_EDGES,
+    )
+    assert result.verdict.outcome is ValidationOutcome.HALLUCINATION
+
+
+def test_non_equi_on_is_fail_closed_on_three_tables() -> None:
+    # Пин волны 4 (Minor 5 re-review 3): неравенства/range в ON равенств колонок
+    # не утверждают — на ≥3 источниках fail-closed (канон «без равенств»);
+    # поведение существует с волны 3 — без пина правка молча вернёт fail-open
+    for condition in ("o.total > 5", "o.total BETWEEN 1 AND 5", "m.id <> o.campaign_id"):
+        result = _free(
+            f"SELECT c.id FROM campaigns m JOIN orders o ON {condition} "
+            "JOIN customers c ON c.id = o.customer_id",
+            join_edges=CHAIN_EDGES,
+        )
+        assert result.verdict.outcome is ValidationOutcome.HALLUCINATION, condition

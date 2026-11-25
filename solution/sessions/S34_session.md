@@ -99,7 +99,8 @@ uv run pytest src/tests/unit/test_diagnose.py src/tests/unit/test_execute_sql_no
 ### Task 5: Канон в том же коммите
 
 [state-agent.md](../../docs/diagrams/state-agent.md) → v1.9 (ребро `diagnose_error → [гейт] plan_joins`,
-метка «объекта нет в таблицах плана»); ADR-002 → v1.5 (карта «кто что решает»: правило кода);
+метка «объекта нет в таблицах плана»); ADR-002 → v1.7 (карта «кто что решает»: правило кода;
+v1.5/v1.6 израсходованы fix-волнами S31, см. changelog ADR-002);
 c4-l3 (если рисует `diagnose_error`); S00 контракт 1 (флаг); `ARCHITECTURE.md`; запись в FIXES о
 смене канона; `hw-05/README.md` — сцена перепланирования.
 
