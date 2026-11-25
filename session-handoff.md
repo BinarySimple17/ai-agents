@@ -5,51 +5,54 @@
 
 ## Current Objective
 
-- Goal: S05/feat-005 resolve_access — первый содержательный узел FSM: права из таблиц настроек + DevTokenAuth (веха V4, ДЗ-05)
-- Current status: код + тесты собраны и закоммичены; **REVIEW-GATE pending** — code-reviewer оборван дневным лимитом API-ключа (75,18/75,00 ₽); решение владельца (2026-11-21) — пауза, континуация 2026-11-22
-- Branch / commit: `feat-005-resolve-access`, **1aa3aa0** (на вершине milestone/v4 @ 298e36c)
+- Goal: хвост триажа [аудита архитектуры 2026-11-23](docs/audit-2026-11-23.md) — зафиксировать решения куратора в журналах, закрыть остаток дрейфа индекса сессий (веха V4, harness-сессия S29)
+- Current status: задачи сессии выполнены (D-033, FIX-010…017, указатель в аудите, дрейф sessions.md, handoff переписан); REVIEW-GATE → `make close-session S=S29` → merge `harness/audit-triage` → `milestone/v4`
+- Branch / commit: `harness/audit-triage` от `milestone/v4` (`460c816` + волна сессии)
 
 ## Completed This Session
 
-- [x] ARCH-GATE: canon-check архитектора → verdict **violations** → rulings R1–R6 закрыты до кода (R1 гранты 0002 достаточны; R2 порт `PermissionStore`, не AccessPolicy; R3 ОБА счётчика settings_version; R4 identity-проводка verify→state; R5 CSV/'\*' на границе; R6 rejected через существующее ребро, graph_version=0 до S07)
-- [x] Task 1: порт `AuthProvider` + `DevTokenAuth` (compare_digest, fail-closed), `Settings.agent_dev_tokens`/`dev_token_map` (fail-fast), CLI `--fsm --token` — verify ДО graph.invoke
-- [x] Task 2: порт `PermissionStore` + `PgPermissionStore` (agent_planner, CSV-нормализация, `'*'` литералом, `RightsUnavailableError`)
-- [x] Task 3: `ResolveAccessService` — кэш per-user со сверкой ОБЕИХ версий `'permissions'`+`'user_roles'` (дыра revoke)
-- [x] Task 4: узел fail-closed (identity_missing/unknown_user/rights_unavailable → `FLAG_IDENTITY_FAILED` → terminal_rejected, routing не тронут); подмена через `node_overrides` в composition; тесты через Container
-- [x] Синк: AgentState.user_id + initial_state + AnswerQuestion.run; S00 (стык 1 + порт), ARCHITECTURE, .env.example
-- [x] Тесты **456 passed** (+39); layer-3: `--fsm --token dev-analyst-token` → done (10 узлов); без/чужой токен → rejected exit 1
+- [x] **D-033** (DECISIONS.md): 4 решения куратора 2026-11-24 (вехи = текущая ДЗ; правки ДЗ-02 S1/S3 сделаны 24.11; харнесс-долг — в вехе V4; бэкап-ветка канона + матрица остатка) + **A1 решён 2026-11-25** — диалог S29, вариант A (валидатор и права внутри `RunSqlTool`, дефолт CLI не меняется), реализация S31
+- [x] Пометка «ждёт решения» снята из S31 (блок «Прочитай перед началом») и реестра (строка S31 + примечание графа)
+- [x] **FIX-010…FIX-017** (solution/FIXES.md, всего 17): A1→S31, A3→S33, B3/B4/B5/C1/E7→S36, C6→S38 (ждёт решения куратора)
+- [x] Указатель триажа в шапке [docs/audit-2026-11-23.md](docs/audit-2026-11-23.md) (D-033, S29–S38, BL-021+)
+- [x] Сверка оформленного 24.11 по фактам HEAD: сессии S30–S38 «[ ] не начата» (9), BL-021…033 со «Статус:» (13), «15 integration-сценариев» = 15 тест-функций `test_execute_sql.py`, честная строка hw-02 соответствует коду, файл ADR-008 существует. **Отклонение от плана:** оформление уже закоммичено куратором (`460c816`) — шаг «закоммитить незакоммиченное» вырожден
+- [x] Дрейф sessions.md (C2/C3-остаток): 12 битых ссылок → `sessions/archive/`, плейсхолдеры строки S28 заполнены по шапке архивного файла (S22, S23; 0.5; P1), абзац модели веток `hw-0N-*` → `milestone/vN` (D-024/D-029/D-031), «V6 (main)» → «V6 (выпускная)», заголовок «(ДЗ-1)» → «(вехи V1–V6 = ДЗ-02…06)». Все `](sessions/...)`-ссылки резолвятся (битых 0)
+- [x] `progress.md`: Current State / In Progress / Next Steps — по таблице вех; `session-handoff.md` переписан (был застывшим на середине S05 — находка C3)
+- [x] Таблица «ID аудита → владелец» — в отчёте сессии (`solution/sessions/S29_session.md`, раздел «Отчёт»)
 
 ## Verification Evidence
 
 | Check | Command | Result | Notes |
 |---|---|---|---|
-| Полный набор | `make check` (до паузы) | 456 passed | unit 385 + integration 71 |
-| Фича-тесты | `uv run pytest src/tests/integration/test_resolve_access.py -q` | 10 passed | сиды, bump прав/ролей, FSM через Container |
-| layer-3 | `uv run python -m apps.cli "…" --fsm --token dev-analyst-token` | done, 10 узлов | без/чужой токен → rejected exit 1 |
-| REVIEW-GATE | code-reviewer 298e36c..1aa3aa0 | **ОБОРВАН** | дневной лимит ключа 75,18/75,00 ₽ — повторить 2026-11-22 |
+| Старт-гейт | `./init.sh` (start-фаза) | PASS | ARCH-GATE N/A учтён; REVIEW-GATE — WARN до ревью (норма) |
+| Базовая линия | `uv sync --frozen --offline` + ruff + pytest + self-test | см. Evidence S29 | сеть машины недоступна (pypi timeout, и в песочнице, и без) — offline из кэша uv; чистый `./init.sh` повторить при восстановлении сети |
+| FIX-записи | `grep -c "^## FIX-0" solution/FIXES.md` | 17 | 010…017 добавлены, маппинг по плану S29 |
+| Ссылки реестра | grep + проверка существования файлов | битых 0 | 11 прямых ссылок (S00, S29–S38) все резолвятся |
 
 ## Files Changed
 
-- Новые: `application/ports/{auth_provider,permission_store}.py`, `infrastructure/persistence/{dev_token_auth,pg_permission_store}.py`, `application/services/{resolve_access_service,resolve_access_node}.py`, `src/tests/unit/{test_auth_provider,test_resolve_access_node}.py`, `src/tests/integration/test_resolve_access.py`
-- Изменённые: `domain/entities.py` (AgentState.user_id), `config/settings.py` (agent_dev_tokens/dev_token_map), `application/services/stub_nodes.py` (initial_state user_id), `application/use_cases/answer_question.py`, `orchestration/{graph,runner}.py` (node_overrides), `composition/container.py`, `src/apps/cli.py` (--token), `tests/unit/{test_container_wiring,test_domain_entities}.py`, `solution/sessions/S00_session.md`, `docs/ARCHITECTURE.md`, `.env.example`
+- `DECISIONS.md` (D-033), `solution/FIXES.md` (FIX-010…017), `docs/audit-2026-11-23.md` (шапка-указатель)
+- `solution/sessions.md` (12 ссылок → archive, строка S28, модель веток, заголовок; строка S31 + примечание графа — снятие «ждёт решения»)
+- `solution/sessions/S31_session.md` (блок «Прочитай перед началом» — решение получено), `solution/sessions/S29_session.md` (статус ◐, предусловия, гейты, отчёт)
+- `progress.md` (Current State / In Progress / Next Steps), `session-handoff.md` (переписан)
 
 ## Decisions Made
 
-- Рulings R1–R6 ARCH-GATE S05 (канон-чек архитектора, до кода) — детально в [solution/sessions/S05_session.md](solution/sessions/S05_session.md)
-- Отклонение: юнит-тест переименован в `test_resolve_access_node.py` (basename-коллизия с integration-файлом без __init__.py)
+- **D-033** — решения куратора по триажу аудита (пп. 1–4 от 24.11; п. 5 — A1 вариант A от 25.11); детально в [DECISIONS.md](DECISIONS.md), противоречия — FIX-010…017 в [solution/FIXES.md](solution/FIXES.md)
 
 ## Blockers / Risks
 
-- **Дневной лимит API-ключа** (75 ₽/день): субагенты (architect/code-reviewer) крупного размера упираются — ревью-диспетчеризацию делать с утра/после сброса; экономичная диспетчеризация (файлы перечислить, не просить читать всё)
-- Риск при ревью: `make_guarded_route` оценивает решение ребра ДО гварда — fail-closed rejected срабатывает раньше budget_stop (сознательное поведение, тесты фиксируют)
+- **Сеть машины:** pypi.org недоступен (timeout) — `uv sync --frozen` падает; рабочий путь `--offline` (кэш полный). Если сеть не восстановится, `./init.sh` остаётся красным по сети, не по репо — зафиксировать в отчёте S29 и повторить в S30
+- **A1 исполнение:** S31 стартует только после S30 (deps) и подтверждения куратора о статусе артефактов hw-02/03 (правило 5 плана S31); окно до 04.12
+- **FIX-017 (C6)** и остатки C3–C5 ждут либо решения куратора, либо S38 — не закрывать досрочно
+- Строка S29 в реестре станет битой после `make archive` (ловушка 4) — чинит S38
 
 ## Next Session Startup
 
-1. Read `AGENTS.md`.
-2. Read `feature_list.json` (feat-005 active) and `progress.md` (S05 пауза).
-3. Review this handoff.
-4. Сессия S05 уже ◐ (старт-гейт пройден, ARCH-GATE ✅) — сразу континуация: code-reviewer (BASE=298e36c HEAD=1aa3aa0) → fix-волна → REVIEW-GATE ✅ → `make verify-feature F=feat-005` → merge в `milestone/v4` → End of Session S05 + `make archive`.
+1. Read `AGENTS.md`, `progress.md` (Next Steps), реестр `solution/sessions.md`
+2. Следующая по графу — **S30** (import-linter, CI, защита веток; deps S29 ✅): `make new-session` не нужен — файл существует; старт-ритуал: статус ◐, ARCH-GATE до кода, `./init.sh`
+3. Если сеть восстановилась — сначала чистый `./init.sh` (подтверждение baseline без `--offline`)
 
 ## Recommended Next Step
 
-- Повторить диспетчеризацию `code-reviewer` по 298e36c..1aa3aa0 (после сброса лимита), затем verify-feature и merge — feat-005 закрывается целиком в S05.
+- Закрыть S29: code-reviewer по диапазону сессии → REVIEW-GATE → `make close-session S=S29` → merge `harness/audit-triage` → `milestone/v4` (по D-031 — без слияния самой milestone-ветки)
