@@ -14,11 +14,11 @@
 | ADR | Решение | Статус |
 |---|---|---|
 | [ADR-001](ADR-001-build-vs-buy.md) | Своё на LangGraph vs готовое Text-to-SQL (Vanna/LangChain/LlamaIndex) | Принято v1.0 |
-| [ADR-002](ADR-002-fsm-on-code.md) | Оркестрация: workflow-скелет (FSM на коде) с агентным ядром; два уровня предохранителей (per-node M1 + recursion_limit); единый рубеж — ДВА ребра (S31) | Принято v1.4 |
+| [ADR-002](ADR-002-fsm-on-code.md) | Оркестрация: workflow-скелет (FSM на коде) с агентным ядром; два уровня предохранителей (per-node M1 + recursion_limit); единый рубеж — ДВА ребра (S31) | Принято v1.5 |
 | [ADR-003](ADR-003-single-postgres.md) | Хранилища: PostgreSQL (pgvector) + Neo4j (граф); PG — истина, граф — производный снапшот реестра, хранилище заменяемо за find_join_paths() | Принято v2.1 |
 | [ADR-004](ADR-004-query-decomposition.md) | Декомпозиция тяжёлых запросов (T1 — основной путь; T2 → async/matview/approximate; key-set без LIMIT, кап 50 000) | Принято v1.2 |
 | [ADR-005](ADR-005-rbac-as-data.md) | Права как данные (настройки в БД), рубежи 1–5 (AST+скелет, deny-list схем, ACL колонок соединения, БД: RLS), AuthProvider; рубежи 2–4 — оба контура (S31) | Принято v1.3 |
-| [ADR-006](ADR-006-relationship-semantics.md) | Реестр связей — единственный SoT: контракт ребра R1, жизненный цикл draft → CI → active, graph_version, заявки; инвариант — оба контура (S31) | Принято v1.4 |
+| [ADR-006](ADR-006-relationship-semantics.md) | Реестр связей — единственный SoT: контракт ребра R1, жизненный цикл draft → CI → active, graph_version, заявки; инвариант — оба контура (S31) | Принято v1.5 |
 | [ADR-007](ADR-007-model-cascade.md) | Intent-Based Routing: узел → навык → модель (cheap/mid/strong), политика ретраев M1 (D-016), экономика — фикс. снимок 18.11.2026 | Принято v1.2 |
 | [ADR-008](ADR-008-structured-output.md) | Валидные структурированные выходы: constrained decoding + тул-based enforcement | Принято v1.0 |
 | [ADR-009](ADR-009-semantic-cache.md) | Кэш вопросов (точное совпадение): scope в ключе, сверка допущений на hit, позиция после clarify | Принято v1.2 |

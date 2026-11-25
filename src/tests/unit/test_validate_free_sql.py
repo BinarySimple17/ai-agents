@@ -569,3 +569,82 @@ def test_on_true_is_cartesian_fail_closed_on_three_tables() -> None:
     assert any("не сверяется с реестром" in issue for issue in result.verdict.issues)
     two = _free("SELECT o.id FROM orders o JOIN customers c ON TRUE LIMIT 10")
     assert two.verdict.outcome is ValidationOutcome.OK
+
+
+# --- Re-review fix-волна 3 (I-1): критерий произведения — СЕМАНТИЧЕСКИЙ:
+# --- JOIN без равенств колонок двух РАЗНЫХ источников скоупа — произведение,
+# --- чем бы оно ни было записано (не синтаксический whitelist comma/ON TRUE)
+
+
+def test_cross_join_three_tables_fail_closed() -> None:
+    # Re-review I-1 (регрессия, кусает c7a4dcd: было ok): CROSS JOIN на ≥3
+    # табличных источниках — то же произведение без равенств, что comma:
+    # строки campaigns комбинируются с customers без ребра реестра
+    result = _free(
+        "SELECT m.id FROM campaigns m CROSS JOIN orders o CROSS JOIN customers c",
+        join_edges=CHAIN_EDGES,
+    )
+    assert result.verdict.outcome is ValidationOutcome.HALLUCINATION
+    assert any("не сверяется с реестром" in issue for issue in result.verdict.issues)
+
+
+def test_on_literal_is_cartesian_fail_closed_on_three_tables() -> None:
+    # Re-review I-1 (кусает c7a4dcd: ON 1=1 — не exp.Boolean, детектор молчал):
+    # «всегда истинное» условие равенств колонок не утверждает — произведение
+    result = _free(
+        "SELECT m.id FROM campaigns m JOIN orders o ON 1 = 1 JOIN customers c ON 1 = 1",
+        join_edges=CHAIN_EDGES,
+    )
+    assert result.verdict.outcome is ValidationOutcome.HALLUCINATION
+    assert any("не сверяется с реестром" in issue for issue in result.verdict.issues)
+
+
+def test_on_true_in_parens_is_cartesian_fail_closed() -> None:
+    # Re-review I-1 (кусает c7a4dcd: (TRUE) парсится как Paren, не exp.Boolean):
+    # скобки семантику не меняют — произведение
+    result = _free(
+        "SELECT m.id FROM campaigns m JOIN orders o ON (TRUE) JOIN customers c ON (TRUE)",
+        join_edges=CHAIN_EDGES,
+    )
+    assert result.verdict.outcome is ValidationOutcome.HALLUCINATION
+
+
+def test_on_same_source_comparison_is_cartesian() -> None:
+    # Re-review I-1 (кусает c7a4dcd): самосравнение m.id = m.id — колонки ОДНОГО
+    # источника по обе стороны, связь двух источников не утверждается
+    result = _free(
+        "SELECT m.id FROM campaigns m JOIN orders o ON m.id = m.id JOIN customers c ON o.id = o.id",
+        join_edges=CHAIN_EDGES,
+    )
+    assert result.verdict.outcome is ValidationOutcome.HALLUCINATION
+
+
+def test_on_subquery_equality_does_not_tie_join_sources() -> None:
+    # Re-review I-1: равенство ВНУТРИ подзапроса ON (колонки вложенного скоупа)
+    # не связывает источники внешнего джойна — c⋈m без равенств fail-closed;
+    # контраст: то же соединение с настоящим равенством колонок проходит
+    # (порядок источников — оба соседних пары на рёбрах, отличие только в ON)
+    fail = _free(
+        "SELECT c.id FROM campaigns m JOIN orders o ON m.id = o.campaign_id "
+        "JOIN customers c ON EXISTS "
+        "(SELECT 1 FROM customers c2 WHERE c2.id = o.customer_id)",
+        join_edges=CHAIN_EDGES,
+    )
+    assert fail.verdict.outcome is ValidationOutcome.HALLUCINATION
+    assert any("не сверяется с реестром" in issue for issue in fail.verdict.issues)
+    ok = _free(
+        "SELECT c.id FROM campaigns m JOIN orders o ON m.id = o.campaign_id "
+        "JOIN customers c ON c.id = o.customer_id",
+        join_edges=CHAIN_EDGES,
+    )
+    assert ok.verdict.outcome is ValidationOutcome.OK
+
+
+def test_cross_join_two_tables_pair_checked() -> None:
+    # Set aside re-review (сохраняется): на двух табличных источниках правило
+    # произведения НЕ расширяется — единственная пара цепочки сверяется как раньше
+    ok = _free("SELECT o.id FROM orders o CROSS JOIN customers c LIMIT 10", join_edges=CHAIN_EDGES)
+    assert ok.verdict.outcome is ValidationOutcome.OK
+    invented = _free("SELECT m.id FROM campaigns m CROSS JOIN customers c", join_edges=CHAIN_EDGES)
+    assert invented.verdict.outcome is ValidationOutcome.HALLUCINATION
+    assert any("campaigns↔customers" in issue for issue in invented.verdict.issues)

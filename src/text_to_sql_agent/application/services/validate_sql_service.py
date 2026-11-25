@@ -384,7 +384,9 @@ def _build_audit(tree: exp.Expression) -> SqlAudit:
             star_sources.append(tuple(SqlSource(name=s.name, kind=s.kind) for s in sources))
 
     root_maps = maps_by_scope.get(id(root_select), []) if root_select is not None else []
-    unresolved = _collect_join_pairs(scopes, sources_by_scope, join_pairs, seen_join_pairs)
+    unresolved = _collect_join_pairs(
+        scopes, sources_by_scope, maps_by_scope, join_pairs, seen_join_pairs
+    )
     return SqlAudit(
         from_table=_from_table(root_select),
         tables=_collect_tables(tree),
@@ -399,19 +401,60 @@ def _build_audit(tree: exp.Expression) -> SqlAudit:
     )
 
 
-def _is_cartesian_join(join: exp.Join) -> bool:
-    """Неявное декартово произведение (ревью S31 I1 + re-review M11): comma или
-    голый JOIN — sqlglot отдаёт оба как Join без kind/side/ON; ``JOIN ... ON TRUE``
-    — то же произведение явным синтаксисом (равенства колонок нет — связь
-    реестром не утверждается). ``JOIN ... USING (колонки)`` — НЕ произведение:
-    равенство по именованным колонкам утверждено — пара сверяется по цепочке,
-    как у явного ``JOIN ... ON``."""
-    if join.kind or join.side:
+def _is_cartesian_join(join: exp.Join, maps: list[dict[str, _Source]]) -> bool:
+    """Произведение без связи — СЕМАНТИЧЕСКИ, не по спеллингу (re-review fix-волна
+    3 I-1: синтаксический whitelist comma/ON TRUE пропускал CROSS JOIN, ON 1=1,
+    ON (TRUE), самосравнение m.id = m.id — тот же fail-open a×c без ребра). JOIN
+    без хотя бы одного равенства (EQ/NullSafeEQ) колонок ДВУХ РАЗНЫХ источников
+    скоупа — произведение, чем бы оно ни было записано: comma/голый JOIN (ON нет),
+    CROSS JOIN, ``ON TRUE``/``ON (TRUE)``/``ON 1=1``, самосравнение (один источник
+    по обе стороны), сравнение со скалярным подзапросом (колонки подзапросов —
+    своего скоупа, не резолвятся). Квалификатор не из скоупа (корреляция) связь
+    источников ЭТОГО скоупа не утверждает — не считается. ``JOIN ... USING
+    (колонки)`` — НЕ произведение: равенство по именованным колонкам утверждено —
+    пара сверяется по цепочке, как у явного ``JOIN ... ON``."""
+    if join.args.get("using"):
         return False
     on = join.args.get("on")
     if on is None:
-        return not join.args.get("using")
-    return isinstance(on, exp.Boolean) and bool(on.this)
+        return True
+    nested = {id(s) for s in on.find_all(exp.Select)}
+    local_map = maps[0]
+    for eq in on.find_all(exp.EQ, exp.NullSafeEQ):
+        if _inside_nested_select(eq, nested):
+            continue  # равенство внутри подзапроса ON — не равенство источников скоупа
+        refs = _eq_operand_refs(eq.this, local_map, nested) | _eq_operand_refs(
+            eq.expression, local_map, nested
+        )
+        if len(refs) > 1:
+            return False
+    return True
+
+
+def _inside_nested_select(node: exp.Expression, nested: set[int]) -> bool:
+    """Среди предков узла — Select из ``nested`` (подзапросы внутри выражения)."""
+    parent = node.parent
+    while parent is not None:
+        if id(parent) in nested:
+            return True
+        parent = parent.parent
+    return False
+
+
+def _eq_operand_refs(
+    operand: exp.Expression, local_map: dict[str, _Source], nested: set[int]
+) -> set[str]:
+    """Refs (алиасы) ЛОКАЛЬНЫХ источников скоупа среди колонок операнда равенства.
+    Колонки вложенных подзапросов и t.* не учитываются; unqualified и квалификатор
+    вне скоупа (корреляция) не атрибутируются — консервативно (равенства нет)."""
+    refs: set[str] = set()
+    for col in operand.find_all(exp.Column):
+        if isinstance(col.this, exp.Star) or _inside_nested_select(col, nested):
+            continue
+        qualifier = (col.table or "").lower()
+        if qualifier and qualifier in local_map:
+            refs.add(qualifier)
+    return refs
 
 
 def _comparison_local_tables(
@@ -459,6 +502,7 @@ def _comparison_local_tables(
 def _collect_join_pairs(
     scopes: list[exp.Select],
     sources_by_scope: dict[int, list[_Source]],
+    maps_by_scope: dict[int, list[dict[str, _Source]]],
     pairs: list[tuple[str, str]],
     seen: set[tuple[str, str]],
 ) -> bool:
@@ -470,22 +514,24 @@ def _collect_join_pairs(
     обёртка CTE не делает связь легальной — ``WITH x AS (…orders…), y AS (…campaigns…)
     SELECT * FROM x CROSS JOIN y`` соединяет свои таблицы без ребра реестра ровно
     как прямой джойн (ревью S31 C1, живое воспроизведение; прежний ruling «CTE+CTE —
-    алгебра над телами» отозван). Неявное произведение (comma / голый JOIN / ON TRUE —
-    ``_is_cartesian_join``) на ≥3 табличных источниках — ``unresolved``: «соседние»
-    пары произвольны (и дыра a↔c, и ложный отказ легального хаба — ревью S31 I1);
-    на двух — единственная пара цепочки, сверяется. FSM-вход поля не читает:
-    структура джойнов там сверяется со скелетом плана (_check_skeleton). Пары
-    корреляций (включая fail-closed на производном операнде) добавляет цикл колонок
-    в ``_build_audit`` (кандидат из внешнего скоупа).
+    алгебра над телами» отозван). Произведение без равенств колонок двух разных
+    источников (``_is_cartesian_join`` — семантически: comma / голый JOIN / CROSS
+    JOIN / ON TRUE / 1=1 / самосравнение) на ≥3 табличных источниках —
+    ``unresolved``: «соседние» пары произвольны (и дыра a↔c, и ложный отказ
+    легального хаба — ревью S31 I1 + re-review fix-волна 3); на двух — единственная
+    пара цепочки, сверяется. FSM-вход поля не читает: структура джойнов там
+    сверяется со скелетом плана (_check_skeleton). Пары корреляций (включая
+    fail-closed на производном операнде) добавляет цикл колонок в ``_build_audit``
+    (кандидат из внешнего скоупа).
     """
     unresolved = False
     for scope in scopes:
         sources = sources_by_scope[id(scope)]
-        has_implicit_cartesian = any(
-            isinstance(join, exp.Join) and _is_cartesian_join(join)
+        has_cartesian = any(
+            isinstance(join, exp.Join) and _is_cartesian_join(join, maps_by_scope[id(scope)])
             for join in scope.args.get("joins") or []
         )
-        if has_implicit_cartesian and sum(1 for s in sources if s.kind == "table") > 2:
+        if has_cartesian and sum(1 for s in sources if s.kind == "table") > 2:
             unresolved = True
             continue
         prev: _Source | None = None
