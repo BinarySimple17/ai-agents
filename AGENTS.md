@@ -51,7 +51,7 @@ If baseline verification is failing, repair that first — do not add new scope 
 
 ## Branch Hygiene
 
-- `main` — только версии продукта (release-срезы, теги `vX.Y.Z`); `dev` — интеграция разработки. Прямые пуши запрещены — только через PR (локально `.githooks/pre-commit`/`pre-push`, подключаются идемпотентно в `init.sh`; серверно — GitHub branch protection).
+- `main` — только версии продукта (release-срезы, теги `vX.Y.Z`); `dev` — интеграция разработки. Прямые пуши запрещены — только через PR (локально `.githooks/pre-commit`/`pre-push`, подключаются идемпотентно в `init.sh`; серверная защита НЕ включается — branch protection платная на private-репо, решение владельца D-034: контракт держат локальные хуки, CI — контур наблюдаемости поверх).
 - Вся работа — в рабочих ветках: `feat-0XX-<slug>` (фичи), `harness/<тема>` (обвязка). Пуш рабочей ветки в origin свободен; попадание в `dev`/`main` — только PR (`gh pr create --base dev`, release — `--base main`).
 - Вехи: `milestone/v2→v3→v4` почкуются цепочкой (v2←dev, v3←v2, v4←v3) и живут параллельно до приёмки вехи. Рабочие ветки вехи — от её milestone-ветки, мержатся в неё напрямую; сама milestone-ветка не сливается в `dev`/`main` без явной команды владельца — реинтеграция через PR (D-024/D-029/D-031). Хотфиксы — от ветки своей вехи; хотфиксы V1 — от `dev` → PR → `dev`.
 - Release: PR `dev` → `main` + тег версии. Хотфикс release: рабочая ветка от `main` → PR → `main`, затем перенос в `dev`.
@@ -62,7 +62,7 @@ If baseline verification is failing, repair that first — do not add new scope 
 
 - MUST NOT commit secrets, tokens, or credentials: ключи LLM-шлюза — только в `.env` (в git не попадает), в коде — только чтение через `Settings`. why: security.
 - MUST NOT force-push to protected branches. why: git history is the system of record.
-- MUST NOT пушить напрямую в `main` или `dev`: изменения попадают туда только через PR из рабочей ветки (локально — `.githooks/pre-push`, на GitHub — branch protection). why: `main` — только версии продукта, `dev` — интеграция разработки; прямой пуш обходит ревью-контур и гейты.
+- MUST NOT пушить напрямую в `main` или `dev`: изменения попадают туда только через PR из рабочей ветки (локально — `.githooks/pre-push`; серверной защиты нет — D-034, «не мержить при красном CI» исполняется процедурно на слиянии). why: `main` — только версии продукта, `dev` — интеграция разработки; прямой пуш обходит ревью-контур и гейты.
 - MUST NOT set `state: passing` directly in `feature_list.json` — run `make verify-feature F=<id>`. why: passing requires verification evidence.
 - MUST NOT выполнять пользовательский SQL иначе как под read-only ролью `agent_ro` с `LIMIT 1000` и timeout 30s; никакого DDL/DML в исполняемом SQL. why: граница прав и безопасность (hw-01 §3.2).
 - MUST NOT пропускать валидацию SQL: каждый запрос от LLM проходит AST-валидатор (sqlglot, deny-by-default) до выполнения; `EXPLAIN ANALYZE` запрещён — только `EXPLAIN`. why: текст от LLM не доверенный; EXPLAIN ANALYZE выполняет запрос.
@@ -121,15 +121,17 @@ Layer 3 (e2e) is required when changes cross component or domain boundaries.
 
 ```bash
 # Full verification (recommended) — exits 0 when the repo is consistent
-make check          # runs ./init.sh (Python: uv sync + ruff + pytest)
+make check          # runs ./init.sh (Python: uv sync + ruff + lint-imports + pytest)
 ./init.sh           # direct path
 ```
 
 Required checks:
 
-- Tests: `./init.sh` → `uv sync --frozen` + `ruff check` + `ruff format --check` + `pytest`
+- Tests: `./init.sh` → `uv sync --frozen` + `ruff check` + `ruff format --check` + `lint-imports` + `pytest`
+- Контракты импортов слоёв (S30): `uv run lint-imports` (или `make lint-imports`) — входит в `./init.sh`, нарушение границы слоёв роняет `make check` так же, как lint
 - Инфраструктура (PostgreSQL + Valkey) для тестов с БД: `make infra-up`; тесты без поднятой инфры скипаются с понятной причиной — `./init.sh` остаётся зелёным без Docker
 - Одна фича: `make verify-feature F=<feat-XXX>`
+- CI (S30): `.github/workflows/ci.yml` — тот же `bash init.sh` поверх сервисов `docker-compose.yml` (`up -d --wait`) и миграций; пуш рабочей ветки запускает прогон на GitHub
 
 The repo is in a consistent state when `make check` exits 0.
 

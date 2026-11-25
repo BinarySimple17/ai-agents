@@ -276,3 +276,17 @@
 **Где исправлено:** — (S38, после решения куратора).
 
 **Статус:** ОТКРЫТ — ждёт решения куратора; запись — S38 (окно 23–28.12.2026).
+
+---
+
+## FIX-018 — Canon-check S30 (F4): c4-l2 рисовал infrastructure звеном линейной цепочки под orchestration
+
+**Дата:** 2026-11-25 · **Сессия:** S30 (механические защиты) · **Затрагивает:** docs/diagrams/c4-l2-container.md, pyproject.toml ([tool.importlinter])
+
+**Противоречие.** Пункт «Слои и порты» c4-l2 перечислял слои линейной цепочкой «domain → application → infrastructure → orchestration → composition» — читается как разрешённая зависимость `orchestration → infrastructure`, что противоречит канону (AGENTS «Architecture Boundaries»: `orchestration` ↔ `infrastructure` независимы, `infrastructure` реализует порты — зависимость внутрь) и контракту `independence` import-linter (S30). Формулировка найдена canon-check архитектора до кода (ARCH-GATE S30, F4) — у «стрелочной» нотации списка слоёв есть ровно один смысл, и он был неверный.
+
+**Решение.** Пункт переписан по фактической архитектуре: composition над двумя независимыми ногами (orchestration и infrastructure), обе внутрь к application (инфраструктура реализует только порты) → domain; config читают только composition и infrastructure; `apps → infrastructure` запрещён; утверждение «проверяются import-linter» подкреплено конфигом (10 контрактов, S30).
+
+**Где исправлено:** docs/diagrams/c4-l2-container.md («Слои и порты» — тот же коммит, что контракты S30).
+
+**Статус:** ИСПРАВЛЕН (2026-11-25, S30).

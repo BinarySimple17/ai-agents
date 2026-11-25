@@ -69,3 +69,6 @@
 [что решили и куда: feat-XXX / backlog другого проекта / отказ]
 ```
 | [BL-034](BL-034-commit-state-same-commit.md) | Правило атомарности «журнал ↔ состояние»: журнальная запись — в коммите самого изменения (REVIEW-GATE S29, Minor-1) | открыт | S29 (ревью волны) | P3 | практика харнесса с S30+; сверка ритуалов — S38 |
+| [BL-035](BL-035-gitleaks-ci-job.md) | gitleaks в CI: сканер объявлен security.md, но не существует (canon-check F10) | открыт | S30 (canon-check) | P3 | при первом живом CI-прогоне (сеть) |
+| [BL-036](BL-036-apps-db-driver-direct.md) | plan_joins_demo ходит в БД psycopg напрямую из apps (мимо порта SQLExecutor) | открыт | S30 (canon-check, отложенное) | P3 | при следующей правке план_joins_demo; опциональный контракт «apps → драйверы» |
+| [BL-037](BL-037-domain-wording-pydantic.md) | «domain без внешних зависимостей» vs фактический pydantic в domain (дрейф формулировки) | открыт | S30 (canon-check, отложенное) | P3 | при следующем касании AGENTS.md/ARCHITECTURE.md |

@@ -41,6 +41,7 @@ Intent-Based роутингом «узел → навык → модель» (ch
 
 - Allowed dependencies: `apps → composition → orchestration → application/services → domain`; `infrastructure` реализует порты `application/ports` (зависимость направлена внутрь); domain — без внешних зависимостей и без LLM.
 - Forbidden: узлы вызывают друг друга напрямую (только через state machine, ADR-002); бизнес-код читает env мимо `config.Settings`; сборка зависимостей вне `composition`; выполнение SQL в обход read-only роли `agent_ro` и валидатора (ADR-005); LLM управляет маршрутом.
+- Границы слоёв проверяются механически — `import-linter`, 10 контрактов в `[tool.importlinter]` (pyproject.toml): два layers, independence `orchestration` ↔ `infrastructure`, forbidden `apps → infrastructure` (напрямую) и `langgraph` вне orchestration/infrastructure; `lint-imports` внутри `./init.sh` — нарушение роняет `make check` (S30, FIX-018 — выравнивание c4-l2 с контрактами).
 
 ## Constraints
 
