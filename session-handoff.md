@@ -43,7 +43,7 @@
 
 ## Blockers / Risks
 
-- **Сеть машины мерцает** (github/pypi 000↔200): push `harness/mechanical-guards` и живой CI-прогон (Task 3 самопроверка по плану) отложены — workflow синтаксически валиден (yamllint), пины actions сверены через веб (checkout@v4/setup-python@v5/setup-uv@v10). S31: сначала push `milestone/v4` (ahead 6 с S29) + ветки, затем `gh run list` — если красный CI, чинить до кода S31
+- ~~Сеть/живой CI~~ — ЗАКРЫТО 2026-11-25 (S30-хвост, по команде владельца): сеть восстановлена, gh-токен дозапрошен с `workflow`-скоупом (device-code); CI полностью зелёный на Linux-раннере (45635720765 success 3м27с: Contracts 10/0, 897 passed, 2 skipped честных [corpus-guards], guard 85, ritual 29/0). Все ветки запушены; milestone/v4 синхронна с origin. Хуки в индексе 100755 — close-session работает на Linux/macOS
 - **S31 deps**: S30 ✅ + подтверждение куратора о статусе артефактов hw-02/03 (не заморожены ли сдачей; правило 5 S31); окно до 04.12
 - **FIX-017 (C6)** ждёт решения куратора; остатки C3–C5 — S38, не закрывать досрочно
 - Контрактные комментарии: новый подпакет `application/` добавить в forbidden-контракт infrastructure вручную (комментарий в pyproject.toml, F3)
@@ -53,7 +53,7 @@
 
 1. Read `AGENTS.md`, `progress.md` (Next Steps), реестр `solution/sessions.md`
 2. Следующая по графу — **S31** (единый рубеж исполнения, вариант A по A1/D-033 п.5): файл существует, `make new-session` не нужен; старт-ритуал: статус ◐, ARCH-GATE до кода, `./init.sh`
-3. Если сеть восстановилась — сначала push (см. Blockers) и `gh run list --branch <ветка>` (живой CI)
+3. Сеть и CI в порядке (живой прогон зелёный 45635720765); BL-035/038 (gitleaks, SHA-пины/permissions) — по желанию, после первого зелёного прогона они уже не блокеры
 
 ## Recommended Next Step
 
