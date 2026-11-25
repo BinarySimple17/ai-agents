@@ -602,7 +602,9 @@ def _collect_join_pairs(
             if prev is not None:
                 tie_refs = tie_refs_by_idx.get(idx - 1)
                 if tie_refs is not None:
-                    if not _assert_tie_pairs(tie_refs, source, maps[0], asserted, pairs, seen):
+                    if not _assert_tie_pairs(
+                        tie_refs, source, prev, maps[0], asserted, pairs, seen
+                    ):
                         # не-табличный операнд в связывающем равенстве
                         # (CTE/подзапрос) — пара реестром не выражается (C1)
                         unresolved = True
@@ -621,6 +623,7 @@ def _collect_join_pairs(
 def _assert_tie_pairs(
     tie_refs: list[set[str]],
     joined: _Source,
+    prev: _Source | None,
     local_map: dict[str, _Source],
     asserted: dict[str, set[str]],
     pairs: list[tuple[str, str]],
@@ -628,17 +631,33 @@ def _assert_tie_pairs(
 ) -> bool:
     """Пары связывающих равенств джойна: присоединяемый источник × контрагент
     (``_collect_join_pairs``). False = связывающее равенство держится на
-    не-табличном операнде (CTE/подзапрос) — пара реестром не выражается."""
+    не-табличном операнде (CTE/подзапрос — операнды резолвятся ключами
+    ``local_map``) или сам присоединяемый источник не таблица — пара реестром
+    не выражается. Порядок обработки СТРУКТУРНЫЙ, не документный (re-review
+    fix-волна 6, I-2): первична пара с непосредственным предшественником
+    цепочки (``prev`` — sources[idx-1]) — прочие равенства-конъюнкты после неё
+    отфильтровываются связностью как уже утверждённые; исход не зависит от
+    порядка конъюнктов в ON. Итерация по sorted(refs)/сортированный список
+    кандидатов — вердикт детерминирован (I-1: обход ``set`` зависел от
+    PYTHONHASHSEED при равенстве с 3+ источниками; порядок пар = порядок
+    issues для сигнала ретрая M1)."""
     if joined.kind != "table":
         return False
+    candidates: list[tuple[str, str]] = []
     for refs in tie_refs:
-        for ref in refs:
+        for ref in sorted(refs):
             if ref == joined.ref:
                 continue
-            other = local_map.get(ref)
-            if other is None or other.kind != "table":
+            other = local_map[ref]  # refs — ключи local_map (_eq_operand_refs)
+            if other.kind != "table":
                 return False
-            _assert_pair(joined.name, other.name, asserted, pairs, seen)
+            pair = (joined.name, other.name)
+            if pair not in candidates:
+                candidates.append(pair)
+    prev_name = prev.name if prev is not None and prev.kind == "table" else None
+    candidates.sort(key=lambda pair: (pair[1] != prev_name, pair[0], pair[1]))
+    for joined_name, other_name in candidates:
+        _assert_pair(joined_name, other_name, asserted, pairs, seen)
     return True
 
 
@@ -652,7 +671,10 @@ def _assert_pair(
     """Утверждение связи a↔b: в граф связности скоупа и в список сверки.
     Self-join (a==b) пары не даёт — реестр связь таблицы с собой не утверждает
     (skip на проверке пар, волны 1–2). Путь по утверждённым парам уже есть —
-    равенство-конъюнкт фильтрует, новой связи не заявляет (канон волны 4)."""
+    равенство-конъюнкт фильтрует, новой связи не заявляет (канон волн 4–6:
+    конъюнкт между связанными таблицами — предикат фильтрации; порядок
+    обработки пар задаёт _assert_tie_pairs — первичная пара с предшественником
+    цепочки первой)."""
     if a == b or _names_connected(asserted, a, b):
         return
     pair = tuple(sorted((a, b)))

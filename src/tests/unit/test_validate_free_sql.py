@@ -18,6 +18,10 @@
 Сервис детерминирован (без LLM/IO) — моков не требует (S00 правило 7).
 """
 
+import os
+import subprocess
+import sys
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -27,6 +31,7 @@ from text_to_sql_agent.application.ports.sql_executor import ROW_LIMIT
 from text_to_sql_agent.application.services.validate_sql_service import (
     ValidateSqlService,
     _join_tie_refs,
+    _scope_sources,
     build_sql_audit,
 )
 from text_to_sql_agent.domain.sql_validation import (
@@ -809,12 +814,82 @@ def test_xor_in_on_rejected_by_form() -> None:
 
 
 def test_join_tie_refs_defensive_empty_joined_ref() -> None:
-    # Пин волны 5 (Minor re-review 4: защитная граница рассинхрона не покрыта):
-    # joined_ref вне скоупа — связей нет, fail-closed; через публичный API
-    # валидным AST невыразим — юнит на приватный хелпер
-    join = sqlglot.parse_one("SELECT * FROM a JOIN b ON a.id = b.id", read="postgres").args[
-        "joins"
-    ][0]
-    tied, tie_refs = _join_tie_refs(join, [{}], "", {"a"})
+    # Пин волн 5–6 (Minor re-review 4/5: защитная граница рассинхрона; карта
+    # с РЕАЛЬНЫМИ ref — иначе пустой refs давал бы (False, []) при любом
+    # joined_ref и ветку тест не ловил): joined_ref вне скоупа — связей нет,
+    # fail-closed; через публичный API валидным AST невыразим — юнит на хелпер
+    tree = sqlglot.parse_one("SELECT * FROM a JOIN b ON a.id = b.id", read="postgres")
+    local_map = {s.ref: s for s in _scope_sources(tree)}
+    join = tree.args["joins"][0]
+    tied, tie_refs = _join_tie_refs(join, [local_map], "zzz", {"a"})
     assert tied is False
     assert tie_refs == []
+    # контроль: легитимный joined_ref связывает
+    tied, tie_refs = _join_tie_refs(join, [local_map], "b", {"a"})
+    assert tied is True
+    assert tie_refs == [{"a", "b"}]
+
+
+# --- Re-review fix-волна 6 (2I): детерминизм вердикта + порядок конъюнктов ON
+
+
+def test_on_conjunct_order_does_not_change_verdict() -> None:
+    # Re-review волна 6 (регрессия, кусает 4674499: пары обрабатывались в
+    # документном порядке ON — зеркальная запись принятого волной 4 SQL давала
+    # ложный отказ «campaigns↔customers»): первичной сверяется пара с
+    # предшественником цепочки (структурно, не по позиции), конъюнкт между
+    # уже связанными — фильтр; оба порядка семантически эквивалентны
+    template = (
+        "SELECT c.id FROM campaigns m JOIN orders o ON m.id = o.campaign_id "
+        "JOIN customers c ON {} LIMIT 100"
+    )
+    ok = _free(
+        template.format("(c.id = o.customer_id) AND (c.region = m.channel)"),
+        join_edges=CHAIN_EDGES,
+    )
+    assert ok.verdict.outcome is ValidationOutcome.OK
+    mirrored = _free(
+        template.format("(c.region = m.channel) AND (c.id = o.customer_id)"),
+        join_edges=CHAIN_EDGES,
+    )
+    assert mirrored.verdict.outcome is ValidationOutcome.OK
+    assert mirrored.verdict.issues == ()
+
+
+def test_pair_derivation_deterministic_across_hash_seeds() -> None:
+    # Re-review волна 6 (регрессия, кусает 4674499: обход set в derivации пар —
+    # при равенстве с 3+ источниками исход зависел от PYTHONHASHSEED процесса):
+    # рубеж безопасности детерминирован — тот же SQL и реестр дают тот же
+    # вердикт в любом процессе (сабпроцессы с разными сидами хешей)
+    sql = (
+        "SELECT c.id FROM campaigns m JOIN orders o ON m.id = o.campaign_id "
+        "JOIN customers c ON c.id = o.customer_id + m.id LIMIT 100"
+    )
+    src_dir = str(Path(__file__).resolve().parents[2])
+    runner = (
+        "import sys\n"
+        f"sys.path.insert(0, r'{src_dir}')\n"
+        "from text_to_sql_agent.application.services.validate_sql_service import build_sql_audit\n"
+        "from text_to_sql_agent.domain.sql_validation import validate_free_sql\n"
+        "perms = {'orders': ['id', 'customer_id', 'campaign_id', 'total', 'status', 'created_at'],"
+        " 'customers': ['id', 'name', 'region'],"
+        " 'campaigns': ['id', 'name', 'channel', 'started_at']}\n"
+        "edges = frozenset({('customers', 'orders'), ('campaigns', 'orders')})\n"
+        f"audit = build_sql_audit({sql!r})\n"
+        "verdict = validate_free_sql(audit, permissions=perms, data_catalog=frozenset(perms),"
+        " row_limit=1000, join_edges=edges)\n"
+        "print(verdict.outcome.name + '|' + ';;'.join(verdict.issues))\n"
+    )
+    results = []
+    for seed in ("0", "1", "2"):
+        proc = subprocess.run(
+            [sys.executable, "-c", runner],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            env={**os.environ, "PYTHONHASHSEED": seed},
+        )
+        assert proc.returncode == 0, proc.stderr
+        results.append(proc.stdout.strip())
+    assert len(set(results)) == 1, results
+    assert results[0].split("|", 1)[0] == "OK", results
