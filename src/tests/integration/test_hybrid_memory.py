@@ -324,9 +324,7 @@ def test_pure_fts_leg_works_and_filters_rights(store, seeded) -> None:
             # Утечка сида (живой CI 2026-11-25): удалялся it-hybrid:glossary-fts-only,
             # а сеялся it-hybrid-fts:... — строка жила вечно и ломала guard живого
             # корпуса у test_vector_memory (свежая БД CI: count > 0 при пустом поиске)
-            conn.execute(
-                "DELETE FROM agent_knowledge WHERE source_ref = %s", (fts_ref,)
-            )
+            conn.execute("DELETE FROM agent_knowledge WHERE source_ref = %s", (fts_ref,))
 
 
 def test_live_corpus_noise_participates_and_never_in_prompt(store) -> None:
