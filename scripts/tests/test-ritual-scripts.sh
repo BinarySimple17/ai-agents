@@ -35,9 +35,34 @@ cd "$ROOT"
 
 PASS=0
 FAIL=0
+LAST_OUT=""   # вывод последней assert_rc-команды — для проверок причины отказа
 ok()  { echo "  [PASS] $1"; PASS=$((PASS + 1)); }
 bad() { echo "  [FAIL] $1"; FAIL=$((FAIL + 1)); }
-assert_rc()  { local want="$1" desc="$2"; shift 2; "$@" >/dev/null 2>&1; local rc=$?; [ "$rc" -eq "$want" ] && ok "$desc" || bad "$desc (exit $rc, ожидался $want)"; }
+# assert_rc при провале печатает хвост вывода команды — иначе отказ close-session
+# (fail-closed молча глотает stderr в >/dev/null) не диагностируется по логу CI
+# (живой CI 2026-11-25: 7 отказов без причины в логе)
+assert_rc()  {
+  local want="$1" desc="$2"; shift 2
+  local out; out="$("$@" 2>&1)"; local rc=$?
+  LAST_OUT="$out"
+  if [ "$rc" -eq "$want" ]; then
+    ok "$desc"
+  else
+    bad "$desc (exit $rc, ожидался $want)"
+    echo "$out" | tail -15 | sed 's/^/      | /'
+  fi
+}
+# Проверка ПРИЧИНЫ отказа (предложение 3, живой CI 2026-11-25): кейс «ожидаем
+# отказ» зелёный по любой причине бесполезен — сверяем текст ошибки. Вывод берётся
+# из LAST_OUT последней assert_rc (образец — bespoke-проверка I1)
+assert_last_out() {
+  local desc="$1"; shift
+  if grep -q "$@" <<<"$LAST_OUT"; then
+    ok "$desc"
+  else
+    bad "$desc — в выводе отказа нет шаблона: $*"
+  fi
+}
 assert_grep() { local desc="$1"; shift; grep -q "$@" 2>/dev/null && ok "$desc" || bad "$desc"; }
 
 WORK="$(mktemp -d)"
@@ -96,6 +121,18 @@ else
   ok "C1: repo-local identity отсутствует — bite регрессии жив"
 fi
 
+# --- Хуки исполняемы в индексе (живой CI 2026-11-25): init.sh:14 делает chmod +x
+# .githooks/* — на Linux git видит смену прав (core.filemode=true) и оба хука
+# становятся «изменёнными» вне allowlist → close-session отказывает всегда после
+# любого ./init.sh. Регрессия читает ИНДЕКС ОСНОВНОГО репо (-C "$ROOT": cwd здесь —
+# песочница-worktree со СВОИМ индексом, замороженным на момент создания), поэтому
+# красная на 100644 даже на Windows (где сам эффект не воспроизводится) ---
+if [ -z "$(git -C "$ROOT" ls-files -s .githooks/pre-commit .githooks/pre-push | awk '$1 != "100755"')" ]; then
+  ok "гит-хуки исполняемы в индексе (100755) — chmod в init.sh на Linux не даёт фантомной грязи"
+else
+  bad "хуки .githooks не 100755 в индексе — на Linux init.sh:chmod делает их «изменёнными» (грязь вне allowlist, close-session отказывает после ./init.sh)"
+fi
+
 # Сентинел против рекурсии self-test → clean-state → init.sh → self-test (ревью I-2)
 export RITUAL_SELFTEST=1
 
@@ -129,6 +166,7 @@ fi
 
 # --- fail-closed: planned-сессия не закрывается ---
 assert_rc 1 "close-session на planned-сессии — отказ (exit 1)" "${CLOSE_SESS[@]}" S=S99B --dry-run
+assert_last_out "planned-сессия: причина отказа — не ◐ (предложение 3)" 'не в статусе «◐'
 assert_grep "planned-сессия не мутировала" 'Статус: \[ \] не начата' solution/sessions/S99B_session.md
 
 # --- фикстура закрывающей сессии: create + ◐ + гейты + отчёт (feat-001 уже passing в HEAD) ---
@@ -152,6 +190,7 @@ printf '%s' "self-test: механика закрытия сессий в пес
 printf 'rogue\n' > rogue.txt
 assert_rc 1 "грязь вне allowlist → отказ (exit 1, I3-регресс)" \
   env CLOSE_SESSION_CLEANSTATE=0 "${CLOSE_SESS[@]}" S=$FIX_S MSG=close-msg.txt
+assert_last_out "I3: причина отказа — именно грязь вне allowlist (предложение 3)" 'вне allowlist'
 assert_grep "после отказа мутаций нет — шапка всё ещё ◐ (I3)" 'Статус: ◐ в работе' solution/sessions/${FIX_S}_session.md
 rm -f rogue.txt
 
@@ -184,6 +223,7 @@ assert_rc 0 "close-session распознаёт S27-стиль роли «— �
 : > empty-msg.txt
 assert_rc 2 "пустой MSG-файл → отказ (exit 2)" \
   env CLOSE_SESSION_CLEANSTATE=0 "${CLOSE_SESS[@]}" S=$FIX_S MSG=empty-msg.txt
+assert_last_out "пустой MSG: причина отказа — валидация MSG (предложение 3)" 'MSG обязателен'
 rm -f empty-msg.txt
 
 # --- happy path: полный цикл в песочнице (clean-state глушен self-test hook'ом) ---
