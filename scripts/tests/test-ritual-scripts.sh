@@ -87,6 +87,14 @@ _identity_probe="$(mktemp)"; : > "$_identity_probe"
 ) && ok "C1: коммит в песочнице при стерильном git-конфиге (env-identity)" \
   || bad "C1: коммит в песочнице при стерильном git-конфиге (env-identity не задана)"
 rm -f "$_identity_probe"
+# Ревью-2 S30 Minor-4: repo-local identity (общий .git/config с worktree) замаскировал бы
+# провал регрессии — кейс остался бы зелёным даже после удаления env-identity. Fail-closed:
+# обнаружено маскирование — Suite красная с внятной причиной (не «чинить» пробу config'ом)
+if [ -n "$(git config --local --get user.name 2>/dev/null || true)" ]; then
+  bad "C1: repo-local identity в .git/config — bite регрессии замаскирован (не задавать user.name в config проекта; env-identity self-test'а — единственный источник)"
+else
+  ok "C1: repo-local identity отсутствует — bite регрессии жив"
+fi
 
 # Сентинел против рекурсии self-test → clean-state → init.sh → self-test (ревью I-2)
 export RITUAL_SELFTEST=1

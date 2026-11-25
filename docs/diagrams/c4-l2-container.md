@@ -99,8 +99,9 @@ graph TB
   `LLMProvider`, `VectorStore`, `SchemaGraphStore`, `SQLExecutor`, `SemanticCache`,
   `AuthProvider`, `Tracer`, `BudgetGuard`; инфраструктура реализует только порты)
   → `domain` (сущности AgentState, JoinPlan, JoinEdge, QueryPlan, QueryStep,
-  ResultCompact). Точки входа `apps` — над `composition`; `apps → infrastructure`
-  запрещён (приложение не импортирует адаптеры напрямую). `orchestration` ↔
+  ResultCompact). Точки входа `apps` — над `composition`; `apps → {infrastructure,
+  orchestration, config}` запрещены напрямую (приложение не импортирует адаптеры,
+  граф и конфиг минуя composition). `orchestration` ↔
   `infrastructure` независимы (линейная цепочка «orchestration → infrastructure»
   из прежней формулировки — FIX-018). Правила импортов проверяются `import-linter`
   (`[tool.importlinter]` в pyproject.toml, 10 контрактов — S30).

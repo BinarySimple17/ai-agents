@@ -6,7 +6,7 @@
 ## Current Objective
 
 - Goal: механический контур защит до код-сессий долга (S31–S35) — import-linter, CI, документация контура; Task 5 (серверная защита веток) снят владельцем (D-034)
-- Current status: Tasks 1–4 выполнены (8a99ceb, 4a4b572, b0a1d99); REVIEW-GATE → `make close-session S=S30` → merge `harness/mechanical-guards` → `milestone/v4`
+- Current status: волна (8a99ceb, 4a4b572, b0a1d99) + fix-волна (10447e6) + финализация; REVIEW-GATE: ревью-1 «With fixes» 1C/2I/10M → re-review `b0a1d99..10447e6` **«Ready to merge: Yes» 0C/0I/5M** (миноры финализации закрыты); `make close-session S=S30` → merge `harness/mechanical-guards` → `milestone/v4`
 - Branch / commit: `harness/mechanical-guards` от `milestone/v4` (`3f68c9c` + волна сессии)
 
 ## Completed This Session
@@ -17,6 +17,7 @@
 - [x] **Task 3**: `.github/workflows/ci.yml` compose-based (`up -d --wait`; cp .env.example .env — F6; setup-python 3.13 — F7); neo4j-хелсчек HTTP→bolt в compose; yamllint OK; `--wait` Healthy bite-проверено локально
 - [x] **Task 4**: **D-034**, FIX-018 (c4-l2 выровнен с independence — F4), синх AGENTS×2/AGENT-OPERATIONS/ARCHITECTURE/scripts README/quality-document, BL-035/036/037 + реестр
 - [x] **Task 5 СНЯТ** владельцем до старта (D-034): branch protection платная на private-репо, включаться не будет — «Прямые пуши запрещены» = локальные хуки `.githooks/` (проверены: pre-commit/pre-push блокируют main/dev и force-push через запрет любых пушей) + CI как контур наблюдаемости
+- [x] **Fix-волна + re-review**: C1 git-identity — регресс в ritual self-test (стерильный GIT_CONFIG_GLOBAL/SYSTEM; bite 23+1F → 24P/0F; env-identity — worktree делит config, repo-local нельзя) + git-config шаг в ci.yml; I1 apps→{orchestration,config} в контракт (контроль RED); I2 живой CI отложено с ruling (критерий 3); M1–M10 закрыты/BL-038; re-review «Ready to merge: Yes» 0C/0I/5M — миноры финализации (85/25, quality ×4 RED, c4-l2 три запрета, assert repo-local identity)
 
 ## Verification Evidence
 
@@ -27,7 +28,7 @@
 | Живая переиндексация | `make infra-migrate && make index-knowledge` | 324 дока (= S27) | поведение фабрики не изменилось |
 | Compose | `docker compose config -q` + `up -d --wait` | OK; neo4j Healthy | bolt-хелсчек bite-проверен (контейнер пересоздан) |
 | ci.yml | `uvx yamllint` | exit 0 | живой CI-прогон отложен — сеть |
-| Полная верификация | `make check` | EXIT=0 | 899 passed + self-tests 85/23 + lint-imports |
+| Полная верификация | `make check` | EXIT=0 | 899 passed + self-tests 85/25 (ritual 25 после Minor-4 assert) + lint-imports |
 
 ## Files Changed
 
