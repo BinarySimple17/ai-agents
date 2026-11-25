@@ -303,9 +303,14 @@ def test_real_corpus_leaks_no_tables_outside_rights(store) -> None:
     service_dsn = settings.postgres_dsn.get_secret_value()
     business_tables = business_tables_from_catalog(service_dsn)
     with psycopg.connect(service_dsn) as conn:
+        # Guard — по корпусу ТЕКУЩЕЙ модели (тот же фильтр, что у search, BL-009 M3):
+        # строки чужого model_version ('synthetic' сиды тестов) не обязывают тест
+        # жить — иначе свежая БД CI с остатками синов НЕ скипается и падает
+        # на пустом поиске (живой CI 2026-11-25)
         row = conn.execute(
-            "SELECT count(*) FROM agent_knowledge WHERE source_ref NOT LIKE %s",
-            (f"{_REF_PREFIX}%",),
+            "SELECT count(*) FROM agent_knowledge"
+            " WHERE source_ref NOT LIKE %s AND model_version = %s",
+            (f"{_REF_PREFIX}%", settings.embedding_model),
         ).fetchone()
     if row[0] == 0:
         pytest.skip("корпус не проиндексирован — выполните make index-knowledge")

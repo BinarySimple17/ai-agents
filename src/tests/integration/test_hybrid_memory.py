@@ -321,9 +321,11 @@ def test_pure_fts_leg_works_and_filters_rights(store, seeded) -> None:
         assert fts_ref not in _refs(analyst_docs)
     finally:
         with psycopg.connect(service_dsn) as conn:
+            # Утечка сида (живой CI 2026-11-25): удалялся it-hybrid:glossary-fts-only,
+            # а сеялся it-hybrid-fts:... — строка жила вечно и ломала guard живого
+            # корпуса у test_vector_memory (свежая БД CI: count > 0 при пустом поиске)
             conn.execute(
-                "DELETE FROM agent_knowledge WHERE source_ref = %s",
-                (f"{_REF_PREFIX}glossary-fts-only",),
+                "DELETE FROM agent_knowledge WHERE source_ref = %s", (fts_ref,)
             )
 
 
