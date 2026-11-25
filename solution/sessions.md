@@ -12,7 +12,7 @@
 > В разделе — ТОЛЬКО статус последней закрытой сессии; подробности исполнения —
 > в файле самой сессии (закрытые переносятся `make archive` в sessions/archive/).
 
-- Последняя ✅: S30 — 2026-11-25: harness-сессия закрыта (см. отчёт в sessions/archive/S30_session.md)
+- Последняя ✅: S31 — 2026-11-25: S31 — единый рубеж исполнения (валидатор и права в тул-контуре, D-033 п.5/FIX-010): 6 fix-волн/6 re-review, make check 1002 passed; открытая I re-review-6 > BL-046 (ruling архитектора, вариант A) решением владельца; merge в milestone/v4 + push первой содержательной волной (D-036)
 ## Владельцы треков
 
 | Трек | Владелец | Зона |
@@ -65,7 +65,7 @@
 | S28 | [sessions/archive/S28_session.md](sessions/archive/S28_session.md) | harness: контекстная гигиена — скрипты ритуалов | агент | S22, S23 | — (сессия без фичи, states не меняются) | 0.5 | P1 | ✅ 2026-11-22 (make new-session/close-session, self-test 20 assert-ов; REVIEW-GATE: 2 fix-волны → re-review-3 «Ready to merge: Yes»; BL-017) |
 | S29 | [sessions/S29_session.md](sessions/S29_session.md) | harness: триаж аудита 2026-11-23 — журналы и фиксация решений (окно 24–27.11.2026) | агент | S27, S28 | — (сессия без фичи, states не меняются) | 1 | P0 | ✅ 2026-11-25 |
 | S30 | [sessions/S30_session.md](sessions/S30_session.md) | harness: механические защиты — import-linter, CI (защита веток снята — D-034) (окно 25–30.11.2026) | агент | S29 | — (сессия без фичи, states не меняются) | 1 | P1 | ✅ 2026-11-25 |
-| S31 | [sessions/S31_session.md](sessions/S31_session.md) | Единый рубеж исполнения: валидатор и права в тул-контуре (A1/E1 — вариант A, D-033; окно 25.11–04.12.2026) | агент | S30 | — (сессия без фичи, states не меняются) | 1.5 | P0 | ⬜ |
+| S31 | [sessions/S31_session.md](sessions/S31_session.md) | Единый рубеж исполнения: валидатор и права в тул-контуре (A1/E1 — вариант A, D-033; окно 25.11–04.12.2026) | агент | S30 | — (сессия без фичи, states не меняются) | 1.5 | P0 | ✅ 2026-11-25 |
 | S32 | [sessions/S32_session.md](sessions/S32_session.md) | fan-out guard: валидатор не пускает двойной счёт (feat-023; окно 01–07.12.2026) | агент | S31 | feat-023 — закрывает | 1 | P0 | ⬜ |
 | S33 | [sessions/S33_session.md](sessions/S33_session.md) | Самокоррекция без пустых ретраев: классы, подсказки, кап, stdout (окно 07–14.12.2026) | агент | S32 | — (сессия без фичи, states не меняются) | 1.5 | P1 | ⬜ |
 | S34 | [sessions/S34_session.md](sessions/S34_session.md) | Перепланирование после ошибки: ребро diagnose_error → plan_joins (окно 10–17.12.2026) | агент | S33 | — (сессия без фичи, states не меняются) | 1 | P1 | ⬜ |
