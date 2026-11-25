@@ -7,14 +7,15 @@
 ## Current State
 
 **Last Updated:** 2026-11-25
-**Session ID:** … → S29 → S30 ✅ (закрыта, archive) → **хотфикс-режим между сессиями (D-035: CI живёт только на milestone/** — рабочие ветки и dev/main прогонов не запускают, минуты Actions бесплатного тарифа ограничены; живой CI 2026-11-25 полностью зелёный: 45635001078, 45635720765, 45636431638)**
+**Session ID:** … → S29 → S30 ✅ (закрыта, archive) → **хотфикс-режим между сессиями (D-035: CI живёт только на milestone/** — рабочие ветки и dev/main прогонов не запускают, минуты Actions бесплатного тарифа ограничены; D-036: пуш milestone с журнально-доковым merge придерживается до содержательной волны — «лишнего не жгём»; живой CI 2026-11-25 полностью зелёный: 45635001078, 45635720765, 45636431638)**
 **Active Feature:** — (сессия без фич; feat-023 not_started — её закрывает S32, states не меняются)
-**Last commit:** ветка `harness/ci-triggers` (ci.yml push-триггер только milestone/**, D-035, синх AGENTS) — merge --no-ff в `milestone/v4`
+**Last commit:** ветка `harness/milestone-push-hold` (D-036 пуш-дисциплина milestone, синх AGENTS/AGENT-OPERATIONS/DECISIONS) — merge --no-ff в `milestone/v4`; пуш milestone/v4 ПРИДЕРЖАН по D-036 (журнально-доковые merge 10ba3bd+этот едут с первой содержательной волной)
 
 ## Status
 
 ### What's Done
 
+- [x] **S30-хвост-3 (2026-11-25, хотфикс D-036: пуш-дисциплина milestone — «лишнего не жгём»)** — директива владельца после хвоста-2 («добавь такое поведение в харнесс»): merge, трогающий только журнально-доковые пути (`solution/**`, `progress.md`, `DECISIONS.md`), в origin отдельно не пушится — пуш milestone-ветки придерживается до первой содержательной волны (код/тесты/конфиги/CI/скрипты); механика: содержимое уже на origin через пушнутую harness-ветку (D-035 прогон не триггерит), агент сообщает о придержке и предлагает «запушить сразу», команда владельца приоритетна; критерий консистентности прежний — полный make check перед любым пушем; синх: AGENTS (Branch Hygiene), AGENT-OPERATIONS (полный объём), DECISIONS D-036; в тот же коммит — журнальная строка за беклог-коммит 10ba3bd (BL-040/041, merge 7ce4ac4): пары «коммит ↔ журнал» по BL-034 хвост догоняет этим коммитом, пуш всё равно придержан — ни минуты квоты не потрачено
 - [x] **S30-хвост-2 (2026-11-25, хотфикс D-035: CI-триггеры сужены)** — решение владельца, два шага: «на рабочих ветках чтобы CI не срабатывал — прогон долгий, упрусь в лимит минут» + «а ну и dev и main»: триггеры ci.yml только `milestone/**` (push — наблюдаемость ПОСЛЕ слияния; pull_request цели main/dev/milestone → milestone); рабочие ветки и dev/main CI не триггерят вовсе; локальный рубеж — полный make check (урок S30-хвоста); отвергнутые альтернативы записаны (concurrency — BL-038, path-фильтры, workflow_dispatch); живая верификация: пуш harness/ci-triggers прогона НЕ создал, merge в milestone/v4 создал ровно один зелёный; синх: ci.yml-шапка, AGENTS.md (Verification Commands), DECISIONS D-035
 - [x] Шаблон harness развёрнут, AGENTS.md/feature_list (17 фич)/docs/solution заполнены, feat-001 закрыта гейтом (VCR 1/1)
 - [x] Архитектурный пакет v1.7 разложен из `.docs/arch/` в tracked docs/ (D-007): 11 ADR → docs/adr/, C4 L1–L3 + FSM + sequence + ER → docs/diagrams/, prd/security/observability/model-card/RISKS → docs/, индекс пакета — docs/arch-package.md
