@@ -51,7 +51,7 @@ from text_to_sql_agent.application.services.validate_sql_service import (
     ValidateSqlService,
 )
 from text_to_sql_agent.domain.entities import RunContext, Trace
-from text_to_sql_agent.domain.sql_validation import ValidationOutcome
+from text_to_sql_agent.domain.sql_validation import ValidationOutcome, ValidationVerdict
 
 TOOL_NAME = "run_sql"
 SQL_ARGUMENT = "sql"
@@ -227,7 +227,7 @@ class RunSqlTool:
 
     # --- Наблюдаемость (существующие события + contour, R3) ---
 
-    def _emit_verdict(self, ctx: RunContext, verdict: Any) -> None:
+    def _emit_verdict(self, ctx: RunContext, verdict: ValidationVerdict) -> None:
         if self._tracer is None:
             return
         self._tracer.record(

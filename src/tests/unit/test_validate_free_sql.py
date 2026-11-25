@@ -233,14 +233,17 @@ def test_table_subquery_mix_unresolved() -> None:
     assert result.verdict.outcome is ValidationOutcome.HALLUCINATION
 
 
-def test_cte_cte_join_allowed() -> None:
-    # производный↔производный: тела проверены своими скоупами — связи не выдуманы
+def test_cte_cte_join_unresolved() -> None:
+    # Ревью S31 C1 (регрессия, кусает до-фикс: было OK по ruling «CTE+CTE —
+    # алгебра над телами», отозван): обёртка CTE не делает связь легальной —
+    # CROSS JOIN двух производных источников = выдуманная связь своих таблиц
     result = _free(
         "WITH x AS (SELECT id, customer_id FROM orders), "
         "y AS (SELECT id, name FROM customers) "
-        "SELECT x.id FROM x JOIN y ON y.id = x.customer_id"
+        "SELECT x.id FROM x CROSS JOIN y"
     )
-    assert result.verdict.outcome is ValidationOutcome.OK
+    assert result.verdict.outcome is ValidationOutcome.HALLUCINATION
+    assert any("не сверяется с реестром" in issue for issue in result.verdict.issues)
 
 
 def test_cte_invented_join_inside_body_hallucination() -> None:
@@ -402,3 +405,60 @@ def test_ir_pairs_sorted_deduplicated() -> None:
     )
     # customers↔orders (двойная цепочка — дубликат срезан)
     assert audit.join_table_pairs == (("customers", "orders"),)
+
+
+# --- Fix-волна ревью S31: C1 (корреляции), I1 (comma >=3), self-join ---
+
+
+def test_cte_cross_join_of_foreign_pair_unresolved() -> None:
+    # Ревью C1, живое воспроизведение: два CTE над РАЗРЕШЁННЫМИ таблицами без
+    # ребра — выдуманная связь через обёртку; регрессия кусает до-фикс (было ok)
+    result = _free(
+        "WITH x AS (SELECT id FROM orders), y AS (SELECT id FROM campaigns) "
+        "SELECT x.id FROM x CROSS JOIN y"
+    )
+    assert result.verdict.outcome is ValidationOutcome.HALLUCINATION
+
+
+def test_correlated_subquery_invented_pair_hallucination() -> None:
+    # Ревью C1: корреляция EXISTS утверждает связь orders↔campaigns — сверяется
+    # с реестром как пара JOIN; ребра нет → hallucination (кусает до-фикс: было ok)
+    result = _free(
+        "SELECT o.id FROM orders o WHERE EXISTS "
+        "(SELECT 1 FROM campaigns c WHERE c.id = o.campaign_id)"
+    )
+    assert result.verdict.outcome is ValidationOutcome.HALLUCINATION
+    assert any("не существует в реестре" in issue for issue in result.verdict.issues)
+
+
+def test_correlated_subquery_on_real_edge_ok() -> None:
+    # Легальная корреляция по настоящему ребру реестра проходит
+    result = _free(
+        "SELECT o.id FROM orders o WHERE EXISTS "
+        "(SELECT 1 FROM customers c WHERE c.id = o.customer_id)",
+        join_edges=CHAIN_EDGES,
+    )
+    assert result.verdict.outcome is ValidationOutcome.OK
+
+
+def test_self_join_needs_no_edge() -> None:
+    # Ревью S31 (set aside C1): self-join таблицы к себе связи между РАЗНЫМИ
+    # таблицами не утверждает — симметрично с self-join через два CTE
+    result = _free("SELECT o.id FROM orders o JOIN orders o2 ON o2.customer_id = o.customer_id")
+    assert result.verdict.outcome is ValidationOutcome.OK
+
+
+def test_comma_three_tables_unresolved() -> None:
+    # Ревью S31 I1: comma-FROM на >=3 табличных источников — «соседние» пары
+    # произвольны (дыра a-c и ложный отказ легального хаба) — форма fail-closed
+    result = _free("SELECT o.id FROM orders o, customers c, campaigns m WHERE o.customer_id = c.id")
+    assert result.verdict.outcome is ValidationOutcome.HALLUCINATION
+    assert any("не сверяется с реестром" in issue for issue in result.verdict.issues)
+
+
+def test_comma_two_tables_pair_checked() -> None:
+    # Двухтабличный comma — единственная пара, та же проверка цепочки
+    ok = _free("SELECT o.id FROM orders o, customers c WHERE o.customer_id = c.id")
+    assert ok.verdict.outcome is ValidationOutcome.OK
+    invented = _free("SELECT o.id FROM orders o, campaigns m WHERE o.campaign_id = m.id")
+    assert invented.verdict.outcome is ValidationOutcome.HALLUCINATION

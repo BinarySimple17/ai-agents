@@ -284,11 +284,12 @@ def _check_join_pairs(
             "между таблицами"
         )
     for left, right in audit.join_table_pairs:
+        if left == right:
+            # self-join таблицы к себе — реестром не утверждается связь между
+            # РАЗНЫМИ таблицами (ревью S31: симметрия с self-join через CTE)
+            continue
         if (left, right) not in join_edges:
-            issues.append(
-                f"связь {left}↔{right} не существует в реестре (agent_relationships) — "
-                "джойн придуман"
-            )
+            issues.append(f"связь {left}↔{right} не существует в реестре связей — джойн придуман")
 
 
 def _check_functions(audit: SqlAudit, issues: list[str]) -> None:

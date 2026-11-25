@@ -84,6 +84,9 @@ from text_to_sql_agent.application.ports.vector_store import (
     VectorStoreError,
 )
 from text_to_sql_agent.application.services.run_sql_tool import (
+    GATE_CLASS_DENIED,
+    GATE_CLASS_GRAPH_UNAVAILABLE,
+    GATE_CLASS_RIGHTS_UNAVAILABLE,
     SQL_ARGUMENT,
     TOOL_NAME,
     RunSqlTool,
@@ -158,7 +161,7 @@ _DEMO_SCHEMA_COLUMNS: dict[str, tuple[str, ...]] = {
     "employees": ("employee_id", "name", "department", "salary"),
     "bonuses": ("bonus_id", "employee_id", "period", "amount"),
 }
-_SCHEMA_EMPTY_NOTE = "(права не загружены — тул вернёт отказ)"
+_SCHEMA_EMPTY_NOTE = "(нет таблиц, разрешённых твоим правам)"
 
 
 def _schema_block(permissions: Mapping[str, Sequence[str]] | None) -> str:
@@ -240,8 +243,15 @@ STOP_OBSERVATION_TEMPLATE = (
     "валидатора; имена недоступных таблиц не называй. Сформулируй вежливый отказ "
     "пользователю (если причина в доступности данных — посоветуй повторить позже).]"
 )
-# Классы стопа — словарь FSM (R3 ARCH-GATE S31): повтор бессмыслен
-STOP_ERROR_CLASSES = frozenset({"acl_denied", "rights_unavailable", "graph_unavailable"})
+# Классы стопа — словарь FSM (R3 ARCH-GATE S31): повтор бессмыслен; источник —
+# константы тула (не литералы-копии — ревью S31 Minor)
+STOP_ERROR_CLASSES = frozenset(
+    {
+        GATE_CLASS_DENIED,
+        GATE_CLASS_RIGHTS_UNAVAILABLE,
+        GATE_CLASS_GRAPH_UNAVAILABLE,
+    }
+)
 UNKNOWN_TOOL_TEMPLATE = (
     "[Observation: ОШИБКА — вызван неизвестный тул {name}; доступен только run_sql.]"
 )
@@ -315,6 +325,7 @@ def _run_loop(
     model_calls = 0
     empty_retries_left = EMPTY_RESPONSE_RETRIES
     gate_stopped = False
+    gate_error_class = ""
     _emit(tracer, EVENT_AGENT_START, trace_id=ctx.trace_id, question=question, mode="tool_loop")
     while tool_rounds_used < max_tool_calls:
         model_calls += 1
@@ -336,7 +347,10 @@ def _run_loop(
                 _emit(tracer, EVENT_AGENT_OBSERVATION, trace_id=ctx.trace_id, **obs)
                 if stop:
                     gate_stopped = True
-                    break
+                    gate_error_class = obs.get("error_class", "")
+                    # БЕЗ break по ходу: каждый tool_call_id хода обязан получить
+                    # tool-ответ (ревью S31 I2 — неотвеченный id = 400 шлюза на
+                    # финальном вызове без тулов); стоп — после обработки хода
             if gate_stopped:
                 # S31/R2 ARCH-GATE: отказ рубежа (acl_denied/инфра) — контур
                 # формулирует отказ сразу; выход из цикла кодом, ретрай не даётся
@@ -344,7 +358,7 @@ def _run_loop(
                     tracer,
                     EVENT_AGENT_DEGRADE,
                     trace_id=ctx.trace_id,
-                    reason=f"рубеж тула ({obs['error_class']}): отказ без ретрая",
+                    reason=f"рубеж тула ({gate_error_class}): отказ без ретрая",
                 )
                 break
             continue
@@ -702,7 +716,9 @@ def run_agent_flow(
                 _emit(tracer, EVENT_AGENT_OBSERVATION, trace_id=ctx.trace_id, **obs)
                 if stop:
                     gate_stopped = True
-                    break
+                    gate_error_class = obs.get("error_class", "")
+                    # БЕЗ break по ходу: каждый tool_call_id получает ответ
+                    # (ревью S31 I2) — стоп после обработки всего хода
             if printer is not None and printed:
                 # Префамбула тул-хода отделена от следующего хода (M2 ревью S25) —
                 # иначе «Считаю клиентов… Ответ: 5» склеивается на экране
@@ -715,7 +731,7 @@ def run_agent_flow(
                     tracer,
                     EVENT_AGENT_DEGRADE,
                     trace_id=ctx.trace_id,
-                    reason=f"рубеж тула ({obs['error_class']}): отказ без ретрая",
+                    reason=f"рубеж тула ({gate_error_class}): отказ без ретрая",
                 )
                 break
             continue  # преамбула остаётся на экране, agent.answer не эмитится
@@ -825,16 +841,17 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     question = " ".join(args.question)
     container = build_container(console_trace=not args.quiet)
+    # S31 (ревью Minor): fallback на DEV_TOKEN — для ЛЮБОГО контура, включая
+    # --fsm (help обещает единый канал токена)
+    token = args.token or container.settings.dev_token.get_secret_value()
     try:
         if args.fsm:
-            return _run_fsm(container, question, token=args.token)
+            return _run_fsm(container, question, token=token)
         # S31 (R4 ARCH-GATE, W2 S06 superseded): identity — ТОЛЬКО проверенный
         # токен для любого контура, исполняющего SQL; verify ДО первого
         # LLM-вызова, отказ — exit 1 без LLM (зеркало _run_fsm, S9-политика)
         try:
-            user_id = container.auth_provider.verify(
-                args.token or container.settings.dev_token.get_secret_value()
-            )
+            user_id = container.auth_provider.verify(token)
         except AuthenticationError as exc:
             print("Исход: rejected")
             print("Ошибка: " + str(exc))
@@ -851,6 +868,12 @@ def main(argv: list[str] | None = None) -> int:
                 trace_id="-",
                 reason=f"права недоступны: {exc}",
             )
+            return 1
+        if not rights.user_known:
+            # Минор ревью S31: verified-токен вне agent_user_roles — отказ до
+            # LLM (симметрично тулу, ruling R6 S05), не «пустая схема» в промпте
+            print("Исход: rejected")
+            print("Ошибка: пользователь не зарегистрирован — запрос отклонён (fail-closed)")
             return 1
         ctx = RunContext(trace_id=uuid.uuid4().hex, user_id=user_id)
         permissions = dict(rights.tables)

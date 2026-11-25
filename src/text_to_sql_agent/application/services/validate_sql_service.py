@@ -250,6 +250,8 @@ def _build_audit(tree: exp.Expression) -> SqlAudit:
 
     columns: list[SqlColumn] = []
     seen_columns: set[tuple[str, tuple[SqlSource, ...], bool]] = set()
+    join_pairs: list[tuple[str, str]] = []
+    seen_join_pairs: set[tuple[str, str]] = set()
     for scope in scopes:
         local_sources = sources_by_scope[id(scope)]
         local_refs = {src.ref for src in local_sources}
@@ -311,6 +313,27 @@ def _build_audit(tree: exp.Expression) -> SqlAudit:
                         extra = SqlSource(name=outer.name, kind=outer.kind)
                         if all(s != extra for s in sources):
                             sources = (*sources, extra)
+            # Корреляция (ревью S31 C1): кандидат-ТАБЛИЦА, чьё имя не входит в
+            # таблицы ЭТОГО скоупа, — ссылка на внешний скоуп: семантическая
+            # связь «внешняя таблица ↔ таблицы этого скоупа» (WHERE c.id =
+            # o.campaign_id в EXISTS утверждает ту же «придуманную связь», что и
+            # JOIN) — сверяется с реестром как пара. Ссылки в тела CTE не тянутся
+            # наружу (граница корреляции — CTE, _scope_chain). Сравнение по имени
+            # (SqlSource несёт name, не алиас-ref; коллизия имён при self-join
+            # через скоуп — редкий ложный negative, осознанно)
+            local_table_names = {s.name for s in local_sources if s.kind == "table"}
+            outer_tables = {
+                src.name
+                for src in sources
+                if src.kind == "table" and src.name not in local_table_names
+            }
+            if outer_tables:
+                for outer_name in outer_tables:
+                    for local_name in local_table_names:
+                        pair = tuple(sorted((outer_name, local_name)))
+                        if pair not in seen_join_pairs:
+                            seen_join_pairs.add(pair)
+                            join_pairs.append(pair)
             key = (name_lower, sources, whole_row)
             if key not in seen_columns:
                 seen_columns.add(key)
@@ -326,7 +349,7 @@ def _build_audit(tree: exp.Expression) -> SqlAudit:
             star_sources.append(tuple(SqlSource(name=s.name, kind=s.kind) for s in sources))
 
     root_maps = maps_by_scope.get(id(root_select), []) if root_select is not None else []
-    join_pairs, unresolved = _collect_join_pairs(scopes, sources_by_scope)
+    unresolved = _collect_join_pairs(scopes, sources_by_scope, join_pairs, seen_join_pairs)
     return SqlAudit(
         from_table=_from_table(root_select),
         tables=_collect_tables(tree),
@@ -336,7 +359,7 @@ def _build_audit(tree: exp.Expression) -> SqlAudit:
         outer_limit=_collect_outer_limit(tree),
         functions=_collect_functions(tree),
         star_sources=tuple(star_sources),
-        join_table_pairs=join_pairs,
+        join_table_pairs=tuple(join_pairs),
         unresolved_join_scopes=unresolved,
     )
 
@@ -344,33 +367,53 @@ def _build_audit(tree: exp.Expression) -> SqlAudit:
 def _collect_join_pairs(
     scopes: list[exp.Select],
     sources_by_scope: dict[int, list[_Source]],
-) -> tuple[tuple[tuple[str, str], ...], bool]:
+    pairs: list[tuple[str, str]],
+    seen: set[tuple[str, str]],
+) -> bool:
     """Пары операндов JOIN по всем скоупам + флаг несверяемых скоупов (S31, R1 ARCH-GATE).
 
-    Цепочка скоупа: FROM → JOIN-секции в порядке появления (comma/cross — те же
-    Join-узлы); пара — соседние операнды-ТАБЛИЦЫ (реестр связывает таблицы, не
-    алиасы). Ссылка на CTE/производный источник между таблицами пару реестром не
-    выражает — ``unresolved`` (свободный вход fail-closed); CTE+CTE связи не
-    выдумывают (тела проверены своими скоупами). FSM-вход поля не читает:
-    структура джойнов там сверяется со скелетом плана (_check_skeleton).
+    Цепочка скоупа: FROM → JOIN-секции в порядке появления (cross — тот же Join-узел);
+    пара — соседние операнды-ТАБЛИЦЫ (реестр связывает таблицы, не алиасы). ЛЮБОЙ
+    не-табличный операнд в паре (CTE/производный/смешанный) — ``unresolved``:
+    обёртка CTE не делает связь легальной — ``WITH x AS (…orders…), y AS (…campaigns…)
+    SELECT * FROM x CROSS JOIN y`` соединяет свои таблицы без ребра реестра ровно
+    как прямой джойн (ревью S31 C1, живое воспроизведение; прежний ruling «CTE+CTE —
+    алгебра над телами» отозван). FSM-вход поля не читает: структура джойнов там
+    сверяется со скелетом плана (_check_skeleton). Пары корреляций добавляет
+    цикл колонок в ``_build_audit`` (кандидат из внешнего скоупа).
     """
-    pairs: list[tuple[str, str]] = []
-    seen: set[tuple[str, str]] = set()
     unresolved = False
     for scope in scopes:
+        sources = sources_by_scope[id(scope)]
+        # неявное декартово произведение (comma или голый JOIN — sqlglot отдаёт
+        # оба как Join без kind/side/ON): поддерживается только при двух
+        # табличных источниках (единственная пара = цепочка); ≥3 — «соседние»
+        # пары произвольны (и дыра a↔c, и ложный отказ легального хаба — ревью
+        # S31 I1) — fail-closed, ретрай с явными JOIN...ON
+        has_implicit_cartesian = any(
+            isinstance(join, exp.Join)
+            and not join.kind
+            and not join.side
+            and join.args.get("on") is None
+            for join in scope.args.get("joins") or []
+        )
+        if has_implicit_cartesian and sum(1 for s in sources if s.kind == "table") > 2:
+            unresolved = True
+            continue
         prev: _Source | None = None
-        for source in sources_by_scope[id(scope)]:
+        for source in sources:
             if prev is not None:
                 if prev.kind == "table" and source.kind == "table":
                     pair = tuple(sorted((prev.name, source.name)))
                     if pair not in seen:
                         seen.add(pair)
                         pairs.append(pair)
-                elif prev.kind != source.kind:
-                    # таблица↔производный источник — пара реестром не выражается
+                else:
+                    # любой операнд не-таблица (cte/sub, в любой комбинации) —
+                    # пара реестром не выражается (C1)
                     unresolved = True
             prev = source
-    return tuple(pairs), unresolved
+    return unresolved
 
 
 def _resolve_outer_ref(name: str, maps: list[dict[str, _Source]]) -> _Source | None:

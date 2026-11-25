@@ -75,14 +75,17 @@ def test_retrieval_block_never_contains_noise() -> None:
 
 
 def test_system_prompt_names_all_demo_schema_tables() -> None:
-    # BL-009 M1 (сверка генерацией): SYSTEM_PROMPT перечисляет ровно бизнес-
-    # таблицы демо-схемы. SoT списка таблиц — каталог agent_data_sources (ADR-011);
-    # здесь сверка с CREATE TABLE миграции 0001 — транзитивно эквивалентна каталогу
-    # (расхождение каталог↔миграция ловит integration-тест
-    # test_catalog_matches_schema_migration), а сам промпт — рукописная проза
-    # с колонками: сверка генерацией ловит дрейф при добавлении таблицы
+    # BL-009 M1 (сверка генерацией) + ревью S31 I5: живой промпт тул-контура
+    # рендерится по правам из статической карты колонок (_DEMO_SCHEMA_COLUMNS →
+    # _schema_block) — константа SYSTEM_PROMPT/AGENT_SYSTEM_PROMPT больше НЕ
+    # источник схемы; SoT списка таблиц — CREATE TABLE миграции 0001 (транзитивно
+    # эквивалентна каталогу agent_data_sources — расхождение ловит integration-тест
+    # test_catalog_matches_schema_migration): сверка генерацией ловит дрейф при
+    # добавлении таблицы (иначе модель молча не узнаёт о ней — I5)
     import re as _re
     from pathlib import Path
+
+    from apps.cli import _DEMO_SCHEMA_COLUMNS, _FULL_WORLD_RIGHTS, _schema_block
 
     migration = (
         Path(__file__).resolve().parents[3]
@@ -99,9 +102,14 @@ def test_system_prompt_names_all_demo_schema_tables() -> None:
         if not t.startswith("agent_") and t not in {"settings_version", "query_trace"}
     }
     assert len(tables) == 7, "демо-схема = 7 бизнес-таблиц (сид 0003)"
+    assert set(_DEMO_SCHEMA_COLUMNS) == tables, (
+        "карта колонок промпта (_DEMO_SCHEMA_COLUMNS) != бизнес-таблицы миграции 0001 "
+        "— синхронизируй карту с миграцией"
+    )
+    rendered = _schema_block(_FULL_WORLD_RIGHTS)
     for table in sorted(tables):
-        assert f"{table}(" in AGENT_SYSTEM_PROMPT, (
-            f"SYSTEM_PROMPT не описывает таблицу {table} — синхронизируй с каталогом"
+        assert f"{table}(" in rendered, (
+            f"рендер схемы по правам не описывает таблицу {table} — синхронизируй карту"
         )
 
 

@@ -582,9 +582,10 @@ def test_prompt_schema_shows_only_granted_columns() -> None:
 
 
 def test_prompt_schema_without_permissions_is_empty_not_full_world() -> None:
-    # fail-closed дефолт: права не переданы — мир НЕ раскрывается
+    # fail-closed дефолт: права не переданы — мир НЕ раскрывается; формулировка
+    # без ложной подсказки об инфраструктуре (ревью S31 Minor)
     prompt = _render_system_prompt(None, agent=False)
-    assert "права не загружены" in prompt
+    assert "нет таблиц, разрешённых твоим правам" in prompt
     assert "employees(" not in prompt
 
 
@@ -593,3 +594,49 @@ def test_full_world_prompt_constant_lists_all_tables() -> None:
     # живой промпт CLI рендерится по правам (_render_system_prompt)
     assert "employees(employee_id" in SYSTEM_PROMPT
     assert "COUNT(DISTINCT" in SYSTEM_PROMPT
+
+
+def test_stop_answers_every_tool_call_id_in_round() -> None:
+    # Ревью S31 I2 (регрессия): denied в ПЕРВОМ из двух tool_calls одного хода —
+    # второй вызов исполняется, ВСЕ id получают tool-ответ (неотвеченный id = 400
+    # шлюза на финальном вызове без тулов ломал штатный путь «denied -> отказ»)
+    store = FakePermissionStore(
+        {"orders": ("*",), "customers": ("*",)},
+        catalog=frozenset({"orders", "customers", "employees"}),
+    )
+    executor = FakeExecutor()
+    two_calls = LLMResponse(
+        text=None,
+        tool_calls=[
+            ToolCall(
+                id="call-1",
+                name="run_sql",
+                arguments=json.dumps({"sql": "SELECT salary FROM employees"}),
+            ),
+            ToolCall(id="call-2", name="run_sql", arguments=json.dumps({"sql": "SELECT 1"})),
+        ],
+        model="fake-1",
+    )
+    llm = FakeLLM([two_calls, _text("Часть данных вам недоступна")])
+    assert _loop(llm, executor, permission_store=store) == "Часть данных вам недоступна"
+    assert len(executor.requests) == 1  # валидный второй вызов исполнен
+    final_msgs = llm.calls[1]["messages"]
+    assistant = next(m for m in final_msgs if m["role"] == "assistant")
+    assert [tc["id"] for tc in assistant["tool_calls"]] == ["call-1", "call-2"]
+    tool_msgs = [m for m in final_msgs if m["role"] == "tool"]
+    assert [m["tool_call_id"] for m in tool_msgs] == ["call-1", "call-2"]  # I2-инвариант
+    assert "Повторные вызовы run_sql" in tool_msgs[0]["content"]
+    assert '"columns"' in tool_msgs[1]["content"]  # наблюдение данных второго вызова
+
+
+def test_main_unknown_user_rejects_before_llm(monkeypatch, capsys) -> None:  # type: ignore[no-untyped-def]
+    # Ревью S31 Minor: verified-токен вне agent_user_roles — отказ в main ДО LLM
+    # (симметрично тулу), не «пустая схема» в промпте
+    store = FakePermissionStore(known=False)
+    llm = FakeLLM([])
+    monkeypatch.setattr(
+        "apps.cli.build_container", lambda **kw: _main_container(llm, permission_store=store)
+    )
+    assert main(["--plain", "вопрос"]) == 1
+    assert llm.calls == []
+    assert "rejected" in capsys.readouterr().out

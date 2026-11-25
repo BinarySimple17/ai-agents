@@ -1,6 +1,6 @@
 # BL-038 — Харднеж CI-workflow: пины actions по SHA, `permissions: contents: read`, concurrency
 
-- **Статус:** открыт
+- **Статус:** закрыт 2026-11-25 (S31, коммит 4c27e01): SHA-пины всех экшенов + permissions contents:read + concurrency cancel-in-progress
 - **Дата:** 2026-11-25
 - **Сессия-источник:** S30 (REVIEW-GATE, Minor-10)
 - **Приоритет:** P3
@@ -26,4 +26,4 @@
 
 ## Закрытие (заполняется при закрытии)
 
-[что решили и куда: feat-XXX / backlog другого проекта / отказ]
+Реализовано в S31 (коммит 4c27e01, одним коммитом с BL-035/BL-040): (1) все экшены запины полным коммит-SHA (checkout 3d3c42e5…#v7.0.1, setup-python 6d4fd22b…#v7.1.0, setup-uv 1db35dd8…#v10.4.0, gitleaks e0c47f4f…#v3.0.0); теги и SHA сверены `gh api repos/<owner>/<repo>/commits/<tag>` 2026-11-25 (урок setup-uv: web-чек ≠ тег существует); (2) top-level `permissions: contents: read`; (3) `concurrency: group ci-${{ github.ref }} + cancel-in-progress` — суперседённый прогон той же ветки отменяется (пуш-волны подряд — экономия минут D-035).
