@@ -131,7 +131,7 @@ Required checks:
 - Контракты импортов слоёв (S30): `uv run lint-imports` (или `make lint-imports`) — входит в `./init.sh`, нарушение границы слоёв роняет `make check` так же, как lint
 - Инфраструктура (PostgreSQL + Valkey) для тестов с БД: `make infra-up`; тесты без поднятой инфры скипаются с понятной причиной — `./init.sh` остаётся зелёным без Docker
 - Одна фича: `make verify-feature F=<feat-XXX>`
-- CI (S30): `.github/workflows/ci.yml` — тот же `bash init.sh` поверх сервисов `docker-compose.yml` (`up -d --wait`) и миграций; пуш рабочей ветки запускает прогон на GitHub
+- CI (S30): `.github/workflows/ci.yml` — тот же `bash init.sh` поверх сервисов `docker-compose.yml` (`up -d --wait`) и миграций; прогон — только на `milestone/**` (пуш после слияния + PR с целью milestone); рабочие ветки (`feat-**`, `harness/**`) и `dev`/`main` CI не запускают — минуты Actions бесплатного тарифа ограничены (D-035), локальный рубеж перед пушем — полный `make check`
 
 The repo is in a consistent state when `make check` exits 0.
 

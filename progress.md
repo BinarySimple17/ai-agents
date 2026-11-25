@@ -7,14 +7,15 @@
 ## Current State
 
 **Last Updated:** 2026-11-25
-**Session ID:** … → S29 → **S30 ◐ (harness: механические защиты — import-linter 2.17, 10 контрактов слоёв в init.sh; build_documents apps→composition [нарушение аудита устранено]; CI GitHub Actions compose-based с bolt-хелсчеком Neo4j; Task 5 «защита веток на GitHub» снята решением владельца — D-034: branch protection платная, контур = локальные хуки + CI процедурно; FIX-018 c4-l2; BL-035…037)**
+**Session ID:** … → S29 → S30 ✅ (закрыта, archive) → **хотфикс-режим между сессиями (D-035: CI живёт только на milestone/** — рабочие ветки и dev/main прогонов не запускают, минуты Actions бесплатного тарифа ограничены; живой CI 2026-11-25 полностью зелёный: 45635001078, 45635720765, 45636431638)**
 **Active Feature:** — (сессия без фич; feat-023 not_started — её закрывает S32, states не меняются)
-**Last commit:** ветка `harness/mechanical-guards` (8a99ceb контракты+фабрика, 4a4b572 CI, b0a1d99 документация) — merge --no-ff в `milestone/v4` по закрытии сессии
+**Last commit:** ветка `harness/ci-triggers` (ci.yml push-триггер только milestone/**, D-035, синх AGENTS) — merge --no-ff в `milestone/v4`
 
 ## Status
 
 ### What's Done
 
+- [x] **S30-хвост-2 (2026-11-25, хотфикс D-035: CI-триггеры сужены)** — решение владельца, два шага: «на рабочих ветках чтобы CI не срабатывал — прогон долгий, упрусь в лимит минут» + «а ну и dev и main»: триггеры ci.yml только `milestone/**` (push — наблюдаемость ПОСЛЕ слияния; pull_request цели main/dev/milestone → milestone); рабочие ветки и dev/main CI не триггерят вовсе; локальный рубеж — полный make check (урок S30-хвоста); отвергнутые альтернативы записаны (concurrency — BL-038, path-фильтры, workflow_dispatch); живая верификация: пуш harness/ci-triggers прогона НЕ создал, merge в milestone/v4 создал ровно один зелёный; синх: ci.yml-шапка, AGENTS.md (Verification Commands), DECISIONS D-035
 - [x] Шаблон harness развёрнут, AGENTS.md/feature_list (17 фич)/docs/solution заполнены, feat-001 закрыта гейтом (VCR 1/1)
 - [x] Архитектурный пакет v1.7 разложен из `.docs/arch/` в tracked docs/ (D-007): 11 ADR → docs/adr/, C4 L1–L3 + FSM + sequence + ER → docs/diagrams/, prd/security/observability/model-card/RISKS → docs/, индекс пакета — docs/arch-package.md
 - [x] Беклог переведён на папку `solution/backlog/` (BL-NN-файлы + archive/, вместо backlog.md); скрипт `scripts/archive.sh` (`make archive`): закрытые сессии → sessions/archive/, закрытые беклоги → backlog/archive/, «Текущее состояние» sessions.md подрезается до ОДНОЙ строки статуса последней закрытой сессии (анти-раздувание, решено владельцем); End of Session (AGENTS.md) дополнен шагом make archive; проверено e2e на тестовых файлах (перенос + идемпотентность)
