@@ -267,6 +267,24 @@ class Neo4jGraphStore:
             raise SchemaGraphError(f"Neo4j недоступен: {_shorten(str(exc))}") from exc
         return int(records[0]["gv"]) if records else 0
 
+    # --- Активный снимок парами (S31/R1: сверка джойнов тул-контура) ---
+
+    def join_edges(self, *, ctx: RunContext) -> frozenset[tuple[str, str]]:
+        """Активные рёбра парами (контракт домена — sorted lowercase). Undirected
+        MATCH возвращает оба направления — frozenset дедуплицирует; читается на
+        каждый прогон тула (снапшот может обновиться между вызовами)."""
+        try:
+            records, _, _ = self._driver.execute_query(
+                "MATCH (a:Table)-[:JOINS]-(b:Table) RETURN a.name AS a, b.name AS b",
+                database_=NEO4J_DATABASE,
+            )
+        except (Neo4jError, DriverError, OSError) as exc:
+            raise SchemaGraphError(f"рёбра графа недоступны: {_shorten(str(exc))}") from exc
+        return frozenset(
+            tuple(sorted((str(record["a"]).lower(), str(record["b"]).lower())))
+            for record in records
+        )
+
     # --- Поиск путей джойнов (детерминированный код, без LLM) ---
 
     def find_join_paths(

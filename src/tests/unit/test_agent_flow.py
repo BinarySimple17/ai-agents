@@ -48,7 +48,7 @@ from text_to_sql_agent.application.ports.sql_executor import (
     SQLFailureClass,
 )
 from text_to_sql_agent.application.ports.vector_store import VectorStoreError
-from text_to_sql_agent.application.services.run_sql_tool import TOOL_NAME
+from text_to_sql_agent.application.services.run_sql_tool import TOOL_NAME, ToolGateError
 from text_to_sql_agent.infrastructure.llm.openai_provider import OpenAIProvider
 from text_to_sql_agent.infrastructure.observability.console_tracer import ConsoleTracer
 
@@ -689,3 +689,40 @@ def test_fsm_eof_on_stdin_is_valid_refusal(
     assert exit_code == 0  # clarification — содержательный исход с ответом-вопросом
     assert "Исход: clarification" in captured.out
     assert "не получен" in captured.out
+
+
+def test_agent_flow_gate_denied_stops_after_printed_preamble() -> None:
+    # S31 (R2 ARCH-GATE, Ловушка 5): отказ рубежа (acl_denied) после напечатанной
+    # преамбулы — штатный исход: напечатанное сохранено, финальный стрим без
+    # тулов поверх преамбулы (_stream_outcome), повторов тула нет
+    preamble_turn = [
+        StreamChunk(text_delta="Считаю клиентов..."),
+        StreamFinal(
+            model="fake",
+            finish_reason="tool_calls",
+            tool_calls=[ToolCall(id="call-1", name=TOOL_NAME, arguments=json.dumps({"sql": "SELECT salary FROM employees"}))],
+        ),
+    ]
+    llm = FakeAgentLLM([preamble_turn, _text_turn("Часть данных вам недоступна")])
+    tool = FakeTool(
+        error=ToolGateError("acl_denied", "часть данных по этому вопросу вам недоступна")
+    )
+    printed: list[str] = []
+    tracer = RecordingTracer()
+    answer = run_agent_flow(
+        "вопрос",
+        llm=llm,
+        tool=tool,
+        vector_store=FakeStore(),
+        ctx=UNIT_CTX,
+        tracer=tracer,
+        printer=printed.append,
+    )
+    assert printed[0] == "Считаю клиентов..."  # преамбула осталась на экране
+    assert "\n" in printed  # M2-разделитель перед финальным ходом
+    assert answer == "Часть данных вам недоступна"
+    # Финальный ход — БЕЗ тулов (модель формулирует отказ, не ретрай)
+    assert llm.calls[1]["tools"] is None
+    assert "Повторные вызовы run_sql" in llm.calls[1]["messages"][-1]["content"]
+    degrade = [e for e in tracer.events if e.event == "agent.degrade"]
+    assert any("acl_denied" in e.payload["reason"] for e in degrade)

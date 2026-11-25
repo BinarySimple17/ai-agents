@@ -136,3 +136,14 @@ class SchemaGraphStore(Protocol):
     ) -> list[JoinPath]: ...
 
     def path_semantics(self, edge_ids: list[str], *, ctx: RunContext) -> list[EdgeSemantics]: ...
+
+    def join_edges(self, *, ctx: RunContext) -> frozenset[tuple[str, str]]:
+        """Активный снимок топологии парами таблиц (S31/R1 ARCH-GATE).
+
+        Каждый элемент — sorted lowercase пара ``(left, right)``: контракт
+        ``domain.validate_free_sql`` (сверка джойнов свободного входа тул-контура —
+        инвариант «модель не может придумать связь», prd FR-2/FR-4). Фильтр прав
+        НЕ применяется: права проверяет валидатор по таблицам запроса — здесь
+        чистая топология производного снапшота (реестр — SoT, ADR-006 v1.3).
+        Сбой хранилища — ``SchemaGraphError`` (caller fail-closed)."""
+        ...

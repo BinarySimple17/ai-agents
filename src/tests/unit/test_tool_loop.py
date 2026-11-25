@@ -20,14 +20,23 @@ from apps.cli import (
     main,
     run_tool_loop,
 )
-from tests.unit.fakes import UNIT_CTX, FakeExecutor, RecordingTracer
+from tests.unit.fakes import (
+    UNIT_CTX,
+    FakeExecutor,
+    FakePermissionStore,
+    FakeSchemaGraphStore,
+    RecordingTracer,
+)
 from text_to_sql_agent.application.ports.llm_provider import CircuitOpenError, LLMResponse, ToolCall
+from text_to_sql_agent.application.ports.permission_store import RightsUnavailableError
+from text_to_sql_agent.application.ports.schema_graph_store import SchemaGraphError
 from text_to_sql_agent.application.ports.sql_executor import (
     QueryResult,
     SQLExecutionError,
     SQLFailureClass,
 )
 from text_to_sql_agent.application.services.run_sql_tool import RunSqlTool
+from text_to_sql_agent.application.services.validate_sql_service import ValidateSqlService
 from text_to_sql_agent.infrastructure.observability.jsonl_tracer import JsonlTracer
 
 
@@ -64,8 +73,31 @@ def _tool_call(sql: str = "SELECT 1", call_id: str = "call-1") -> LLMResponse:
     )
 
 
-def _loop(llm: FakeLLM, executor: FakeExecutor | None = None, tracer: object | None = None) -> str:
-    tool = RunSqlTool(executor or FakeExecutor())
+def _gated_tool(executor: FakeExecutor | None = None) -> RunSqlTool:
+    """Тул за рубежом с двойниками мира по умолчанию (S31)."""
+    return RunSqlTool(
+        executor or FakeExecutor(),
+        ValidateSqlService(),
+        FakePermissionStore(),
+        FakeSchemaGraphStore(),
+    )
+
+
+def _loop(
+    llm: FakeLLM,
+    executor: FakeExecutor | None = None,
+    tracer: object | None = None,
+    *,
+    permission_store: FakePermissionStore | None = None,
+    graph_store: FakeSchemaGraphStore | None = None,
+) -> str:
+    # S31: тул собирается за рубежом (валидатор/права/рёбра — двойники мира)
+    tool = RunSqlTool(
+        executor or FakeExecutor(),
+        ValidateSqlService(),
+        permission_store or FakePermissionStore(),
+        graph_store or FakeSchemaGraphStore(),
+    )
     return run_tool_loop("вопрос", llm=llm, tool=tool, ctx=UNIT_CTX, tracer=tracer)  # type: ignore[arg-type]
 
 
@@ -228,9 +260,70 @@ def test_llm_provider_error_degrades_not_traceback() -> None:
     # Регрессия на ревью S13 Important-2: breaker/бюджет/ретраи шлюза — валидный
     # деградация-исход (S00 правило 8), не исключение из CLI
     llm = CircuitOpenLLM()
-    answer = run_tool_loop("вопрос", llm=llm, tool=RunSqlTool(FakeExecutor()), ctx=UNIT_CTX)
+    tool = _gated_tool()
+    answer = run_tool_loop("вопрос", llm=llm, tool=tool, ctx=UNIT_CTX)
     assert "шлюз LLM недоступен" in answer
     assert "circuit breaker" in answer
+
+
+# --- Рубеж тула (S31 Task 2, аудит A1/E1): denied/инфра — стоп; hallucination — ретрай ---
+
+
+def test_denied_gate_stops_loop_without_retry() -> None:
+    # РЕГРЕССИЯ Critical аудита A1/E1: SQL по чужой таблице не доходит до БД
+    # (до S31 тул исполнял любой SQL — дыра второго контура исполнения);
+    # R2: контур формулирует отказ сразу — повторов тула нет даже если модель
+    # слала бы его снова, финальный вызов БЕЗ тулов
+    store = FakePermissionStore(
+        {"orders": ("*",), "customers": ("*",)},
+        catalog=frozenset({"orders", "customers", "employees"}),
+    )
+    executor = FakeExecutor()
+    tracer = RecordingTracer()
+    # Ход 1: denied-вызов; СЦЕНАРИЙ с повторным denied-вызовом оставлен
+    # намеренно НЕДОРАБОТАННЫМ — цикл после стопа делает финальный вызов без
+    # тулов, и вторым элементом сценария consumes финал (ретрай-путь отсутствует)
+    llm = FakeLLM([
+        _tool_call("SELECT salary FROM employees"),
+        _text("Часть данных вам недоступна"),
+    ])
+    assert _loop(llm, executor, tracer, permission_store=store) == "Часть данных вам недоступна"
+    assert executor.requests == []  # исполнитель (шпион) не вызывался
+    assert llm.calls[1]["tools"] is None  # финальный вызов без тулов
+    stop_content = llm.calls[1]["messages"][-1]["content"]
+    assert "Повторные вызовы run_sql" in stop_content  # STOP-observation в истории
+    assert "employees" not in stop_content  # S9: имя чужой таблицы не раскрывается
+    degrade = [e for e in tracer.events if e.event == "agent.degrade"]
+    assert any("acl_denied" in e.payload["reason"] for e in degrade)
+
+
+def test_rights_unavailable_stops_loop() -> None:
+    # fail-closed: права недоступны — отказ, не «пустой мир молча» (S00-8)
+    store = FakePermissionStore(error=RightsUnavailableError("db down"))
+    llm = FakeLLM([_tool_call(), _text("Повторите позже")])
+    assert _loop(llm, permission_store=store) == "Повторите позже"
+    stop_content = llm.calls[1]["messages"][-1]["content"]
+    assert "повторить позже" in stop_content
+
+
+def test_hallucination_issues_reach_model_for_retry() -> None:
+    # validate_hallucination — ретрай оправдан: issues в Observation модели
+    # (несуществующие имена секретов не раскрывают), контур продолжает цикл
+    llm = FakeLLM([_tool_call("SELECT pg_sleep(1)"), _text("Исправился")])
+    assert _loop(llm) == "Исправился"
+    content = llm.calls[1]["messages"][-1]["content"]
+    assert "pg_sleep" in content
+    assert "Исправь SQL" in content
+
+
+def test_graph_unavailable_stops_loop() -> None:
+    # R1: рёбра реестра недоступны — fail-closed graph_unavailable (инвариант
+    # «не придумывать связи» не выключается при сбое графа)
+    graph = FakeSchemaGraphStore(error=SchemaGraphError("neo4j down"))
+    executor = FakeExecutor()
+    llm = FakeLLM([_tool_call(), _text("Повторите позже")])
+    assert _loop(llm, executor, graph_store=graph) == "Повторите позже"
+    assert executor.requests == []  # без сверки реестра SQL не исполняется
 
 
 # --- события agent.* через порт Tracer (S21 Task 4, BL-004/D-022) ---
@@ -313,7 +406,7 @@ def test_events_gateway_degradation() -> None:
     answer = run_tool_loop(
         "вопрос",
         llm=CircuitOpenLLM(),
-        tool=RunSqlTool(FakeExecutor()),
+        tool=_gated_tool(),
         ctx=UNIT_CTX,
         tracer=tracer,  # type: ignore[arg-type] — тестовый двойник порта
     )
@@ -335,7 +428,7 @@ def test_observation_event_with_native_types_survives_jsonl_tracer(tmp_path) -> 
     llm = FakeLLM([_tool_call(), _text("Готово")])
     trace_path = tmp_path / "trace.jsonl"
     run_tool_loop(
-        "вопрос", llm=llm, tool=RunSqlTool(executor), ctx=UNIT_CTX, tracer=JsonlTracer(trace_path)
+        "вопрос", llm=llm, tool=_gated_tool(executor), ctx=UNIT_CTX, tracer=JsonlTracer(trace_path)
     )
     records = [json.loads(line) for line in trace_path.read_text(encoding="utf-8").splitlines()]
     observations = [record for record in records if record["event"] == "agent.observation"]
@@ -385,7 +478,7 @@ def test_main_quiet_flag_disables_console_trace(monkeypatch) -> None:  # type: i
         captured["console_trace"] = console_trace
         return SimpleNamespace(
             llm=CircuitOpenLLM(),
-            run_sql_tool=RunSqlTool(FakeExecutor()),
+            run_sql_tool=_gated_tool(),
             tracer=RecordingTracer(),
             # S07: CLI закрывает графовый драйвер в finally (контракт жизненного цикла)
             graph_store=SimpleNamespace(close=lambda: closed.append("driver")),

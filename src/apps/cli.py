@@ -82,7 +82,12 @@ from text_to_sql_agent.application.ports.vector_store import (
     VectorStore,
     VectorStoreError,
 )
-from text_to_sql_agent.application.services.run_sql_tool import SQL_ARGUMENT, TOOL_NAME, RunSqlTool
+from text_to_sql_agent.application.services.run_sql_tool import (
+    SQL_ARGUMENT,
+    TOOL_NAME,
+    RunSqlTool,
+    ToolGateError,
+)
 from text_to_sql_agent.composition.container import Container, build_container
 from text_to_sql_agent.domain.entities import RunContext, Trace
 
@@ -183,6 +188,16 @@ DEGRADED_ANSWER = (
 ERROR_OBSERVATION_TEMPLATE = (
     "[Observation: ОШИБКА вызова run_sql — {error}. Исправь SQL и вызови снова.]"
 )
+# S31/R2 ARCH-GATE: отказ рубежа (acl_denied/инфра) — стоп-исход цикла кодом
+# (ADR-005 §4 «denied → degrade без retry», ADR-002:64 «лимиты retry — код»):
+# текст фиксированный, без имён таблиц (S9/R2) — модель формулирует отказ
+STOP_OBSERVATION_TEMPLATE = (
+    "[Observation: ОТКАЗ — {error}. Повторные вызовы run_sql не изменят ответ "
+    "валидатора; имена недоступных таблиц не называй. Сформулируй вежливый отказ "
+    "пользователю (если причина в доступности данных — посоветуй повторить позже).]"
+)
+# Классы стопа — словарь FSM (R3 ARCH-GATE S31): повтор бессмыслен
+STOP_ERROR_CLASSES = frozenset({"acl_denied", "rights_unavailable", "graph_unavailable"})
 UNKNOWN_TOOL_TEMPLATE = (
     "[Observation: ОШИБКА — вызван неизвестный тул {name}; доступен только run_sql.]"
 )
@@ -245,6 +260,7 @@ def _run_loop(
     tool_rounds_used = 0
     model_calls = 0
     empty_retries_left = EMPTY_RESPONSE_RETRIES
+    gate_stopped = False
     _emit(tracer, EVENT_AGENT_START, trace_id=ctx.trace_id, question=question, mode="tool_loop")
     while tool_rounds_used < max_tool_calls:
         model_calls += 1
@@ -261,9 +277,22 @@ def _run_loop(
                     name=call.name,
                     sql=_tool_sql(call),
                 )
-                content, obs = _observation(call, tool, ctx)
+                content, obs, stop = _observation(call, tool, ctx)
                 messages.append(_tool_message(call, content))
                 _emit(tracer, EVENT_AGENT_OBSERVATION, trace_id=ctx.trace_id, **obs)
+                if stop:
+                    gate_stopped = True
+                    break
+            if gate_stopped:
+                # S31/R2 ARCH-GATE: отказ рубежа (acl_denied/инфра) — контур
+                # формулирует отказ сразу; выход из цикла кодом, ретрай не даётся
+                _emit(
+                    tracer,
+                    EVENT_AGENT_DEGRADE,
+                    trace_id=ctx.trace_id,
+                    reason=f"рубеж тула ({obs['error_class']}): отказ без ретрая",
+                )
+                break
             continue
         if response.text and not _is_malformed_tool_call(response.text):
             _emit(tracer, EVENT_AGENT_ANSWER, trace_id=ctx.trace_id, source="text")
@@ -279,8 +308,10 @@ def _run_loop(
             reason="модель не вернула ни текста, ни вызова тулa после повторов",
         )
         return DEGRADED_ANSWER
-    # Кап исчерпан: финальный вызов без тулов — модель формулирует ответ из Observation.
-    _emit(tracer, EVENT_AGENT_CAP_EXHAUSTED, trace_id=ctx.trace_id, rounds=tool_rounds_used)
+    # Кап исчерпан (или стоп рубежа): финальный вызов без тулов — модель
+    # формулирует ответ из Observation; событие капа — только про кап (S31/R2)
+    if not gate_stopped:
+        _emit(tracer, EVENT_AGENT_CAP_EXHAUSTED, trace_id=ctx.trace_id, rounds=tool_rounds_used)
     final = llm.complete(DEFAULT_ROLE, messages)
     if final.text and not _is_malformed_tool_call(final.text):
         _emit(tracer, EVENT_AGENT_ANSWER, trace_id=ctx.trace_id, source="final_no_tools")
@@ -334,21 +365,41 @@ def _tool_sql(call: ToolCall) -> str:
     return "<аргументы не объект>"
 
 
-def _observation(call: ToolCall, tool: RunSqlTool, ctx: RunContext) -> tuple[str, dict[str, Any]]:
+def _observation(
+    call: ToolCall, tool: RunSqlTool, ctx: RunContext
+) -> tuple[str, dict[str, Any], bool]:
     """Observation-строка для истории + payload события agent.observation (BL-004).
 
     Payload несёт превью данных (≤ OBSERVATION_PREVIEW_ROWS строк) — консольный
     рендер и JSONL; контекст модели это не меняет (OBSERVATION_MAX_ROWS прежний).
+    Третий элемент — стоп-флаг (S31/R2 ARCH-GATE): отказ рубежа
+    acl_denied/инфра — выход из цикла кодом (модель не «уговаривает» валидатор
+    повторами, ADR-005 §4); validate_hallucination — ретрай оправдан, текст для
+    модели несёт issues (несуществующие имена секретов не раскрывают).
     """
     if call.name != TOOL_NAME:
-        # Галлюцинированное имя тулa не диспетчерируется молча (ревью S13 Minor-2)
+        # Галлюцинированное имя тула не диспетчерируется молча (ревью S13 Minor-2)
         message = UNKNOWN_TOOL_TEMPLATE.format(name=call.name)
-        return message, {"ok": False, "error_class": "unknown_tool", "error": message}
+        return message, {"ok": False, "error_class": "unknown_tool", "error": message}, False
     try:
         arguments = json.loads(call.arguments)
         if not isinstance(arguments, dict):
-            raise ValueError("аргументы тулa — JSON-объект, а не скаляр")
+            raise ValueError("аргументы тула — JSON-объект, а не скаляр")
         result = tool.run(arguments, ctx=ctx)
+    except ToolGateError as exc:
+        if exc.error_class in STOP_ERROR_CLASSES:
+            content = STOP_OBSERVATION_TEMPLATE.format(error=exc.message)
+            return (
+                content,
+                {"ok": False, "error_class": exc.error_class, "error": exc.message},
+                True,
+            )
+        content = ERROR_OBSERVATION_TEMPLATE.format(error=exc.message)
+        return (
+            content,
+            {"ok": False, "error_class": exc.error_class, "error": exc.message},
+            False,
+        )
     except (json.JSONDecodeError, ValueError, SQLExecutionError) as exc:
         error_class = (
             exc.error_class.value if isinstance(exc, SQLExecutionError) else "bad_arguments"
@@ -356,6 +407,7 @@ def _observation(call: ToolCall, tool: RunSqlTool, ctx: RunContext) -> tuple[str
         return (
             ERROR_OBSERVATION_TEMPLATE.format(error=exc),
             {"ok": False, "error_class": error_class, "error": str(exc)},
+            False,
         )
     return _format_result(result), {
         "ok": True,
@@ -363,7 +415,7 @@ def _observation(call: ToolCall, tool: RunSqlTool, ctx: RunContext) -> tuple[str
         "rows_preview": result.rows[:OBSERVATION_PREVIEW_ROWS],
         "row_count": result.row_count,
         "truncated": result.truncated,
-    }
+    }, False
 
 
 def _format_result(result: QueryResult) -> str:
@@ -542,6 +594,7 @@ def run_agent_flow(
     tool_rounds_used = 0
     model_calls = 0
     empty_retries_left = EMPTY_RESPONSE_RETRIES
+    gate_stopped = False
     while tool_rounds_used < max_tool_calls:
         model_calls += 1
         _emit(tracer, EVENT_AGENT_ROUND, trace_id=ctx.trace_id, call=model_calls)
@@ -585,13 +638,27 @@ def run_agent_flow(
                     name=call.name,
                     sql=_tool_sql(call),
                 )
-                content, obs = _observation(call, tool, ctx)
+                content, obs, stop = _observation(call, tool, ctx)
                 messages.append(_tool_message(call, content))
                 _emit(tracer, EVENT_AGENT_OBSERVATION, trace_id=ctx.trace_id, **obs)
+                if stop:
+                    gate_stopped = True
+                    break
             if printer is not None and printed:
                 # Префамбула тул-хода отделена от следующего хода (M2 ревью S25) —
                 # иначе «Считаю клиентов… Ответ: 5» склеивается на экране
                 printer("\n")
+            if gate_stopped:
+                # S31/R2 ARCH-GATE: отказ рубежа — отказ формулируется сразу;
+                # финальный стрим-вызов без тулов поверх напечатанной преамбулы —
+                # штатный исход (_stream_outcome, Ловушка 5)
+                _emit(
+                    tracer,
+                    EVENT_AGENT_DEGRADE,
+                    trace_id=ctx.trace_id,
+                    reason=f"рубеж тула ({obs['error_class']}): отказ без ретрая",
+                )
+                break
             continue  # преамбула остаётся на экране, agent.answer не эмитится
         if answer.strip() and not _is_malformed_tool_call(answer):
             _emit(tracer, EVENT_AGENT_ANSWER, trace_id=ctx.trace_id, source="agent_stream")
@@ -629,9 +696,11 @@ def run_agent_flow(
             reason="модель не вернула ни текста, ни вызова тулa после повторов",
         )
         return _stream_outcome(printer, shown=answer, printed=printed, message=DEGRADED_ANSWER)
-    # Кап ходов исчерпан: финальный СТРИМ-вызов БЕЗ тулов — модель формулирует
-    # ответ из Observation (ruling ARCH-GATE S13 Q5); ретраев нет — как в тул-контуре
-    _emit(tracer, EVENT_AGENT_CAP_EXHAUSTED, trace_id=ctx.trace_id, rounds=tool_rounds_used)
+    # Кап ходов исчерпан (или стоп рубежа): финальный СТРИМ-вызов БЕЗ тулов —
+    # модель формулирует ответ из Observation (ruling ARCH-GATE S13 Q5);
+    # событие капа — только про кап (S31/R2)
+    if not gate_stopped:
+        _emit(tracer, EVENT_AGENT_CAP_EXHAUSTED, trace_id=ctx.trace_id, rounds=tool_rounds_used)
     chunks = []
     try:
         _consume_stream(llm, messages, tools=None, printer=printer, chunks=chunks)
