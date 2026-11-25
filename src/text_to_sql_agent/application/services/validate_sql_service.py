@@ -46,6 +46,7 @@ from text_to_sql_agent.domain.sql_validation import (
     ValidationOutcome,
     ValidationVerdict,
     star_expansion_columns,
+    validate_free_sql,
     validate_sql,
 )
 
@@ -325,6 +326,7 @@ def _build_audit(tree: exp.Expression) -> SqlAudit:
             star_sources.append(tuple(SqlSource(name=s.name, kind=s.kind) for s in sources))
 
     root_maps = maps_by_scope.get(id(root_select), []) if root_select is not None else []
+    join_pairs, unresolved = _collect_join_pairs(scopes, sources_by_scope)
     return SqlAudit(
         from_table=_from_table(root_select),
         tables=_collect_tables(tree),
@@ -334,7 +336,41 @@ def _build_audit(tree: exp.Expression) -> SqlAudit:
         outer_limit=_collect_outer_limit(tree),
         functions=_collect_functions(tree),
         star_sources=tuple(star_sources),
+        join_table_pairs=join_pairs,
+        unresolved_join_scopes=unresolved,
     )
+
+
+def _collect_join_pairs(
+    scopes: list[exp.Select],
+    sources_by_scope: dict[int, list[_Source]],
+) -> tuple[tuple[tuple[str, str], ...], bool]:
+    """Пары операндов JOIN по всем скоупам + флаг несверяемых скоупов (S31, R1 ARCH-GATE).
+
+    Цепочка скоупа: FROM → JOIN-секции в порядке появления (comma/cross — те же
+    Join-узлы); пара — соседние операнды-ТАБЛИЦЫ (реестр связывает таблицы, не
+    алиасы). Ссылка на CTE/производный источник между таблицами пару реестром не
+    выражает — ``unresolved`` (свободный вход fail-closed); CTE+CTE связи не
+    выдумывают (тела проверены своими скоупами). FSM-вход поля не читает:
+    структура джойнов там сверяется со скелетом плана (_check_skeleton).
+    """
+    pairs: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    unresolved = False
+    for scope in scopes:
+        prev: _Source | None = None
+        for source in sources_by_scope[id(scope)]:
+            if prev is not None:
+                if prev.kind == "table" and source.kind == "table":
+                    pair = tuple(sorted((prev.name, source.name)))
+                    if pair not in seen:
+                        seen.add(pair)
+                        pairs.append(pair)
+                elif prev.kind != source.kind:
+                    # таблица↔производный источник — пара реестром не выражается
+                    unresolved = True
+            prev = source
+    return tuple(pairs), unresolved
 
 
 def _resolve_outer_ref(name: str, maps: list[dict[str, _Source]]) -> _Source | None:
@@ -738,6 +774,37 @@ class ValidateSqlResult(BaseModel):
     sql: str
 
 
+def _form_reject(sql: str, reason: str, row_limit: int) -> ValidateSqlResult:
+    """Форм-отказ парсинга/обхода — вердикт hallucination с исходным SQL без
+    изменений (ничего не исполняется); общий для обоих входов (FSM/свободный)."""
+    return ValidateSqlResult(
+        verdict=ValidationVerdict(
+            outcome=ValidationOutcome.HALLUCINATION,
+            issues=(f"SQL отвергнут по форме: {reason}",),
+            enforced_limit=row_limit,
+        ),
+        sql=sql,
+    )
+
+
+def _result_with_rewrites(
+    sql: str,
+    tree: exp.Expression,
+    verdict: ValidationVerdict,
+    permissions: Mapping[str, Sequence[str]],
+) -> ValidateSqlResult:
+    """Ok-вердикт → перепись текста на AST (ruling R1/R2 ARCH-GATE S11): внешний
+    LIMIT добавлен/скламплен, литеральные звёзды развёрнуты в разрешённые колонки —
+    к исполнителю уходит только проверенный текст. Общий для обоих входов."""
+    final_sql = sql
+    if verdict.outcome is ValidationOutcome.OK:
+        expanded = _expand_stars(tree, permissions)
+        limited = _enforce_limit(tree, verdict.enforced_limit)
+        if expanded or limited:
+            final_sql = tree.sql(dialect="postgres")
+    return ValidateSqlResult(verdict=verdict, sql=final_sql)
+
+
 class ValidateSqlService:
     """Детерминированная валидация (без LLM/IO): glue sqlglot ↔ domain (ruling R4).
 
@@ -761,14 +828,7 @@ class ValidateSqlService:
             tree = _parse_tree(sql)
             audit = _build_audit(tree)
         except SqlAuditError as exc:
-            return ValidateSqlResult(
-                verdict=ValidationVerdict(
-                    outcome=ValidationOutcome.HALLUCINATION,
-                    issues=(f"SQL отвергнут по форме: {exc.reason}",),
-                    enforced_limit=row_limit,
-                ),
-                sql=sql,
-            )
+            return _form_reject(sql, exc.reason, row_limit)
         verdict = validate_sql(
             audit,
             skeleton=skeleton,
@@ -778,10 +838,33 @@ class ValidateSqlService:
             data_catalog=data_catalog,
             row_limit=row_limit,
         )
-        final_sql = sql
-        if verdict.outcome is ValidationOutcome.OK:
-            expanded = _expand_stars(tree, permissions)
-            limited = _enforce_limit(tree, verdict.enforced_limit)
-            if expanded or limited:
-                final_sql = tree.sql(dialect="postgres")
-        return ValidateSqlResult(verdict=verdict, sql=final_sql)
+        return _result_with_rewrites(sql, tree, verdict, permissions)
+
+    def validate_free(
+        self,
+        sql: str,
+        *,
+        permissions: Mapping[str, Sequence[str]],
+        data_catalog: frozenset[str] | set[str],
+        row_limit: int,
+        join_edges: frozenset[tuple[str, str]],
+    ) -> ValidateSqlResult:
+        """Свободный вход тул-контура (S31/D-033 п.5 вариант A): тот же парсинг,
+        обход и ok-перепись (звёзды/LIMIT — к исполнителю уходит только проверенный
+        текст), политика — ``validate_free_sql`` (общий ACL + инвариант реестра
+        вместо скелета). Рёбра реестра читает вызывающий контур на каждый прогон
+        (``SchemaGraphStore.join_edges``); форм-отказ — тот же вердикт
+        hallucination с исходным SQL без изменений."""
+        try:
+            tree = _parse_tree(sql)
+            audit = _build_audit(tree)
+        except SqlAuditError as exc:
+            return _form_reject(sql, exc.reason, row_limit)
+        verdict = validate_free_sql(
+            audit,
+            permissions=permissions,
+            data_catalog=data_catalog,
+            row_limit=row_limit,
+            join_edges=join_edges,
+        )
+        return _result_with_rewrites(sql, tree, verdict, permissions)

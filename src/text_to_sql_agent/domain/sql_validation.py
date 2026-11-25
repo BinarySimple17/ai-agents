@@ -160,6 +160,13 @@ class SqlAudit(BaseModel):
     functions: tuple[str, ...] = ()
     # источники скоупа на каждую литеральную «*» проекции (COUNT(*) — не проекция)
     star_sources: tuple[tuple[SqlSource, ...], ...] = ()
+    # S31 (свободный вход тул-контура): пары операндов JOIN по всем скоупам —
+    # каждый элемент отсортирован (направление не семантично), дублей нет.
+    # FSM-вход игнорирует (структуру фиксирует скелет), свободный сверяет с реестром
+    join_table_pairs: tuple[tuple[str, str], ...] = ()
+    # скоуп, где таблица соединяется с производным источником (CTE/подзапрос/LATERAL):
+    # пара операндов реестром не выражается — свободный вход fail-closed, FSM игнорирует
+    unresolved_join_scopes: bool = False
 
 
 class ValidationVerdict(BaseModel):
@@ -215,6 +222,73 @@ def validate_sql(
         issues=tuple(issues_denied + issues_hallucination),
         enforced_limit=enforced,
     )
+
+
+def validate_free_sql(
+    audit: SqlAudit,
+    *,
+    permissions: Mapping[str, Sequence[str]],
+    data_catalog: frozenset[str] | set[str],
+    row_limit: int,
+    join_edges: frozenset[tuple[str, str]],
+) -> ValidationVerdict:
+    """Вердикт над свободным SQL тул-контура (S31/D-033 п.5 вариант A).
+
+    Общая часть с ``validate_sql`` — функции/таблицы/колонки/звёзды/LIMIT (правило 2
+    сессии S31: один валидатор — две политики, второй копии ACL нет); сверки скелета
+    НЕТ — плана у тул-контура нет. Вместо неё — инвариант реестра (R1 ARCH-GATE,
+    prd FR-2/FR-4 «модель не может придумать связь»): пара операндов каждого JOIN
+    обязана быть ребром активного снимка реестра (``join_edges`` — sorted lowercase
+    пары от ``SchemaGraphStore.join_edges``); соединение таблицы с производным
+    источником парой не выражается — fail-closed (``_check_join_pairs``). Права,
+    каталог и рёбра читает вызывающий контур на каждый прогон (чистая функция,
+    без IO — ruling R4 ARCH-GATE S11).
+    """
+    if row_limit <= 0:
+        raise ValueError(f"row_limit должен быть положительным, получен {row_limit}")
+    _check_permissions_contract(permissions)
+    issues_denied: list[str] = []
+    issues_hallucination: list[str] = []
+    _check_functions(audit, issues_hallucination)
+    _check_tables(audit, permissions, data_catalog, issues_denied, issues_hallucination)
+    _check_columns(audit, permissions, data_catalog, issues_denied, issues_hallucination)
+    _check_stars(audit, permissions, issues_denied)
+    _check_join_pairs(audit, join_edges, issues_hallucination)
+    enforced = _enforced_limit(audit.outer_limit, row_limit)
+    return ValidationVerdict(
+        outcome=_merge_outcome(issues_denied, issues_hallucination),
+        issues=tuple(issues_denied + issues_hallucination),
+        enforced_limit=enforced,
+    )
+
+
+def _check_join_pairs(
+    audit: SqlAudit,
+    join_edges: frozenset[tuple[str, str]],
+    issues: list[str],
+) -> None:
+    """Инвариант реестра (R1 ARCH-GATE S31): JOIN только по рёбрам снапшота.
+
+    Пары — из IR (``join_table_pairs``: цепочка FROM/JOIN скоупа, comma/cross —
+    та же цепочка источников); пары без ребра — hallucination («связь выдумана»,
+    ADR-006: ретрай оправдан — модель может перестроить запрос по реальным
+    связям). Смешанный скоуп (таблица + производный источник) парой реестра не
+    выражается — fail-closed hallucination (``unresolved_join_scopes``); CTE+CTE
+    алгебра над проверенными телами связей не выдумывает — разрешена. FSM-вход
+    оба поля игнорирует: структура джойнов там сверяется со скелетом плана.
+    """
+    if audit.unresolved_join_scopes:
+        issues.append(
+            "соединение таблицы с производным источником (CTE/подзапрос/LATERAL) "
+            "не сверяется с реестром — свободный режим поддерживает джойны только "
+            "между таблицами"
+        )
+    for left, right in audit.join_table_pairs:
+        if (left, right) not in join_edges:
+            issues.append(
+                f"связь {left}↔{right} не существует в реестре (agent_relationships) — "
+                "джойн придуман"
+            )
 
 
 def _check_functions(audit: SqlAudit, issues: list[str]) -> None:
