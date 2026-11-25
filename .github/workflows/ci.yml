@@ -34,8 +34,11 @@ jobs:
         with:
           python-version: "3.13"
 
-      # uv запинен на версию локального окружения — один резолв локально и в CI
-      - uses: astral-sh/setup-uv@v10
+      # uv запинен на версию локального окружения — один резолв локально и в CI.
+      # Пин на точный тег: катящийся major-тег `v10` setup-uv НЕ публикует
+      # (живой прогон 2026-11-25: «unable to find version v10», 6с failure);
+      # SHA-пины и permissions — BL-038
+      - uses: astral-sh/setup-uv@v10.4.0
         with:
           version: "0.11.24"
           enable-cache: true
