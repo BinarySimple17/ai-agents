@@ -18,7 +18,8 @@
 cp .env.example .env          # локально ничего; для облака — LLM_BASE_URL + ключ
 ./init.sh                     # установка зависимостей + верификация (make check)
 make infra-up                 # PostgreSQL + Valkey (по требованию)
-make dev Q="Сколько заказов у клиентов из РФ?"
+make dev Q="Сколько заказов у клиентов из РФ?"   # identity — DEV_TOKEN из .env (S31);
+# разовое переопределение: make dev Q="..." TOKEN=dev-logist-token (AGENT_DEV_TOKENS)
 ```
 
 Верификация фич — `make verify-feature F=feat-XXX`; состояние фич — `feature_list.json`.

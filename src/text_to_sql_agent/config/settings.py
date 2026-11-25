@@ -195,6 +195,13 @@ class Settings(BaseSettings):
     # --token (сырой --user verify не проходит).
     agent_dev_tokens: SecretStr = SecretStr("")
 
+    # Токен по умолчанию для SQL-контуров CLI (S31/Task 3: identity — проверенный
+    # токен для ЛЮБОГО контура, исполняющего SQL, не только --fsm). Значение —
+    # одна из пар AGENT_DEV_TOKENS (секрет .env, SecretStr по той же причине);
+    # CLI --token имеет приоритет, пусто → без --token отказ до LLM-вызова
+    # (fail-closed). make dev берёт отсюда — быстрый старт без аргументов.
+    dev_token: SecretStr = SecretStr("")
+
     # --- Трейс (FR-11): JSONL вне git; дефолт — канонный путь наблюдаемости ---
     trace_jsonl_path: Path = Path(".harness/traces/trace.jsonl")
 

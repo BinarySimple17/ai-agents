@@ -160,6 +160,17 @@ class SqlAudit(BaseModel):
     functions: tuple[str, ...] = ()
     # источники скоупа на каждую литеральную «*» проекции (COUNT(*) — не проекция)
     star_sources: tuple[tuple[SqlSource, ...], ...] = ()
+    # S31 (свободный вход тул-контура): пары утверждённых связей JOIN по всем
+    # скоупам — связывающие равенства ON (присоединяемый источник × контрагент;
+    # формы без равенств — соседние операнды цепочки); каждый элемент отсортирован
+    # (направление не семантично), дублей нет. FSM-вход игнорирует (структуру
+    # фиксирует скелет), свободный сверяет с реестром
+    join_table_pairs: tuple[tuple[str, str], ...] = ()
+    # несверяемая форма: производный источник в операнде JOIN ИЛИ в корреляции,
+    # соединение без равенства, связывающего присоединяемый источник с уже
+    # присоединёнными в конъюнкции ON, корреляция со скоупом без табличных
+    # источников — свободный вход fail-closed, FSM игнорирует
+    unresolved_join_scopes: bool = False
 
 
 class ValidationVerdict(BaseModel):
@@ -215,6 +226,85 @@ def validate_sql(
         issues=tuple(issues_denied + issues_hallucination),
         enforced_limit=enforced,
     )
+
+
+def validate_free_sql(
+    audit: SqlAudit,
+    *,
+    permissions: Mapping[str, Sequence[str]],
+    data_catalog: frozenset[str] | set[str],
+    row_limit: int,
+    join_edges: frozenset[tuple[str, str]],
+) -> ValidationVerdict:
+    """Вердикт над свободным SQL тул-контура (S31/D-033 п.5 вариант A).
+
+    Общая часть с ``validate_sql`` — функции/таблицы/колонки/звёзды/LIMIT (правило 2
+    сессии S31: один валидатор — две политики, второй копии ACL нет); сверки скелета
+    НЕТ — плана у тул-контура нет. Вместо неё — инвариант реестра (R1 ARCH-GATE,
+    prd FR-2/FR-4 «модель не может придумать связь»): пара операндов каждого JOIN
+    обязана быть ребром активного снимка реестра (``join_edges`` — sorted lowercase
+    пары от ``SchemaGraphStore.join_edges``); несверяемые формы (производный
+    источник в операнде/корреляции, соединение ≥3 таблиц без равенства,
+    связывающего присоединяемый источник с уже присоединёнными в конъюнкции ON) —
+    fail-closed (``_check_join_pairs``, там же честная граница по semi-join).
+    Права, каталог и рёбра читает вызывающий контур на каждый прогон (чистая
+    функция, без IO — ruling R4 ARCH-GATE S11).
+    """
+    if row_limit <= 0:
+        raise ValueError(f"row_limit должен быть положительным, получен {row_limit}")
+    _check_permissions_contract(permissions)
+    issues_denied: list[str] = []
+    issues_hallucination: list[str] = []
+    _check_functions(audit, issues_hallucination)
+    _check_tables(audit, permissions, data_catalog, issues_denied, issues_hallucination)
+    _check_columns(audit, permissions, data_catalog, issues_denied, issues_hallucination)
+    _check_stars(audit, permissions, issues_denied)
+    _check_join_pairs(audit, join_edges, issues_hallucination)
+    enforced = _enforced_limit(audit.outer_limit, row_limit)
+    return ValidationVerdict(
+        outcome=_merge_outcome(issues_denied, issues_hallucination),
+        issues=tuple(issues_denied + issues_hallucination),
+        enforced_limit=enforced,
+    )
+
+
+def _check_join_pairs(
+    audit: SqlAudit,
+    join_edges: frozenset[tuple[str, str]],
+    issues: list[str],
+) -> None:
+    """Инвариант реестра (R1 ARCH-GATE S31): соединение — только по рёбрам снапшота.
+
+    Пары — из IR (``join_table_pairs``: пары связывающих равенств ON скоупов —
+    присоединяемый источник × контрагент; формы без равенств (USING, 2-табличное
+    произведение) — соседние операнды цепочки; пары корреляций — цикл колонок в
+    services); пары без ребра — hallucination («связь выдумана», ADR-006: ретрай
+    оправдан — модель может перестроить запрос по реальным связям). Несверяемые
+    формы (``unresolved_join_scopes``: производный источник в операнде JOIN или
+    в корреляции, соединение без связывающего равенства в конъюнкции ON,
+    корреляция со скоупом без таблиц) —
+    fail-closed hallucination: обёртка CTE/подзапросом связь не легализует (ruling
+    «CTE+CTE — алгебра над телами» отозван ревью S31; повторное ревью закрыло обход
+    через корреляцию). Вне сверки BY DESIGN: semi-join и скалярный подзапрос БЕЗ
+    корреляции (``IN (SELECT …)``, ``= (SELECT …)``, ``= ANY(…)``) сравнивают со
+    значение-множеством и соединения строк не образуют — честная граница инварианта
+    записана в ADR-006 §4 (BL-045). FSM-вход оба поля игнорирует: структура джойнов
+    там сверяется со скелетом плана.
+    """
+    if audit.unresolved_join_scopes:
+        issues.append(
+            "соединение вне сверяемых пар таблиц (производный источник в операнде "
+            "JOIN или в корреляции, нет равенства, связывающего присоединяемую "
+            "таблицу с уже присоединёнными в конъюнкции ON) не сверяется "
+            "с реестром — свободный режим поддерживает джойны только между таблицами"
+        )
+    for left, right in audit.join_table_pairs:
+        if left == right:
+            # self-join таблицы к себе — реестром не утверждается связь между
+            # РАЗНЫМИ таблицами (ревью S31: симметрия с self-join через CTE)
+            continue
+        if (left, right) not in join_edges:
+            issues.append(f"связь {left}↔{right} не существует в реестре связей — джойн придуман")
 
 
 def _check_functions(audit: SqlAudit, issues: list[str]) -> None:

@@ -276,3 +276,21 @@ def test_contract_violations_raise_value_error(store):
         store.find_join_paths("orders", "orders", ctx=CTX, allowed_tables=ALLOWED_LOGIST, k=1)
     with pytest.raises(ValueError, match="k"):
         store.find_join_paths("customers", "orders", ctx=CTX, allowed_tables=ALLOWED_LOGIST, k=0)
+
+
+def test_join_edges_active_snapshot_pairs(store):
+    # S31/R1 (ревью I3): join_edges — топология единого рубежа тул-контура
+    # (validate_free_sql сверяет пары JOIN со снимком). Контракт порта: sorted
+    # lowercase пары активного снимка; undirected MATCH — оба направления
+    # дедуплицируются. Регрессия на Cypher/label/регистр: поломка молча
+    # превратила бы любой многотабличный свободный запрос в hallucination
+    expected = frozenset(
+        {
+            ("campaigns", "orders"),
+            ("customers", "orders"),
+            ("order_items", "orders"),
+            ("order_items", "products"),
+            ("bonuses", "employees"),
+        }
+    )
+    assert store.join_edges(ctx=CTX) == expected

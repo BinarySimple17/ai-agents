@@ -74,6 +74,9 @@ class Container:
     interpret_service: InterpretService
     degrade_service: DegradeService
     auth_provider: AuthProvider
+    # Права как публичный доступ CLI (S31 Task 3): снапшот прав прогона для
+    # схемы промпта — ТЕ ЖЕ экземпляр и канал, что у тула и resolve_access
+    permission_store: PermissionStore
     resolve_access_service: ResolveAccessService
     # Сессии interrupt (S08, ruling R2): ValkeyCheckpointer в проде;
     # MemorySaver/фейк в тестах — контракт сейвера задан LangGraph (Any)
@@ -129,7 +132,6 @@ def build_container(
     )
     # Канал SQL — строго AGENT_RO_DSN (security §2.1); сервисный POSTGRES_DSN — не здесь.
     executor = executor or PostgresExecutor(settings.agent_ro_dsn.get_secret_value())
-    run_sql_tool = RunSqlTool(executor)
     # Векторная память (S06/S26): поиск — agent_planner (c4-l2 v1.8 «пул agent_planner:
     # retrieval»); write_dsn (сервисный) — только офлайн-индексация
     # make index-knowledge; runtime-роли в память знаний не пишут (ruling W1).
@@ -197,6 +199,17 @@ def build_container(
     # — BL-009) на каждый запрос, инъекция фейка — юнит-тесты wiring
     if validate_sql_service is None:
         validate_sql_service = ValidateSqlService()
+    # Тул run_sql за ЕДИНЫМ рубежом (S31/D-033 п.5 вариант A — аудит A1/E1):
+    # ТЕ ЖЕ экземпляры, что у FSM-ребра validate_sql (валидатор/права/рёбра
+    # реестра — одна сборка, правило 2 сессии S31 «один валидатор — две политики»);
+    # tracer — события validate_sql.verdict/unavailable с contour="tool_loop" (R3).
+    run_sql_tool = RunSqlTool(
+        executor,
+        validator=validate_sql_service,
+        permission_store=permission_store,
+        graph_store=graph_store,
+        tracer=tracer,
+    )
     # Узел clarify (S08/feat-008): классификация однозначности + interrupt-
     # механика. Шов бюджета — ruling Q7 (переведён на порт BudgetGuard, S15).
     if clarify_service is None:
@@ -292,6 +305,7 @@ def build_container(
         interpret_service=interpret_service,
         degrade_service=degrade_service,
         auth_provider=auth_provider,
+        permission_store=permission_store,
         resolve_access_service=resolve_access_service,
         checkpointer=checkpointer,
         fsm_runner=fsm_runner,

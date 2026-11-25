@@ -19,10 +19,10 @@ from typing import Any
 import httpx
 import openai
 import pytest
+from pydantic import SecretStr
 
 from apps import cli as cli_module
 from apps.cli import (
-    AGENT_SYSTEM_PROMPT,
     DEGRADED_ANSWER,
     EMPTY_RESPONSE_RETRIES,
     LLM_DEGRADED_TEMPLATE,
@@ -31,7 +31,7 @@ from apps.cli import (
     RETRIEVAL_UNAVAILABLE_NOTE,
     run_agent_flow,
 )
-from tests.unit.fakes import UNIT_CTX, RecordingTracer
+from tests.unit.fakes import UNIT_CTX, FakePermissionStore, RecordingTracer
 from tests.unit.test_llm_client import _embed_client, _settings
 from tests.unit.test_retrieval_flow import _doc
 from tests.unit.test_streaming import _BreakingTransport
@@ -48,9 +48,10 @@ from text_to_sql_agent.application.ports.sql_executor import (
     SQLFailureClass,
 )
 from text_to_sql_agent.application.ports.vector_store import VectorStoreError
-from text_to_sql_agent.application.services.run_sql_tool import TOOL_NAME
+from text_to_sql_agent.application.services.run_sql_tool import TOOL_NAME, ToolGateError
 from text_to_sql_agent.infrastructure.llm.openai_provider import OpenAIProvider
 from text_to_sql_agent.infrastructure.observability.console_tracer import ConsoleTracer
+from text_to_sql_agent.infrastructure.persistence.dev_token_auth import DevTokenAuth
 
 _QUERY_VECTOR = [0.1] * 1024
 
@@ -430,9 +431,10 @@ def test_agent_flow_embed_failure_degrades_context_not_run() -> None:
     degrade = next(e for e in tracer.events if e.event == "agent.degrade")
     assert "retrieval недоступен" in degrade.payload["reason"]
     # Блока контекста нет; базовый промпт обещает «выданный ниже» — честная
-    # заметка о недоступности вместо нарушенного обещания (M10 ревью S25)
+    # заметка о недоступности вместо нарушенного обещания (M10 ревью S25);
+    # S31: база рендерится по правам прогона (None — «права не загружены»)
     system = llm.calls[0]["messages"][0]["content"]
-    assert system.startswith(AGENT_SYSTEM_PROMPT)
+    assert system.startswith(cli_module._render_system_prompt(None, agent=True))
     assert RETRIEVAL_UNAVAILABLE_NOTE in system
     assert not any(e.event == "agent.retrieve" for e in tracer.events)
 
@@ -603,6 +605,10 @@ def _agent_container(tracer: Any, scripts: list[list[Any]] | None = None) -> Sim
         run_sql_tool=FakeTool(),
         vector_store=FakeStore(),
         tracer=tracer,
+        # S31: main верифицирует токен ДО флоу и берёт права для схемы промпта
+        auth_provider=DevTokenAuth({"u_logist": "dev-logist-token"}),
+        settings=SimpleNamespace(dev_token=SecretStr("dev-logist-token")),
+        permission_store=FakePermissionStore({"orders": ("*",), "customers": ("*",)}),
         # S07: графовый драйвер в контейнере — CLI закрывает его в finally
         graph_store=SimpleNamespace(close=lambda: None),
     )
@@ -689,3 +695,91 @@ def test_fsm_eof_on_stdin_is_valid_refusal(
     assert exit_code == 0  # clarification — содержательный исход с ответом-вопросом
     assert "Исход: clarification" in captured.out
     assert "не получен" in captured.out
+
+
+def test_agent_flow_gate_denied_stops_after_printed_preamble() -> None:
+    # S31 (R2 ARCH-GATE, Ловушка 5): отказ рубежа (acl_denied) после напечатанной
+    # преамбулы — штатный исход: напечатанное сохранено, финальный стрим без
+    # тулов поверх преамбулы (_stream_outcome), повторов тула нет
+    preamble_turn = [
+        StreamChunk(text_delta="Считаю клиентов..."),
+        StreamFinal(
+            model="fake",
+            finish_reason="tool_calls",
+            tool_calls=[
+                ToolCall(
+                    id="call-1",
+                    name=TOOL_NAME,
+                    arguments=json.dumps({"sql": "SELECT salary FROM employees"}),
+                )
+            ],
+        ),
+    ]
+    llm = FakeAgentLLM([preamble_turn, _text_turn("Часть данных вам недоступна")])
+    tool = FakeTool(
+        error=ToolGateError("acl_denied", "часть данных по этому вопросу вам недоступна")
+    )
+    printed: list[str] = []
+    tracer = RecordingTracer()
+    answer = run_agent_flow(
+        "вопрос",
+        llm=llm,
+        tool=tool,
+        vector_store=FakeStore(),
+        ctx=UNIT_CTX,
+        tracer=tracer,
+        printer=printed.append,
+    )
+    assert printed[0] == "Считаю клиентов..."  # преамбула осталась на экране
+    assert "\n" in printed  # M2-разделитель перед финальным ходом
+    assert answer == "Часть данных вам недоступна"
+    # Финальный ход — БЕЗ тулов (модель формулирует отказ, не ретрай)
+    assert llm.calls[1]["tools"] is None
+    assert "Повторные вызовы run_sql" in llm.calls[1]["messages"][-1]["content"]
+    degrade = [e for e in tracer.events if e.event == "agent.degrade"]
+    assert any("acl_denied" in e.payload["reason"] for e in degrade)
+
+
+def test_agent_flow_stop_answers_every_tool_call_id_in_round() -> None:
+    # Re-review S31 I6 (зеркало test_tool_loop.py::test_stop_answers_every_tool_call_id):
+    # denied в ПЕРВОМ из двух tool_calls одного хода стрим-контура — второй
+    # исполняется, ВСЕ id получают tool-ответ (возврат «break по ходу» дал бы
+    # неотвеченный call-2 = 400 шлюза на финальном вызове; дефолтный путь CLI —
+    # именно стриминговый, поэтому защита отдельным тестом)
+    two_calls_turn = [
+        StreamChunk(text_delta="Считаю..."),
+        StreamFinal(
+            model="fake",
+            finish_reason="tool_calls",
+            tool_calls=[
+                ToolCall(
+                    id="call-1",
+                    name=TOOL_NAME,
+                    arguments=json.dumps({"sql": "SELECT salary FROM employees"}),
+                ),
+                ToolCall(id="call-2", name=TOOL_NAME, arguments=json.dumps({"sql": "SELECT 1"})),
+            ],
+        ),
+    ]
+    llm = FakeAgentLLM([two_calls_turn, _text_turn("Часть данных вам недоступна")])
+    tool = FakeTool(
+        error=ToolGateError("acl_denied", "часть данных по этому вопросу вам недоступна")
+    )
+    printed: list[str] = []
+    tracer = RecordingTracer()
+    answer = run_agent_flow(
+        "вопрос",
+        llm=llm,
+        tool=tool,
+        vector_store=FakeStore(),
+        ctx=UNIT_CTX,
+        tracer=tracer,
+        printer=printed.append,
+    )
+    assert answer == "Часть данных вам недоступна"
+    final_msgs = llm.calls[1]["messages"]
+    assistant = next(m for m in final_msgs if m["role"] == "assistant")
+    assert [tc["id"] for tc in assistant["tool_calls"]] == ["call-1", "call-2"]
+    tool_msgs = [m for m in final_msgs if m["role"] == "tool"]
+    assert [m["tool_call_id"] for m in tool_msgs] == ["call-1", "call-2"]  # I2-инвариант
+    assert llm.calls[1]["tools"] is None  # финал без тулов: отказ, не ретрай

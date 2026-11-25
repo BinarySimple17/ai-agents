@@ -270,7 +270,7 @@
       "id": "feat-011",
       "name": "validate_sql (AST + ACL)",
       "description": "Главный рубеж безопасности: sqlglot-парсинг (диалект postgres, только SELECT, одна инструкция, запрет SET/COPY/CALL/DO и функций deny-list, обход CTE/UNION/подзапросов/LATERAL, LIMIT к внешнему запросу), таблицы/колонки ∈ правам (вкл. ACL колонок соединения), deny-list схем (pg_catalog, information_schema, служебные схемы графа, agent_*), скелет не изменён (skeleton_hash, mandatory_predicates на месте), джойны ⊆ edge_id плана. Три исхода: ok / галлюцинация (→ diagnose_error, retry) / чужие данные (→ degrade, без retry)",
-      "behavior": "Запрос с DML/DDL, второй инструкцией, запрещённой схемой/таблицей/колонкой, джойном вне edge_id плана, изменённым скелетом или отсутствующим mandatory_predicates не выполняется; несуществующее → retry-ветка, вне прав → degrade без retry; валидный SELECT с LIMIT к внешнему запросу проходит дальше.",
+      "behavior": "Запрос с DML/DDL, второй инструкцией, запрещённой схемой/таблицей/колонкой, джойном вне edge_id плана, изменённым скелетом или отсутствующим mandatory_predicates не выполняется; несуществующее → retry-ветка, вне прав → degrade без retry; валидный SELECT с LIMIT к внешнему запросу проходит дальше. (S31: behavior описывает FSM-вход — свободный вход тул-контура имеет собственные acceptance-критерии сессии S31/D-033 п.5: общий ACL без скелета + инвариант реестра join_edges.)",
       "verification": "uv run pytest src/tests/unit/test_validate_sql.py -q",
       "dependencies": [
         "feat-005",
@@ -323,7 +323,7 @@
       "id": "feat-013",
       "name": "SQLExecutor: тул run_sql + узел execute_sql",
       "description": "Выполнение под read-only ролью agent_ro: LIMIT 1000, statement_timeout 30s. Ошибка SQL → diagnose_error, пустой результат → probe COUNT (state-agent v1.4). Тул run_sql (function calling, ДЗ-02) доступен сразу после БД; в FSM узел подключается после validate_sql (ДЗ-05). Артефакты ДЗ-02 в объёме фичи (hw-plan §2): JSON-схема тулa (аргументы валидируются кодом), function-calling цикл «вопрос → LLM → run_sql → Observation → ответ» в apps.cli, SOP тулa (когда звать / чего не звать / действие при ошибке).",
-      "behavior": "Тул run_sql выполняет SELECT под read-only ролью agent_ro (LIMIT 1000, timeout 30s) и возвращает ошибку модели как Observation (начало цикла самокоррекции); в FSM узел маршрутизирует SQL-ошибку в diagnose_error, а 0 строк — в probe COUNT (state-agent v1.4). Read-only проверен попыткой INSERT (отказ БД — read-only сессии, рубеж 5 ADR-005).",
+      "behavior": "Тул run_sql исполняет SELECT под read-only ролью agent_ro (LIMIT 1000, timeout 30s) ТОЛЬКО после единого рубежа (S31/D-033 п.5, аудит A1/E1): права по verified-identity (PermissionStore на каждый прогон) → validate_free — общий ACL с FSM + инвариант реестра (пара операндов JOIN = ребро активного снимка join_edges); исполнитель получает переписанный ok-текст (LIMIT/звёзды); отказ — ToolGateError: validate_hallucination (issues модели, ретрай оправдан) / acl_denied (стоп без ретрая, фиксированный текст S9) / rights_unavailable, graph_unavailable (стоп); возвращает ошибку модели как Observation (цикл самокоррекции); в FSM узел маршрутизирует SQL-ошибку в diagnose_error, 0 строк — probe COUNT (state-agent v1.4). Read-only проверен попыткой INSERT (рубеж 5 ADR-005); регрессия Critical «SQL чужой таблицы не доходит до исполнителя» — bite RED на до-фиксовом коде.",
       "verification": "make infra-up && uv run pytest src/tests/integration/test_execute_sql.py -q",
       "dependencies": [
         "feat-002"
@@ -519,7 +519,7 @@
       "id": "feat-020",
       "name": "Объединённый контур ДЗ-03: retrieval + тул run_sql + стриминг",
       "description": "Директива владельца (S24, вариант B): тул-луп ДЗ-02 с retrieval-контекстом и стримингом — агент стримит дельты ходов, вызывает run_sql (тот же канал agent_ro, капы S13), интерпретирует наблюдение стримом (interpret_result-класса ответ, hw-plan §3); голый тул-луп ДЗ-2 сохранён за флагом --plain; --retrieve упразднён. Расширение порта: StreamFinal.tool_calls (canon-check 2026-11-21 — прецедент D-021 «расширение полями»).",
-      "behavior": "Дефолтный прогон CLI: вопрос → retrieval-блок в системный промпт → стриминг дельт ходов агента на stdout → tool_calls исполняются под agent_ro с капом ходов S13 → финальный ответ с реальным числом стримится; --plain — прежний тул-луп без контекста и стриминга (артефакт ДЗ-02).",
+      "behavior": "Дефолтный прогон CLI: verified-токен обязателен (S31: --token или DEV_TOKEN из .env; без — отказ до LLM) → вопрос → retrieval-блок по правам identity в системный промпт (схема промпта — только разрешённые таблицы/колонки, справочники не фильтруются) → стриминг дельт на stdout → tool_calls исполняются за единым рубежом S31 под agent_ro с капом ходов S13 (denied рубежа — стоп-observation и отказ без ретрая) → финальный ответ с реальным числом стримится; --plain — прежний тул-луп без контекста и стриминга (артефакт ДЗ-02), тот же токен-рубеж.",
       "verification": "uv run pytest src/tests/unit/test_agent_flow.py -q",
       "dependencies": [
         "feat-003",

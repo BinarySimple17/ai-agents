@@ -4,7 +4,8 @@
 # Инфра поднимается тем же docker-compose.yml — пины образов и healthcheck'и в одном
 # месте (правило 10 S00); `--wait` держит шаг до bolt-готовности Neo4j (ловушка 3).
 # Секретов в workflow нет: .env создаётся из коммитимого шаблона .env.example —
-# тестовые значения (пароли ролей, dev-токены демо-пользователей).
+# тестовые значения (пароли ролей, dev-токены демо-пользователей). Сканер секретов
+# — отдельный job gitleaks (BL-035: security.md заявлял сканер, которого не было).
 # Защита веток на GitHub НЕ включается (решение владельца, D-034): CI — контур
 # наблюдаемости, «не мержить при красном CI» исполняется процедурно на слиянии.
 # Прогон не на каждой ветке (решение владельца, D-035): CI живёт ТОЛЬКО на
@@ -12,6 +13,12 @@
 # make check, урок S30-хвоста) и pull_request с целью milestone/**. Рабочие ветки
 # (feat-**, harness/**) и dev/main CI не триггерят вовсе: минуты Actions
 # бесплатного тарифа ограничены, полный прогон ~3.5 мин.
+# Харднеж (S31, решение владельца в диалоге — BL-035/038/040 одним коммитом):
+# экшены запины ПОЛНЫМ коммит-SHA, человекочитаемый тег — в комментарии; теги и
+# SHA сверены `gh api repos/<owner>/<repo>/commits/<tag>` 2026-11-25 (урок
+# setup-uv: web-чек ≠ тег существует); top-level permissions contents:read —
+# наименьшие привилегии GITHUB_TOKEN; concurrency отменяет суперседённый прогон
+# той же ветки (пуш-волны подряд — экономия минут).
 name: CI
 
 on:
@@ -22,24 +29,37 @@ on:
     branches:
       - "milestone/**"
 
+# BL-038: GITHUB_TOKEN во всех jobs — только чтение кода (checkout/gitleaks;
+# писать в репозиторий некому)
+permissions:
+  contents: read
+
+# BL-038: суперседённый прогон той же ветки отменяется (два пуша подряд —
+# выполняется только последний; разные ветки не конкурируют)
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   check:
     name: make check (sync + ruff + lint-imports + pytest + self-tests)
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
+      # BL-040: checkout@v4 работал на принудительном Node 24 (deprecation
+      # Node 20 в логе прогона 45640357845) — бамп до v7.0.1 (нативный Node 24)
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # init.sh требует `python` в PATH (`command -v python`, canon-check F7)
-      - uses: actions/setup-python@v5
+      # init.sh требует `python` в PATH (`command -v python`, canon-check F7);
+      # BL-040: setup-python@v5 → v7.1.0 (Node 24)
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.13"
 
       # uv запинен на версию локального окружения — один резолв локально и в CI.
-      # Пин на точный тег: катящийся major-тег `v10` setup-uv НЕ публикует
-      # (живой прогон 2026-11-25: «unable to find version v10», 6с failure);
-      # SHA-пины и permissions — BL-038
-      - uses: astral-sh/setup-uv@v10.4.0
+      # Пин на точную версию + SHA (BL-038): катящийся major-тег `v10` setup-uv
+      # НЕ публикует (живой прогон 2026-11-25: «unable to find version v10», 6с failure)
+      - uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
         with:
           version: "0.11.24"
           enable-cache: true
@@ -73,3 +93,28 @@ jobs:
       # lint-imports + pytest + self-test'ы гвардов
       - name: Verify (bash init.sh)
         run: bash init.sh
+
+  # BL-035: сканер секретов, заявленный security.md, но не существовавший
+  # (canon-check F10 S30). gitleaks-action v3.0.0 (node24): на push — скан
+  # истории (fetch-depth: 0), на PR — диф; находки роняют job (exit-код gitleaks).
+  # Тестовые секреты не в git — .env из .gitignore, шаблон .env.example несёт
+  # только плейсхолдеры.
+  # re-review S31 I5: job-level permissions — top-level contents:read роняет
+  # PR-прогон (gitleaks-action v3 читает список коммитов PR = pull-requests:read,
+  # 403 без него); комментирование в PR отключено (GITLEAKS_ENABLE_COMMENTS:
+  # false) — write-права не нужны, токен остаётся read-only
+  gitleaks:
+    name: secrets scan (gitleaks)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_ENABLE_COMMENTS: false

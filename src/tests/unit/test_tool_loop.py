@@ -9,6 +9,8 @@ from datetime import date
 from decimal import Decimal
 from types import SimpleNamespace
 
+from pydantic import SecretStr
+
 from apps.cli import (
     DATA_MARKING,
     DEGRADED_ANSWER,
@@ -17,18 +19,29 @@ from apps.cli import (
     OBSERVATION_MAX_ROWS,
     OBSERVATION_PREVIEW_ROWS,
     SYSTEM_PROMPT,
+    _render_system_prompt,
     main,
     run_tool_loop,
 )
-from tests.unit.fakes import UNIT_CTX, FakeExecutor, RecordingTracer
+from tests.unit.fakes import (
+    UNIT_CTX,
+    FakeExecutor,
+    FakePermissionStore,
+    FakeSchemaGraphStore,
+    RecordingTracer,
+)
 from text_to_sql_agent.application.ports.llm_provider import CircuitOpenError, LLMResponse, ToolCall
+from text_to_sql_agent.application.ports.permission_store import RightsUnavailableError
+from text_to_sql_agent.application.ports.schema_graph_store import SchemaGraphError
 from text_to_sql_agent.application.ports.sql_executor import (
     QueryResult,
     SQLExecutionError,
     SQLFailureClass,
 )
 from text_to_sql_agent.application.services.run_sql_tool import RunSqlTool
+from text_to_sql_agent.application.services.validate_sql_service import ValidateSqlService
 from text_to_sql_agent.infrastructure.observability.jsonl_tracer import JsonlTracer
+from text_to_sql_agent.infrastructure.persistence.dev_token_auth import DevTokenAuth
 
 
 class FakeLLM:
@@ -64,8 +77,31 @@ def _tool_call(sql: str = "SELECT 1", call_id: str = "call-1") -> LLMResponse:
     )
 
 
-def _loop(llm: FakeLLM, executor: FakeExecutor | None = None, tracer: object | None = None) -> str:
-    tool = RunSqlTool(executor or FakeExecutor())
+def _gated_tool(executor: FakeExecutor | None = None) -> RunSqlTool:
+    """Тул за рубежом с двойниками мира по умолчанию (S31)."""
+    return RunSqlTool(
+        executor or FakeExecutor(),
+        ValidateSqlService(),
+        FakePermissionStore(),
+        FakeSchemaGraphStore(),
+    )
+
+
+def _loop(
+    llm: FakeLLM,
+    executor: FakeExecutor | None = None,
+    tracer: object | None = None,
+    *,
+    permission_store: FakePermissionStore | None = None,
+    graph_store: FakeSchemaGraphStore | None = None,
+) -> str:
+    # S31: тул собирается за рубежом (валидатор/права/рёбра — двойники мира)
+    tool = RunSqlTool(
+        executor or FakeExecutor(),
+        ValidateSqlService(),
+        permission_store or FakePermissionStore(),
+        graph_store or FakeSchemaGraphStore(),
+    )
     return run_tool_loop("вопрос", llm=llm, tool=tool, ctx=UNIT_CTX, tracer=tracer)  # type: ignore[arg-type]
 
 
@@ -228,9 +264,72 @@ def test_llm_provider_error_degrades_not_traceback() -> None:
     # Регрессия на ревью S13 Important-2: breaker/бюджет/ретраи шлюза — валидный
     # деградация-исход (S00 правило 8), не исключение из CLI
     llm = CircuitOpenLLM()
-    answer = run_tool_loop("вопрос", llm=llm, tool=RunSqlTool(FakeExecutor()), ctx=UNIT_CTX)
+    tool = _gated_tool()
+    answer = run_tool_loop("вопрос", llm=llm, tool=tool, ctx=UNIT_CTX)
     assert "шлюз LLM недоступен" in answer
     assert "circuit breaker" in answer
+
+
+# --- Рубеж тула (S31 Task 2, аудит A1/E1): denied/инфра — стоп; hallucination — ретрай ---
+
+
+def test_denied_gate_stops_loop_without_retry() -> None:
+    # РЕГРЕССИЯ Critical аудита A1/E1: SQL по чужой таблице не доходит до БД
+    # (до S31 тул исполнял любой SQL — дыра второго контура исполнения);
+    # R2: контур формулирует отказ сразу — повторов тула нет даже если модель
+    # слала бы его снова, финальный вызов БЕЗ тулов
+    store = FakePermissionStore(
+        {"orders": ("*",), "customers": ("*",)},
+        catalog=frozenset({"orders", "customers", "employees"}),
+    )
+    executor = FakeExecutor()
+    tracer = RecordingTracer()
+    # Ход 1: denied-вызов; СЦЕНАРИЙ с повторным denied-вызовом оставлен
+    # намеренно НЕДОРАБОТАННЫМ — цикл после стопа делает финальный вызов без
+    # тулов, и вторым элементом сценария consumes финал (ретрай-путь отсутствует)
+    llm = FakeLLM(
+        [
+            _tool_call("SELECT salary FROM employees"),
+            _text("Часть данных вам недоступна"),
+        ]
+    )
+    assert _loop(llm, executor, tracer, permission_store=store) == "Часть данных вам недоступна"
+    assert executor.requests == []  # исполнитель (шпион) не вызывался
+    assert llm.calls[1]["tools"] is None  # финальный вызов без тулов
+    stop_content = llm.calls[1]["messages"][-1]["content"]
+    assert "Повторные вызовы run_sql" in stop_content  # STOP-observation в истории
+    assert "employees" not in stop_content  # S9: имя чужой таблицы не раскрывается
+    degrade = [e for e in tracer.events if e.event == "agent.degrade"]
+    assert any("acl_denied" in e.payload["reason"] for e in degrade)
+
+
+def test_rights_unavailable_stops_loop() -> None:
+    # fail-closed: права недоступны — отказ, не «пустой мир молча» (S00-8)
+    store = FakePermissionStore(error=RightsUnavailableError("db down"))
+    llm = FakeLLM([_tool_call(), _text("Повторите позже")])
+    assert _loop(llm, permission_store=store) == "Повторите позже"
+    stop_content = llm.calls[1]["messages"][-1]["content"]
+    assert "повторить позже" in stop_content
+
+
+def test_hallucination_issues_reach_model_for_retry() -> None:
+    # validate_hallucination — ретрай оправдан: issues в Observation модели
+    # (несуществующие имена секретов не раскрывают), контур продолжает цикл
+    llm = FakeLLM([_tool_call("SELECT pg_sleep(1)"), _text("Исправился")])
+    assert _loop(llm) == "Исправился"
+    content = llm.calls[1]["messages"][-1]["content"]
+    assert "pg_sleep" in content
+    assert "Исправь SQL" in content
+
+
+def test_graph_unavailable_stops_loop() -> None:
+    # R1: рёбра реестра недоступны — fail-closed graph_unavailable (инвариант
+    # «не придумывать связи» не выключается при сбое графа)
+    graph = FakeSchemaGraphStore(error=SchemaGraphError("neo4j down"))
+    executor = FakeExecutor()
+    llm = FakeLLM([_tool_call(), _text("Повторите позже")])
+    assert _loop(llm, executor, graph_store=graph) == "Повторите позже"
+    assert executor.requests == []  # без сверки реестра SQL не исполняется
 
 
 # --- события agent.* через порт Tracer (S21 Task 4, BL-004/D-022) ---
@@ -313,7 +412,7 @@ def test_events_gateway_degradation() -> None:
     answer = run_tool_loop(
         "вопрос",
         llm=CircuitOpenLLM(),
-        tool=RunSqlTool(FakeExecutor()),
+        tool=_gated_tool(),
         ctx=UNIT_CTX,
         tracer=tracer,  # type: ignore[arg-type] — тестовый двойник порта
     )
@@ -335,7 +434,7 @@ def test_observation_event_with_native_types_survives_jsonl_tracer(tmp_path) -> 
     llm = FakeLLM([_tool_call(), _text("Готово")])
     trace_path = tmp_path / "trace.jsonl"
     run_tool_loop(
-        "вопрос", llm=llm, tool=RunSqlTool(executor), ctx=UNIT_CTX, tracer=JsonlTracer(trace_path)
+        "вопрос", llm=llm, tool=_gated_tool(executor), ctx=UNIT_CTX, tracer=JsonlTracer(trace_path)
     )
     records = [json.loads(line) for line in trace_path.read_text(encoding="utf-8").splitlines()]
     observations = [record for record in records if record["event"] == "agent.observation"]
@@ -385,8 +484,12 @@ def test_main_quiet_flag_disables_console_trace(monkeypatch) -> None:  # type: i
         captured["console_trace"] = console_trace
         return SimpleNamespace(
             llm=CircuitOpenLLM(),
-            run_sql_tool=RunSqlTool(FakeExecutor()),
+            run_sql_tool=_gated_tool(),
             tracer=RecordingTracer(),
+            # S31: main верифицирует токен ДО флоу и берёт права для схемы промпта
+            auth_provider=DevTokenAuth({"u_logist": "dev-logist-token"}),
+            settings=SimpleNamespace(dev_token=SecretStr("dev-logist-token")),
+            permission_store=FakePermissionStore(),
             # S07: CLI закрывает графовый драйвер в finally (контракт жизненного цикла)
             graph_store=SimpleNamespace(close=lambda: closed.append("driver")),
         )
@@ -400,3 +503,140 @@ def test_main_quiet_flag_disables_console_trace(monkeypatch) -> None:  # type: i
     assert main(["--plain", "вопрос"]) == 0
     assert captured["console_trace"] is True
     assert closed == ["driver", "driver"]  # finally сработал на обоих прогонах
+
+
+# --- Identity main (S31 Task 3, R4 ARCH-GATE): токен обязателен ДО LLM-вызова ---
+
+
+def _main_container(
+    llm: FakeLLM,
+    *,
+    dev_token: str = "dev-logist-token",
+    permission_store: FakePermissionStore | None = None,
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        llm=llm,
+        run_sql_tool=_gated_tool(),
+        tracer=RecordingTracer(),
+        auth_provider=DevTokenAuth({"u_logist": "dev-logist-token"}),
+        settings=SimpleNamespace(dev_token=SecretStr(dev_token)),
+        permission_store=permission_store
+        or FakePermissionStore({"orders": ("*",), "customers": ("*",)}),
+        graph_store=SimpleNamespace(close=lambda: None),
+    )
+
+
+def test_main_without_token_rejects_before_llm(monkeypatch, capsys) -> None:  # type: ignore[no-untyped-def]
+    # S31 критерий приёмки: без токена — отказ ДО первого LLM-вызова, exit 1
+    llm = FakeLLM([])  # «громкий» пустой сценарий: любой вызов модели = провал
+    monkeypatch.setattr("apps.cli.build_container", lambda **kw: _main_container(llm, dev_token=""))
+    assert main(["--plain", "вопрос"]) == 1
+    assert "rejected" in capsys.readouterr().out
+    assert llm.calls == []
+
+
+def test_main_wrong_token_rejects_before_llm(monkeypatch, capsys) -> None:  # type: ignore[no-untyped-def]
+    llm = FakeLLM([])
+    monkeypatch.setattr("apps.cli.build_container", lambda **kw: _main_container(llm))
+    assert main(["--plain", "--token", "wrong-token", "вопрос"]) == 1
+    assert llm.calls == []
+
+
+def test_main_token_falls_back_to_settings_dev_token(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    # make dev без TOKEN: --token пуст → DEV_TOKEN из .env (Settings, S31 Task 3)
+    llm = FakeLLM([_text("Ответ 5")])
+    monkeypatch.setattr("apps.cli.build_container", lambda **kw: _main_container(llm))
+    assert main(["--plain", "--quiet", "вопрос"]) == 0
+    assert llm.calls[0]["messages"][1]["content"] == "вопрос"
+
+
+def test_main_prompt_schema_built_from_rights(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    # S31 критерий приёмки: схема промпта содержит только таблицы, разрешённые
+    # identity (employees/bonuses — чужие для этого мира — в промпт не попадают)
+    store = FakePermissionStore({"orders": ("*",), "customers": ("*",)})
+    llm = FakeLLM([_text("Ответ 5")])
+    monkeypatch.setattr(
+        "apps.cli.build_container", lambda **kw: _main_container(llm, permission_store=store)
+    )
+    assert main(["--plain", "--quiet", "вопрос"]) == 0
+    prompt = llm.calls[0]["messages"][0]["content"]
+    assert "orders(" in prompt and "customers(" in prompt
+    assert "employees" not in prompt
+    assert "bonuses" not in prompt
+
+
+# --- Рендер схемы промпта по правам (S31 ARCH-GATE warning 6) ---
+
+
+def test_prompt_schema_shows_only_granted_columns() -> None:
+    # явный список колонок — пересечение с картой; '*' — полный список;
+    # блок схемы — одна строка (части через "; ")
+    prompt = _render_system_prompt(
+        {"customers": ("customer_id", "name"), "orders": ("*",)}, agent=False
+    )
+    schema_line = next(line for line in prompt.splitlines() if line.startswith("customers("))
+    assert "customer_id" in schema_line and "name" in schema_line
+    assert "country" not in schema_line and "created_at" not in schema_line
+    assert "orders(order_id" in schema_line
+    assert "status" in schema_line and "total" in schema_line
+
+
+def test_prompt_schema_without_permissions_is_empty_not_full_world() -> None:
+    # fail-closed дефолт: права не переданы — мир НЕ раскрывается; формулировка
+    # без ложной подсказки об инфраструктуре (ревью S31 Minor)
+    prompt = _render_system_prompt(None, agent=False)
+    assert "нет таблиц, разрешённых твоим правам" in prompt
+    assert "employees(" not in prompt
+
+
+def test_full_world_prompt_constant_lists_all_tables() -> None:
+    # константа SYSTEM_PROMPT (полный мир) — совместимость тестов канона;
+    # живой промпт CLI рендерится по правам (_render_system_prompt)
+    assert "employees(employee_id" in SYSTEM_PROMPT
+    assert "COUNT(DISTINCT" in SYSTEM_PROMPT
+
+
+def test_stop_answers_every_tool_call_id_in_round() -> None:
+    # Ревью S31 I2 (регрессия): denied в ПЕРВОМ из двух tool_calls одного хода —
+    # второй вызов исполняется, ВСЕ id получают tool-ответ (неотвеченный id = 400
+    # шлюза на финальном вызове без тулов ломал штатный путь «denied -> отказ»)
+    store = FakePermissionStore(
+        {"orders": ("*",), "customers": ("*",)},
+        catalog=frozenset({"orders", "customers", "employees"}),
+    )
+    executor = FakeExecutor()
+    two_calls = LLMResponse(
+        text=None,
+        tool_calls=[
+            ToolCall(
+                id="call-1",
+                name="run_sql",
+                arguments=json.dumps({"sql": "SELECT salary FROM employees"}),
+            ),
+            ToolCall(id="call-2", name="run_sql", arguments=json.dumps({"sql": "SELECT 1"})),
+        ],
+        model="fake-1",
+    )
+    llm = FakeLLM([two_calls, _text("Часть данных вам недоступна")])
+    assert _loop(llm, executor, permission_store=store) == "Часть данных вам недоступна"
+    assert len(executor.requests) == 1  # валидный второй вызов исполнен
+    final_msgs = llm.calls[1]["messages"]
+    assistant = next(m for m in final_msgs if m["role"] == "assistant")
+    assert [tc["id"] for tc in assistant["tool_calls"]] == ["call-1", "call-2"]
+    tool_msgs = [m for m in final_msgs if m["role"] == "tool"]
+    assert [m["tool_call_id"] for m in tool_msgs] == ["call-1", "call-2"]  # I2-инвариант
+    assert "Повторные вызовы run_sql" in tool_msgs[0]["content"]
+    assert '"columns"' in tool_msgs[1]["content"]  # наблюдение данных второго вызова
+
+
+def test_main_unknown_user_rejects_before_llm(monkeypatch, capsys) -> None:  # type: ignore[no-untyped-def]
+    # Ревью S31 Minor: verified-токен вне agent_user_roles — отказ в main ДО LLM
+    # (симметрично тулу), не «пустая схема» в промпте
+    store = FakePermissionStore(known=False)
+    llm = FakeLLM([])
+    monkeypatch.setattr(
+        "apps.cli.build_container", lambda **kw: _main_container(llm, permission_store=store)
+    )
+    assert main(["--plain", "вопрос"]) == 1
+    assert llm.calls == []
+    assert "rejected" in capsys.readouterr().out
