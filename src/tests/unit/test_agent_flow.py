@@ -738,3 +738,48 @@ def test_agent_flow_gate_denied_stops_after_printed_preamble() -> None:
     assert "Повторные вызовы run_sql" in llm.calls[1]["messages"][-1]["content"]
     degrade = [e for e in tracer.events if e.event == "agent.degrade"]
     assert any("acl_denied" in e.payload["reason"] for e in degrade)
+
+
+def test_agent_flow_stop_answers_every_tool_call_id_in_round() -> None:
+    # Re-review S31 I6 (зеркало test_tool_loop.py::test_stop_answers_every_tool_call_id):
+    # denied в ПЕРВОМ из двух tool_calls одного хода стрим-контура — второй
+    # исполняется, ВСЕ id получают tool-ответ (возврат «break по ходу» дал бы
+    # неотвеченный call-2 = 400 шлюза на финальном вызове; дефолтный путь CLI —
+    # именно стриминговый, поэтому защита отдельным тестом)
+    two_calls_turn = [
+        StreamChunk(text_delta="Считаю..."),
+        StreamFinal(
+            model="fake",
+            finish_reason="tool_calls",
+            tool_calls=[
+                ToolCall(
+                    id="call-1",
+                    name=TOOL_NAME,
+                    arguments=json.dumps({"sql": "SELECT salary FROM employees"}),
+                ),
+                ToolCall(id="call-2", name=TOOL_NAME, arguments=json.dumps({"sql": "SELECT 1"})),
+            ],
+        ),
+    ]
+    llm = FakeAgentLLM([two_calls_turn, _text_turn("Часть данных вам недоступна")])
+    tool = FakeTool(
+        error=ToolGateError("acl_denied", "часть данных по этому вопросу вам недоступна")
+    )
+    printed: list[str] = []
+    tracer = RecordingTracer()
+    answer = run_agent_flow(
+        "вопрос",
+        llm=llm,
+        tool=tool,
+        vector_store=FakeStore(),
+        ctx=UNIT_CTX,
+        tracer=tracer,
+        printer=printed.append,
+    )
+    assert answer == "Часть данных вам недоступна"
+    final_msgs = llm.calls[1]["messages"]
+    assistant = next(m for m in final_msgs if m["role"] == "assistant")
+    assert [tc["id"] for tc in assistant["tool_calls"]] == ["call-1", "call-2"]
+    tool_msgs = [m for m in final_msgs if m["role"] == "tool"]
+    assert [m["tool_call_id"] for m in tool_msgs] == ["call-1", "call-2"]  # I2-инвариант
+    assert llm.calls[1]["tools"] is None  # финал без тулов: отказ, не ретрай

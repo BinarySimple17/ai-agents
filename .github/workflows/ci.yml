@@ -98,11 +98,18 @@ jobs:
   # (canon-check F10 S30). gitleaks-action v3.0.0 (node24): на push — скан
   # истории (fetch-depth: 0), на PR — диф; находки роняют job (exit-код gitleaks).
   # Тестовые секреты не в git — .env из .gitignore, шаблон .env.example несёт
-  # только плейсхолдеры
+  # только плейсхолдеры.
+  # re-review S31 I5: job-level permissions — top-level contents:read роняет
+  # PR-прогон (gitleaks-action v3 читает список коммитов PR = pull-requests:read,
+  # 403 без него); комментирование в PR отключено (GITLEAKS_ENABLE_COMMENTS:
+  # false) — write-права не нужны, токен остаётся read-only
   gitleaks:
     name: secrets scan (gitleaks)
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -110,3 +117,4 @@ jobs:
       - uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_ENABLE_COMMENTS: false

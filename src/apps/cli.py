@@ -668,6 +668,7 @@ def run_agent_flow(
     model_calls = 0
     empty_retries_left = EMPTY_RESPONSE_RETRIES
     gate_stopped = False
+    gate_error_class = ""  # зеркально _run_loop (ревью S31 re-review M8)
     while tool_rounds_used < max_tool_calls:
         model_calls += 1
         _emit(tracer, EVENT_AGENT_ROUND, trace_id=ctx.trace_id, call=model_calls)

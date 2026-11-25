@@ -6,8 +6,9 @@
   две политики (правило 2 сессии S31, второй копии ACL нет);
 - инвариант реестра (R1): пары операндов JOIN — рёбра активного снимка
   (выдуманная связь → hallucination; comma/cross — та же цепочка источников);
-- fail-closed смешанного скоупа (таблица + производный источник — пара реестром
-  не выражается; CTE+CTE — алгебра над проверенными телами, разрешена);
+- fail-closed несверяемых форм: производный источник (CTE/подзапрос/LATERAL)
+  в операнде JOIN ИЛИ в корреляции, соединение ≥3 источников без равенств
+  колонок — обёртка связь не легализует (ruling «CTE+CTE разрешена» отозван);
 - adversarial-корпус через validate_free (B2: denied в FSM без скелетной причины
   → denied и здесь; корневые UNION/CTE/LATERAL/подзапрос с чужой таблицей —
   security.md §3, ADR-005 §4 п.8 «adversarial-тесты обязательны»).
@@ -213,7 +214,7 @@ def test_no_join_no_pairs() -> None:
     assert audit.unresolved_join_scopes is False
 
 
-# --- Смешанный скоуп (fail-closed) и CTE-алгебра (разрешена) ---
+# --- Несверяемые формы (fail-closed): производный операнд, comma ≥3 ---
 
 
 def test_table_cte_mix_unresolved() -> None:
@@ -462,3 +463,109 @@ def test_comma_two_tables_pair_checked() -> None:
     assert ok.verdict.outcome is ValidationOutcome.OK
     invented = _free("SELECT o.id FROM orders o, campaigns m WHERE o.campaign_id = m.id")
     assert invented.verdict.outcome is ValidationOutcome.HALLUCINATION
+
+
+# --- Re-review S31 fix-волна 2: корреляция-обёртка (Critical), предикат-пары (I3),
+# --- comma-регрессия по исходу (M9), USING/ON TRUE (M11)
+
+# Полная цепочка треугольника customers↔orders↔campaigns (+ хорда) — все соседние
+# пары comma-FROM на рёбрах: до-фикс (пары цепочки без детектора ≥3) давал ok.
+# Контракт join_edges — sorted lowercase пары (как отдаёт SchemaGraphStore.join_edges)
+ALL_TRIANGLE_EDGES = frozenset(
+    {("customers", "orders"), ("campaigns", "orders"), ("campaigns", "customers")}
+)
+
+
+def test_correlation_on_outer_cte_unresolved() -> None:
+    # Re-review Critical-1 (регрессия, кусает eb6d0cd: было ok): корреляция на
+    # производном источнике ВНЕШНЕГО скоупа — обёртка CTE не легализует связь
+    # customers↔campaigns (ребра нет) — fail-closed, как JOIN-операнд
+    result = _free(
+        "WITH s AS (SELECT id, region FROM customers) "
+        "SELECT s.id FROM s WHERE EXISTS "
+        "(SELECT 1 FROM campaigns m WHERE m.channel = s.region)"
+    )
+    assert result.verdict.outcome is ValidationOutcome.HALLUCINATION
+
+
+def test_correlation_on_derived_table_unresolved() -> None:
+    # Та же дыра с производной таблицей во FROM внешнего скоупа (было ok)
+    result = _free(
+        "SELECT s.id FROM (SELECT id, region FROM customers) s WHERE EXISTS "
+        "(SELECT 1 FROM campaigns m WHERE m.channel = s.region)"
+    )
+    assert result.verdict.outcome is ValidationOutcome.HALLUCINATION
+
+
+def test_correlation_on_cte_fail_closed_even_on_real_edge() -> None:
+    # Консистентность с JOIN-операндами (set aside re-review): корреляция на CTE
+    # fail-closed ДАЖЕ по реальному ребру customers↔orders — единое правило без
+    # исключений; модель перепишет запрос на таблицы (issues объясняют)
+    result = _free(
+        "WITH s AS (SELECT id FROM customers) "
+        "SELECT s.id FROM s WHERE EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = s.id)"
+    )
+    assert result.verdict.outcome is ValidationOutcome.HALLUCINATION
+    assert any("не сверяется с реестром" in issue for issue in result.verdict.issues)
+
+
+def test_correlation_pairs_only_predicate_tables() -> None:
+    # Re-review I3 (регрессия, кусает eb6d0cd: ложный отказ campaigns↔customers):
+    # корреляция паруется с таблицами СВОЕГО сравнения (orders), локальный JOIN
+    # o⋈c не приписывает связь m↔c — законный запрос проходит
+    result = _free(
+        "SELECT m.id FROM campaigns m WHERE EXISTS "
+        "(SELECT 1 FROM orders o JOIN customers c ON c.id = o.customer_id "
+        "WHERE o.campaign_id = m.id)",
+        join_edges=CHAIN_EDGES,
+    )
+    assert result.verdict.outcome is ValidationOutcome.OK
+    # а выдуманная связь в самом сравнении корреляции по-прежнему ловится
+    invented = _free(
+        "SELECT m.id FROM campaigns m WHERE EXISTS "
+        "(SELECT 1 FROM orders o JOIN customers c ON c.id = o.customer_id "
+        "WHERE c.region = m.channel)",
+        join_edges=CHAIN_EDGES,
+    )
+    assert invented.verdict.outcome is ValidationOutcome.HALLUCINATION
+    assert any("campaigns↔customers" in issue for issue in invented.verdict.issues)
+
+
+def test_comma_three_tables_unresolved_even_with_all_edges() -> None:
+    # Re-review M9: регрессия кусает до-фикс ПО ИСХОДУ (было ok на 4c27e01) —
+    # все соседние пары на рёбрах, fail-closed именно из-за произвольности
+    # «соседних» пар comma при ≥3 источниках
+    result = _free(
+        "SELECT o.id FROM customers c, orders o, campaigns m "
+        "WHERE o.customer_id = c.id AND o.campaign_id = m.id",
+        join_edges=ALL_TRIANGLE_EDGES,
+    )
+    assert result.verdict.outcome is ValidationOutcome.HALLUCINATION
+    assert any("не сверяется с реестром" in issue for issue in result.verdict.issues)
+
+
+def test_using_join_is_pair_checked_not_cartesian() -> None:
+    # Re-review M11: USING — равенство по именованным колонкам утверждено, это
+    # НЕ неявное произведение: цепочка из 3 источников с USING не fail-closed
+    # как comma (детектор различает), пары цепочки сверяются как у явного JOIN...ON
+    ok = _free("SELECT o.id FROM orders o JOIN customers c USING (customer_id) LIMIT 10")
+    assert ok.verdict.outcome is ValidationOutcome.OK
+    three = _free(
+        "SELECT o.id FROM orders o JOIN customers c USING (customer_id) "
+        "JOIN customers c2 USING (customer_id) LIMIT 10"
+    )
+    assert three.verdict.outcome is ValidationOutcome.OK  # orders↔customers, self-join skip
+
+
+def test_on_true_is_cartesian_fail_closed_on_three_tables() -> None:
+    # Re-review M11: ON TRUE — произведение явным синтаксисом (равенств нет):
+    # на ≥3 источниках та же fail-closed семантика, что у comma; на двух —
+    # единственная пара цепочки, сверяется
+    result = _free(
+        "SELECT o.id FROM orders o JOIN customers c ON TRUE JOIN campaigns m ON TRUE",
+        join_edges=ALL_TRIANGLE_EDGES,
+    )
+    assert result.verdict.outcome is ValidationOutcome.HALLUCINATION
+    assert any("не сверяется с реестром" in issue for issue in result.verdict.issues)
+    two = _free("SELECT o.id FROM orders o JOIN customers c ON TRUE LIMIT 10")
+    assert two.verdict.outcome is ValidationOutcome.OK

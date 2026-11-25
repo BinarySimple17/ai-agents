@@ -173,6 +173,23 @@ _STRUCTURAL_FUNCS: tuple[type[exp.Expression], ...] = (
 # USING) — сверка со скелетом равенством даст mismatch: ON фиксирован скелетом.
 _COMPLEX_ON = ("__complex_on__", "__complex_on__")
 
+# Сравнения, в которых живёт коррелированная колонка (равенство/неравенство/IN/
+# BETWEEN/LIKE/IS) — связь утверждается этим сравнением, не всем скоупом
+# (_comparison_local_tables, ревью S31 re-review I3)
+_COMPARISON_TYPES: tuple[type[exp.Expression], ...] = (
+    exp.EQ,
+    exp.NEQ,
+    exp.GT,
+    exp.GTE,
+    exp.LT,
+    exp.LTE,
+    exp.Is,
+    exp.In,
+    exp.Between,
+    exp.Like,
+    exp.ILike,
+)
+
 
 @dataclass(frozen=True, slots=True)
 class _Source:
@@ -252,6 +269,9 @@ def _build_audit(tree: exp.Expression) -> SqlAudit:
     seen_columns: set[tuple[str, tuple[SqlSource, ...], bool]] = set()
     join_pairs: list[tuple[str, str]] = []
     seen_join_pairs: set[tuple[str, str]] = set()
+    # корреляция на производном источнике / скоуп без табличных источников
+    # (re-review S31 C1) — флаг копится циклом колонок, сливается с JOIN-флагом
+    correlation_unresolved = False
     for scope in scopes:
         local_sources = sources_by_scope[id(scope)]
         local_refs = {src.ref for src in local_sources}
@@ -299,6 +319,16 @@ def _build_audit(tree: exp.Expression) -> SqlAudit:
             # reference (PG: колонок с таким именем нет → вся строка)
             name_lower = node.name.lower()
             whole_row = False
+            # Корреляция (ревью S31 C1 + re-review C1): кандидат-источник ВНЕШНЕГО
+            # скоупа (ref не среди локальных) — ссылка на внешний алиас:
+            # семантическая связь «внешний источник ↔ таблицы этого скоупа»
+            # (WHERE c.id = o.campaign_id в EXISTS утверждает ту же «придуманную
+            # связь», что и JOIN) — сверяется с реестром как пара. Обёртка связь
+            # НЕ легализует: кандидат-производный источник (CTE/подзапрос внешнего
+            # скоупа) — fail-closed unresolved, та же семантика, что у JOIN-
+            # операндов (ruling «CTE+CTE разрешена» отозван). Ссылки в тела CTE не
+            # тянутся наружу (граница корреляции — CTE, _scope_chain)
+            correlated: list[_Source] = [s for s in candidates if s.ref not in local_refs]
             if not node.table:
                 if name_lower in local_refs:
                     whole_row = True
@@ -313,27 +343,32 @@ def _build_audit(tree: exp.Expression) -> SqlAudit:
                         extra = SqlSource(name=outer.name, kind=outer.kind)
                         if all(s != extra for s in sources):
                             sources = (*sources, extra)
-            # Корреляция (ревью S31 C1): кандидат-ТАБЛИЦА, чьё имя не входит в
-            # таблицы ЭТОГО скоупа, — ссылка на внешний скоуп: семантическая
-            # связь «внешняя таблица ↔ таблицы этого скоупа» (WHERE c.id =
-            # o.campaign_id в EXISTS утверждает ту же «придуманную связь», что и
-            # JOIN) — сверяется с реестром как пара. Ссылки в тела CTE не тянутся
-            # наружу (граница корреляции — CTE, _scope_chain). Сравнение по имени
-            # (SqlSource несёт name, не алиас-ref; коллизия имён при self-join
-            # через скоуп — редкий ложный negative, осознанно)
-            local_table_names = {s.name for s in local_sources if s.kind == "table"}
-            outer_tables = {
-                src.name
-                for src in sources
-                if src.kind == "table" and src.name not in local_table_names
-            }
-            if outer_tables:
-                for outer_name in outer_tables:
-                    for local_name in local_table_names:
-                        pair = tuple(sorted((outer_name, local_name)))
-                        if pair not in seen_join_pairs:
-                            seen_join_pairs.add(pair)
-                            join_pairs.append(pair)
+                            correlated.append(outer)
+            if correlated:
+                local_table_names = {s.name for s in local_sources if s.kind == "table"}
+                if not local_table_names:
+                    # связь с скоупом БЕЗ табличных источников (FROM — CTE/
+                    # подзапрос/LATERAL) парой реестра не выражается — fail-closed
+                    correlation_unresolved = True
+                else:
+                    # Пара строится с локальными таблицами ТОГО ЖЕ сравнения
+                    # (ревью re-review I3): корреляция утверждает связь с
+                    # таблицами своего равенства, не со всеми таблицами скоупа
+                    # (иначе локальный JOIN внутри подзапроса даёт ложный отказ).
+                    # Нет сравнения/локальных колонок в нём — откат на все
+                    # таблицы скоупа (консервативно, без false-positive)
+                    predicate_locals = _comparison_local_tables(
+                        node, maps_by_scope[id(scope)], local_refs
+                    )
+                    for src in correlated:
+                        if src.kind != "table":
+                            correlation_unresolved = True
+                            continue
+                        for local_name in predicate_locals or local_table_names:
+                            pair = tuple(sorted((src.name, local_name)))
+                            if pair not in seen_join_pairs:
+                                seen_join_pairs.add(pair)
+                                join_pairs.append(pair)
             key = (name_lower, sources, whole_row)
             if key not in seen_columns:
                 seen_columns.add(key)
@@ -360,8 +395,65 @@ def _build_audit(tree: exp.Expression) -> SqlAudit:
         functions=_collect_functions(tree),
         star_sources=tuple(star_sources),
         join_table_pairs=tuple(join_pairs),
-        unresolved_join_scopes=unresolved,
+        unresolved_join_scopes=unresolved or correlation_unresolved,
     )
+
+
+def _is_cartesian_join(join: exp.Join) -> bool:
+    """Неявное декартово произведение (ревью S31 I1 + re-review M11): comma или
+    голый JOIN — sqlglot отдаёт оба как Join без kind/side/ON; ``JOIN ... ON TRUE``
+    — то же произведение явным синтаксисом (равенства колонок нет — связь
+    реестром не утверждается). ``JOIN ... USING (колонки)`` — НЕ произведение:
+    равенство по именованным колонкам утверждено — пара сверяется по цепочке,
+    как у явного ``JOIN ... ON``."""
+    if join.kind or join.side:
+        return False
+    on = join.args.get("on")
+    if on is None:
+        return not join.args.get("using")
+    return isinstance(on, exp.Boolean) and bool(on.this)
+
+
+def _comparison_local_tables(
+    column: exp.Column,
+    maps: list[dict[str, _Source]],
+    local_refs: set[str],
+) -> set[str]:
+    """Локальные таблицы сравнения, содержащего коррелированную колонку
+    (ревью S31 re-review I3): связь утверждается «внешняя таблица ↔ таблицы
+    СВОЕГО равенства», не со всеми таблицами скоупа. Подъём от колонки до
+    ближайшего сравнения (And/Or/Not/Case прозрачны); колонки вложенных
+    подзапросов внутри сравнения — своего скоупа, не резолвятся; unqualified —
+    не атрибутируются (неоднозначно). Пустое множество (нет сравнения или в нём
+    нет локальных квалифицированных колонок) — вызывающий откатывается на все
+    таблицы скоупа (консервативно: ложных отказов не добавляет, дыр нет)."""
+    current: exp.Expression | None = column
+    comparison: exp.Expression | None = None
+    while current is not None and type(current) is not exp.Select:
+        if isinstance(current, _COMPARISON_TYPES):
+            comparison = current
+            break
+        current = current.parent
+    if comparison is None:
+        return set()
+    nested = {id(s) for s in comparison.find_all(exp.Select)}
+    tables: set[str] = set()
+    for col in comparison.find_all(exp.Column):
+        parent = col.parent
+        inside_nested = False
+        while parent is not None and parent is not comparison:
+            if id(parent) in nested:
+                inside_nested = True
+                break
+            parent = parent.parent
+        if inside_nested or isinstance(col.this, exp.Star):
+            continue
+        qualifier = (col.table or "").lower()
+        if qualifier and qualifier in local_refs:
+            source = maps[0].get(qualifier)
+            if source is not None and source.kind == "table":
+                tables.add(source.name)
+    return tables
 
 
 def _collect_join_pairs(
@@ -378,23 +470,19 @@ def _collect_join_pairs(
     обёртка CTE не делает связь легальной — ``WITH x AS (…orders…), y AS (…campaigns…)
     SELECT * FROM x CROSS JOIN y`` соединяет свои таблицы без ребра реестра ровно
     как прямой джойн (ревью S31 C1, живое воспроизведение; прежний ruling «CTE+CTE —
-    алгебра над телами» отозван). FSM-вход поля не читает: структура джойнов там
-    сверяется со скелетом плана (_check_skeleton). Пары корреляций добавляет
-    цикл колонок в ``_build_audit`` (кандидат из внешнего скоупа).
+    алгебра над телами» отозван). Неявное произведение (comma / голый JOIN / ON TRUE —
+    ``_is_cartesian_join``) на ≥3 табличных источниках — ``unresolved``: «соседние»
+    пары произвольны (и дыра a↔c, и ложный отказ легального хаба — ревью S31 I1);
+    на двух — единственная пара цепочки, сверяется. FSM-вход поля не читает:
+    структура джойнов там сверяется со скелетом плана (_check_skeleton). Пары
+    корреляций (включая fail-closed на производном операнде) добавляет цикл колонок
+    в ``_build_audit`` (кандидат из внешнего скоупа).
     """
     unresolved = False
     for scope in scopes:
         sources = sources_by_scope[id(scope)]
-        # неявное декартово произведение (comma или голый JOIN — sqlglot отдаёт
-        # оба как Join без kind/side/ON): поддерживается только при двух
-        # табличных источниках (единственная пара = цепочка); ≥3 — «соседние»
-        # пары произвольны (и дыра a↔c, и ложный отказ легального хаба — ревью
-        # S31 I1) — fail-closed, ретрай с явными JOIN...ON
         has_implicit_cartesian = any(
-            isinstance(join, exp.Join)
-            and not join.kind
-            and not join.side
-            and join.args.get("on") is None
+            isinstance(join, exp.Join) and _is_cartesian_join(join)
             for join in scope.args.get("joins") or []
         )
         if has_implicit_cartesian and sum(1 for s in sources if s.kind == "table") > 2:

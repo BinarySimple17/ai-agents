@@ -94,7 +94,8 @@ def test_system_prompt_names_all_demo_schema_tables() -> None:
         / "versions"
         / "20261118_0001_schema_v15.py"
     )
-    all_tables = set(_re.findall(r"CREATE TABLE (\w+) \(", migration.read_text(encoding="utf-8")))
+    ddl = migration.read_text(encoding="utf-8")
+    all_tables = set(_re.findall(r"CREATE TABLE (\w+) \(", ddl))
     # В миграции 0001 и служебные (agent_*/settings_version/query_trace) — бизнес-таблицы
     tables = {
         t
@@ -106,6 +107,16 @@ def test_system_prompt_names_all_demo_schema_tables() -> None:
         "карта колонок промпта (_DEMO_SCHEMA_COLUMNS) != бизнес-таблицы миграции 0001 "
         "— синхронизируй карту с миграцией"
     )
+    # Ревью S31 re-review M10: дрейф КОЛОНОК карты против DDL тоже ловим —
+    # переименование/добавление колонки в миграции не проходит молча
+    for table in sorted(tables):
+        block = _re.search(rf"CREATE TABLE {table} \((.*?)\);", ddl, _re.DOTALL)
+        assert block is not None, f"тело CREATE TABLE {table} не найдено в миграции 0001"
+        ddl_columns = set(_re.findall(r"^\s{4}(\w+)\s+\w", block.group(1), _re.MULTILINE))
+        assert set(_DEMO_SCHEMA_COLUMNS[table]) == ddl_columns, (
+            f"колонки карты промпта {table} != DDL миграции 0001 "
+            f"{sorted(ddl_columns)} — синхронизируй карту"
+        )
     rendered = _schema_block(_FULL_WORLD_RIGHTS)
     for table in sorted(tables):
         assert f"{table}(" in rendered, (
