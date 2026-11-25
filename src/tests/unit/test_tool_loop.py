@@ -7,8 +7,9 @@ LLM и executor — моки (S00 правило 7); скриптованный 
 import json
 from datetime import date
 from decimal import Decimal
-from pydantic import SecretStr
 from types import SimpleNamespace
+
+from pydantic import SecretStr
 
 from apps.cli import (
     DATA_MARKING,
@@ -286,10 +287,12 @@ def test_denied_gate_stops_loop_without_retry() -> None:
     # Ход 1: denied-вызов; СЦЕНАРИЙ с повторным denied-вызовом оставлен
     # намеренно НЕДОРАБОТАННЫМ — цикл после стопа делает финальный вызов без
     # тулов, и вторым элементом сценария consumes финал (ретрай-путь отсутствует)
-    llm = FakeLLM([
-        _tool_call("SELECT salary FROM employees"),
-        _text("Часть данных вам недоступна"),
-    ])
+    llm = FakeLLM(
+        [
+            _tool_call("SELECT salary FROM employees"),
+            _text("Часть данных вам недоступна"),
+        ]
+    )
     assert _loop(llm, executor, tracer, permission_store=store) == "Часть данных вам недоступна"
     assert executor.requests == []  # исполнитель (шпион) не вызывался
     assert llm.calls[1]["tools"] is None  # финальный вызов без тулов
@@ -517,7 +520,8 @@ def _main_container(
         tracer=RecordingTracer(),
         auth_provider=DevTokenAuth({"u_logist": "dev-logist-token"}),
         settings=SimpleNamespace(dev_token=SecretStr(dev_token)),
-        permission_store=permission_store or FakePermissionStore({"orders": ("*",), "customers": ("*",)}),
+        permission_store=permission_store
+        or FakePermissionStore({"orders": ("*",), "customers": ("*",)}),
         graph_store=SimpleNamespace(close=lambda: None),
     )
 

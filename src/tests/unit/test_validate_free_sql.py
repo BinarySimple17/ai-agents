@@ -122,9 +122,7 @@ def test_catalog_table_without_rights_denied() -> None:
 
 def test_column_outside_rights_denied() -> None:
     # пара операндов на ребре — отказ именно от колонки, не от связи
-    result = _free(
-        "SELECT c.nickname FROM orders o JOIN customers c ON o.customer_id = c.id"
-    )
+    result = _free("SELECT c.nickname FROM orders o JOIN customers c ON o.customer_id = c.id")
     assert result.verdict.outcome is ValidationOutcome.DENIED
     assert any("nickname" in issue for issue in result.verdict.issues)
 
@@ -163,25 +161,19 @@ def test_smaller_limit_preserved() -> None:
 
 
 def test_registry_edge_join_ok() -> None:
-    result = _free(
-        "SELECT o.total FROM orders o JOIN customers c ON o.customer_id = c.id"
-    )
+    result = _free("SELECT o.total FROM orders o JOIN customers c ON o.customer_id = c.id")
     assert result.verdict.outcome is ValidationOutcome.OK
 
 
 def test_invented_join_hallucination() -> None:
     # обе таблицы разрешены, но связи нет — «джойн придуман» (ADR-006)
-    result = _free(
-        "SELECT o.total FROM orders o JOIN campaigns c ON o.campaign_id = c.id"
-    )
+    result = _free("SELECT o.total FROM orders o JOIN campaigns c ON o.campaign_id = c.id")
     assert result.verdict.outcome is ValidationOutcome.HALLUCINATION
     assert any("не существует в реестре" in issue for issue in result.verdict.issues)
 
 
 def test_comma_join_invented_hallucination() -> None:
-    result = _free(
-        "SELECT o.id FROM orders o, campaigns c WHERE o.campaign_id = c.id"
-    )
+    result = _free("SELECT o.id FROM orders o, campaigns c WHERE o.campaign_id = c.id")
     assert result.verdict.outcome is ValidationOutcome.HALLUCINATION
 
 
@@ -192,9 +184,7 @@ def test_cross_join_invented_hallucination() -> None:
 
 def test_reversed_direction_same_edge() -> None:
     # направление равенства/джойна не семантично — пара отсортирована
-    result = _free(
-        "SELECT c.id FROM customers c JOIN orders o ON c.id = o.customer_id"
-    )
+    result = _free("SELECT c.id FROM customers c JOIN orders o ON c.id = o.customer_id")
     assert result.verdict.outcome is ValidationOutcome.OK
 
 
@@ -212,8 +202,7 @@ def test_chain_needs_every_edge() -> None:
 def test_schema_qualified_tables_same_pair() -> None:
     # квалификация схемой — pair остаётся bare-именами
     audit = build_sql_audit(
-        "SELECT o.id FROM public.orders o JOIN public.customers c "
-        "ON o.customer_id = c.id"
+        "SELECT o.id FROM public.orders o JOIN public.customers c ON o.customer_id = c.id"
     )
     assert audit.join_table_pairs == (("customers", "orders"),)
 
@@ -239,8 +228,7 @@ def test_table_cte_mix_unresolved() -> None:
 
 def test_table_subquery_mix_unresolved() -> None:
     result = _free(
-        "SELECT o.id FROM orders o JOIN (SELECT id FROM customers) c "
-        "ON c.id = o.customer_id"
+        "SELECT o.id FROM orders o JOIN (SELECT id FROM customers) c ON c.id = o.customer_id"
     )
     assert result.verdict.outcome is ValidationOutcome.HALLUCINATION
 
@@ -266,8 +254,7 @@ def test_cte_invented_join_inside_body_hallucination() -> None:
 
 def test_unresolved_join_scopes_flag_in_ir() -> None:
     audit = build_sql_audit(
-        "SELECT o.id FROM orders o JOIN (SELECT id FROM customers) c "
-        "ON c.id = o.customer_id"
+        "SELECT o.id FROM orders o JOIN (SELECT id FROM customers) c ON c.id = o.customer_id"
     )
     assert audit.unresolved_join_scopes is True
     assert audit.join_table_pairs == ()

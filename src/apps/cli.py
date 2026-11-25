@@ -198,9 +198,7 @@ _SYSTEM_PROMPT_TEMPLATE = (
 # Полный мир — константа для тестов канона и совместимости; контуры CLI рендерят
 # шаблон по правам прогона (_render_system_prompt) — фиксированного списка в
 # живом промпте больше нет
-_FULL_WORLD_RIGHTS: dict[str, tuple[str, ...]] = {
-    table: ("*",) for table in _DEMO_SCHEMA_COLUMNS
-}
+_FULL_WORLD_RIGHTS: dict[str, tuple[str, ...]] = {table: ("*",) for table in _DEMO_SCHEMA_COLUMNS}
 SYSTEM_PROMPT = _SYSTEM_PROMPT_TEMPLATE.format(schema=_schema_block(_FULL_WORLD_RIGHTS))
 # Объединённый контур (feat-020): база тул-контура S13 + рубрика контекста знаний.
 # Антигаллюцинационные формулы S24 #1(б) переформулированы под тул-контур: в
@@ -225,6 +223,8 @@ def _render_system_prompt(permissions: Mapping[str, Sequence[str]] | None, *, ag
     """Промпт прогона: схема по правам identity (S31) + рубрика знаний (feat-020)."""
     base = _SYSTEM_PROMPT_TEMPLATE.format(schema=_schema_block(permissions))
     return base + _AGENT_PROMPT_SUFFIX if agent else base
+
+
 DEGRADED_ANSWER = (
     "Не удалось получить ответ: модель не вернула ни текста, ни вызова тулa. "
     "Попробуйте переформулировать вопрос."
@@ -463,13 +463,17 @@ def _observation(
             {"ok": False, "error_class": error_class, "error": str(exc)},
             False,
         )
-    return _format_result(result), {
-        "ok": True,
-        "columns": result.columns,
-        "rows_preview": result.rows[:OBSERVATION_PREVIEW_ROWS],
-        "row_count": result.row_count,
-        "truncated": result.truncated,
-    }, False
+    return (
+        _format_result(result),
+        {
+            "ok": True,
+            "columns": result.columns,
+            "rows_preview": result.rows[:OBSERVATION_PREVIEW_ROWS],
+            "row_count": result.row_count,
+            "truncated": result.truncated,
+        },
+        False,
+    )
 
 
 def _format_result(result: QueryResult) -> str:
@@ -841,7 +845,12 @@ def main(argv: list[str] | None = None) -> int:
             # fail-closed: права недоступны — отказ, не «пустой мир молча» (S00-8)
             print("Исход: fail")
             print("Ошибка: права пользователя сейчас недоступны — повторите позже")
-            _emit(container.tracer, EVENT_AGENT_DEGRADE, trace_id="-", reason=f"права недоступны: {exc}")
+            _emit(
+                container.tracer,
+                EVENT_AGENT_DEGRADE,
+                trace_id="-",
+                reason=f"права недоступны: {exc}",
+            )
             return 1
         ctx = RunContext(trace_id=uuid.uuid4().hex, user_id=user_id)
         permissions = dict(rights.tables)

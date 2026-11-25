@@ -6,7 +6,6 @@ from text_to_sql_agent.application.ports.permission_store import (
     RightsUnavailableError,
     UserRights,
 )
-from text_to_sql_agent.application.ports.schema_graph_store import SchemaGraphError
 from text_to_sql_agent.application.ports.sql_executor import (
     QueryResult,
     SQLExecutionError,
@@ -66,7 +65,9 @@ class FakePermissionStore:
         known: bool = True,
         error: Exception | None = None,
     ) -> None:
-        self._tables = dict(tables) if tables is not None else {"orders": ("*",), "customers": ("*",)}
+        self._tables = (
+            dict(tables) if tables is not None else {"orders": ("*",), "customers": ("*",)}
+        )
         self._catalog = catalog if catalog is not None else frozenset(self._tables)
         self._known = known
         self._error = error

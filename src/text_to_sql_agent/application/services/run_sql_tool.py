@@ -189,9 +189,7 @@ class RunSqlTool:
             )
         # Форма/выдумка: ретрай оправдан — текст для модели несёт issues
         # (несуществующие имена секретов не раскрывают)
-        raise ToolGateError(
-            GATE_CLASS_HALLUCINATION, "; ".join(result.verdict.issues)
-        )
+        raise ToolGateError(GATE_CLASS_HALLUCINATION, "; ".join(result.verdict.issues))
 
     def _fetch_rights(self, ctx: RunContext) -> UserRights:
         try:

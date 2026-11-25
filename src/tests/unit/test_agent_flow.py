@@ -19,10 +19,10 @@ from typing import Any
 import httpx
 import openai
 import pytest
+from pydantic import SecretStr
 
 from apps import cli as cli_module
 from apps.cli import (
-    AGENT_SYSTEM_PROMPT,
     DEGRADED_ANSWER,
     EMPTY_RESPONSE_RETRIES,
     LLM_DEGRADED_TEMPLATE,
@@ -31,7 +31,6 @@ from apps.cli import (
     RETRIEVAL_UNAVAILABLE_NOTE,
     run_agent_flow,
 )
-from pydantic import SecretStr
 from tests.unit.fakes import UNIT_CTX, FakePermissionStore, RecordingTracer
 from tests.unit.test_llm_client import _embed_client, _settings
 from tests.unit.test_retrieval_flow import _doc
@@ -707,7 +706,13 @@ def test_agent_flow_gate_denied_stops_after_printed_preamble() -> None:
         StreamFinal(
             model="fake",
             finish_reason="tool_calls",
-            tool_calls=[ToolCall(id="call-1", name=TOOL_NAME, arguments=json.dumps({"sql": "SELECT salary FROM employees"}))],
+            tool_calls=[
+                ToolCall(
+                    id="call-1",
+                    name=TOOL_NAME,
+                    arguments=json.dumps({"sql": "SELECT salary FROM employees"}),
+                )
+            ],
         ),
     ]
     llm = FakeAgentLLM([preamble_turn, _text_turn("Часть данных вам недоступна")])
