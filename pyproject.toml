@@ -100,10 +100,14 @@ source_modules = ["text_to_sql_agent.orchestration"]
 forbidden_modules = ["text_to_sql_agent.config"]
 
 [[tool.importlinter.contracts]]
-name = "Точка входа apps не зависит от адаптеров НАПРЯМУЮ (производное F1: layers пропускает apps -> любой нижний слой; allow_indirect_imports — легальная цепочка apps -> composition -> infrastructure не нарушение)"
+name = "Точка входа apps не зависит от адаптеров, графа и конфига НАПРЯМУЮ (производное F1 + ревью I1 S30: layers пропускает apps -> любой нижний слой; allow_indirect_imports — легальная цепочка apps -> composition -> infrastructure не нарушение; config по c4-l2 читают только composition и infrastructure, orchestration — только composition собирает узлы)"
 type = "forbidden"
 source_modules = ["apps"]
-forbidden_modules = ["text_to_sql_agent.infrastructure"]
+forbidden_modules = [
+    "text_to_sql_agent.infrastructure",
+    "text_to_sql_agent.orchestration",
+    "text_to_sql_agent.config",
+]
 allow_indirect_imports = true
 
 [[tool.importlinter.contracts]]

@@ -58,6 +58,13 @@ jobs:
       - name: Migrate database (alembic upgrade head)
         run: make infra-migrate
 
+      # Ревью S30 C1 (второй рубеж): на раннере нет глобального git-identity, а
+      # init.sh гоняет self-test'ы, делающие git-коммиты (ritual-scripts в
+      # worktree-песочнице). Сами self-test'ы герметичны (env-identity внутри),
+      # явная identity — защита для любых будущих коммитящих шагов цепочки
+      - name: Configure git identity (self-test commits)
+        run: git config --global user.name "ci" && git config --global user.email "ci@example.invalid"
+
       # Единый критерий консистентности (feat-001): uv sync --frozen + ruff +
       # lint-imports + pytest + self-test'ы гвардов
       - name: Verify (bash init.sh)

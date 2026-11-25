@@ -283,10 +283,10 @@
 
 **Дата:** 2026-11-25 · **Сессия:** S30 (механические защиты) · **Затрагивает:** docs/diagrams/c4-l2-container.md, pyproject.toml ([tool.importlinter])
 
-**Противоречие.** Пункт «Слои и порты» c4-l2 перечислял слои линейной цепочкой «domain → application → infrastructure → orchestration → composition» — читается как разрешённая зависимость `orchestration → infrastructure`, что противоречит канону (AGENTS «Architecture Boundaries»: `orchestration` ↔ `infrastructure` независимы, `infrastructure` реализует порты — зависимость внутрь) и контракту `independence` import-linter (S30). Формулировка найдена canon-check архитектора до кода (ARCH-GATE S30, F4) — у «стрелочной» нотации списка слоёв есть ровно один смысл, и он был неверный.
+**Противоречие.** Пункт «Слои и порты» c4-l2 перечислял слои линейной цепочкой «domain → application → infrastructure → orchestration → composition» — читается как разрешённая зависимость `orchestration → infrastructure`, что противоречит канону и контрактам: AGENTS «Architecture Boundaries» дословно говорит «`infrastructure` реализует порты (зависимость внутрь)» — infrastructure в цепочке ЗА orchestration не стоит; независимость `orchestration` ↔ `infrastructure` — вывод canon-check S30 из draft-цепочки, закреплённый контрактом `independence` import-linter. Формулировка найдена canon-check архитектора до кода (ARCH-GATE S30, F4) — у «стрелочной» нотации списка слоёв есть ровно один смысл, и он был неверный.
 
 **Решение.** Пункт переписан по фактической архитектуре: composition над двумя независимыми ногами (orchestration и infrastructure), обе внутрь к application (инфраструктура реализует только порты) → domain; config читают только composition и infrastructure; `apps → infrastructure` запрещён; утверждение «проверяются import-linter» подкреплено конфигом (10 контрактов, S30).
 
-**Где исправлено:** docs/diagrams/c4-l2-container.md («Слои и порты» — тот же коммит, что контракты S30).
+**Где исправлено:** docs/diagrams/c4-l2-container.md («Слои и порты») — та же сессия S30, что контракты, но РАЗНЫЕ коммиты волны: контракты `8a99ceb`, диаграмма и запись FIX-018 — `b0a1d99` (формулировка «тот же коммит» из черновика записи была фактически неверна — ревью M1).
 
 **Статус:** ИСПРАВЛЕН (2026-11-25, S30).
