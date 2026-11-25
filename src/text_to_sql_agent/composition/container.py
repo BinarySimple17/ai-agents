@@ -74,6 +74,9 @@ class Container:
     interpret_service: InterpretService
     degrade_service: DegradeService
     auth_provider: AuthProvider
+    # Права как публичный доступ CLI (S31 Task 3): снапшот прав прогона для
+    # схемы промпта — ТЕ ЖЕ экземпляр и канал, что у тула и resolve_access
+    permission_store: PermissionStore
     resolve_access_service: ResolveAccessService
     # Сессии interrupt (S08, ruling R2): ValkeyCheckpointer в проде;
     # MemorySaver/фейк в тестах — контракт сейвера задан LangGraph (Any)
@@ -302,6 +305,7 @@ def build_container(
         interpret_service=interpret_service,
         degrade_service=degrade_service,
         auth_provider=auth_provider,
+        permission_store=permission_store,
         resolve_access_service=resolve_access_service,
         checkpointer=checkpointer,
         fsm_runner=fsm_runner,

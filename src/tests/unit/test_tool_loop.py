@@ -7,6 +7,7 @@ LLM и executor — моки (S00 правило 7); скриптованный 
 import json
 from datetime import date
 from decimal import Decimal
+from pydantic import SecretStr
 from types import SimpleNamespace
 
 from apps.cli import (
@@ -17,6 +18,7 @@ from apps.cli import (
     OBSERVATION_MAX_ROWS,
     OBSERVATION_PREVIEW_ROWS,
     SYSTEM_PROMPT,
+    _render_system_prompt,
     main,
     run_tool_loop,
 )
@@ -38,6 +40,7 @@ from text_to_sql_agent.application.ports.sql_executor import (
 from text_to_sql_agent.application.services.run_sql_tool import RunSqlTool
 from text_to_sql_agent.application.services.validate_sql_service import ValidateSqlService
 from text_to_sql_agent.infrastructure.observability.jsonl_tracer import JsonlTracer
+from text_to_sql_agent.infrastructure.persistence.dev_token_auth import DevTokenAuth
 
 
 class FakeLLM:
@@ -480,6 +483,10 @@ def test_main_quiet_flag_disables_console_trace(monkeypatch) -> None:  # type: i
             llm=CircuitOpenLLM(),
             run_sql_tool=_gated_tool(),
             tracer=RecordingTracer(),
+            # S31: main верифицирует токен ДО флоу и берёт права для схемы промпта
+            auth_provider=DevTokenAuth({"u_logist": "dev-logist-token"}),
+            settings=SimpleNamespace(dev_token=SecretStr("dev-logist-token")),
+            permission_store=FakePermissionStore(),
             # S07: CLI закрывает графовый драйвер в finally (контракт жизненного цикла)
             graph_store=SimpleNamespace(close=lambda: closed.append("driver")),
         )
@@ -493,3 +500,92 @@ def test_main_quiet_flag_disables_console_trace(monkeypatch) -> None:  # type: i
     assert main(["--plain", "вопрос"]) == 0
     assert captured["console_trace"] is True
     assert closed == ["driver", "driver"]  # finally сработал на обоих прогонах
+
+
+# --- Identity main (S31 Task 3, R4 ARCH-GATE): токен обязателен ДО LLM-вызова ---
+
+
+def _main_container(
+    llm: FakeLLM,
+    *,
+    dev_token: str = "dev-logist-token",
+    permission_store: FakePermissionStore | None = None,
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        llm=llm,
+        run_sql_tool=_gated_tool(),
+        tracer=RecordingTracer(),
+        auth_provider=DevTokenAuth({"u_logist": "dev-logist-token"}),
+        settings=SimpleNamespace(dev_token=SecretStr(dev_token)),
+        permission_store=permission_store or FakePermissionStore({"orders": ("*",), "customers": ("*",)}),
+        graph_store=SimpleNamespace(close=lambda: None),
+    )
+
+
+def test_main_without_token_rejects_before_llm(monkeypatch, capsys) -> None:  # type: ignore[no-untyped-def]
+    # S31 критерий приёмки: без токена — отказ ДО первого LLM-вызова, exit 1
+    llm = FakeLLM([])  # «громкий» пустой сценарий: любой вызов модели = провал
+    monkeypatch.setattr("apps.cli.build_container", lambda **kw: _main_container(llm, dev_token=""))
+    assert main(["--plain", "вопрос"]) == 1
+    assert "rejected" in capsys.readouterr().out
+    assert llm.calls == []
+
+
+def test_main_wrong_token_rejects_before_llm(monkeypatch, capsys) -> None:  # type: ignore[no-untyped-def]
+    llm = FakeLLM([])
+    monkeypatch.setattr("apps.cli.build_container", lambda **kw: _main_container(llm))
+    assert main(["--plain", "--token", "wrong-token", "вопрос"]) == 1
+    assert llm.calls == []
+
+
+def test_main_token_falls_back_to_settings_dev_token(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    # make dev без TOKEN: --token пуст → DEV_TOKEN из .env (Settings, S31 Task 3)
+    llm = FakeLLM([_text("Ответ 5")])
+    monkeypatch.setattr("apps.cli.build_container", lambda **kw: _main_container(llm))
+    assert main(["--plain", "--quiet", "вопрос"]) == 0
+    assert llm.calls[0]["messages"][1]["content"] == "вопрос"
+
+
+def test_main_prompt_schema_built_from_rights(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    # S31 критерий приёмки: схема промпта содержит только таблицы, разрешённые
+    # identity (employees/bonuses — чужие для этого мира — в промпт не попадают)
+    store = FakePermissionStore({"orders": ("*",), "customers": ("*",)})
+    llm = FakeLLM([_text("Ответ 5")])
+    monkeypatch.setattr(
+        "apps.cli.build_container", lambda **kw: _main_container(llm, permission_store=store)
+    )
+    assert main(["--plain", "--quiet", "вопрос"]) == 0
+    prompt = llm.calls[0]["messages"][0]["content"]
+    assert "orders(" in prompt and "customers(" in prompt
+    assert "employees" not in prompt
+    assert "bonuses" not in prompt
+
+
+# --- Рендер схемы промпта по правам (S31 ARCH-GATE warning 6) ---
+
+
+def test_prompt_schema_shows_only_granted_columns() -> None:
+    # явный список колонок — пересечение с картой; '*' — полный список;
+    # блок схемы — одна строка (части через "; ")
+    prompt = _render_system_prompt(
+        {"customers": ("customer_id", "name"), "orders": ("*",)}, agent=False
+    )
+    schema_line = next(line for line in prompt.splitlines() if line.startswith("customers("))
+    assert "customer_id" in schema_line and "name" in schema_line
+    assert "country" not in schema_line and "created_at" not in schema_line
+    assert "orders(order_id" in schema_line
+    assert "status" in schema_line and "total" in schema_line
+
+
+def test_prompt_schema_without_permissions_is_empty_not_full_world() -> None:
+    # fail-closed дефолт: права не переданы — мир НЕ раскрывается
+    prompt = _render_system_prompt(None, agent=False)
+    assert "права не загружены" in prompt
+    assert "employees(" not in prompt
+
+
+def test_full_world_prompt_constant_lists_all_tables() -> None:
+    # константа SYSTEM_PROMPT (полный мир) — совместимость тестов канона;
+    # живой промпт CLI рендерится по правам (_render_system_prompt)
+    assert "employees(employee_id" in SYSTEM_PROMPT
+    assert "COUNT(DISTINCT" in SYSTEM_PROMPT

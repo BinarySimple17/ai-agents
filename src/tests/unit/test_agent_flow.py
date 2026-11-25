@@ -31,7 +31,8 @@ from apps.cli import (
     RETRIEVAL_UNAVAILABLE_NOTE,
     run_agent_flow,
 )
-from tests.unit.fakes import UNIT_CTX, RecordingTracer
+from pydantic import SecretStr
+from tests.unit.fakes import UNIT_CTX, FakePermissionStore, RecordingTracer
 from tests.unit.test_llm_client import _embed_client, _settings
 from tests.unit.test_retrieval_flow import _doc
 from tests.unit.test_streaming import _BreakingTransport
@@ -51,6 +52,7 @@ from text_to_sql_agent.application.ports.vector_store import VectorStoreError
 from text_to_sql_agent.application.services.run_sql_tool import TOOL_NAME, ToolGateError
 from text_to_sql_agent.infrastructure.llm.openai_provider import OpenAIProvider
 from text_to_sql_agent.infrastructure.observability.console_tracer import ConsoleTracer
+from text_to_sql_agent.infrastructure.persistence.dev_token_auth import DevTokenAuth
 
 _QUERY_VECTOR = [0.1] * 1024
 
@@ -430,9 +432,10 @@ def test_agent_flow_embed_failure_degrades_context_not_run() -> None:
     degrade = next(e for e in tracer.events if e.event == "agent.degrade")
     assert "retrieval недоступен" in degrade.payload["reason"]
     # Блока контекста нет; базовый промпт обещает «выданный ниже» — честная
-    # заметка о недоступности вместо нарушенного обещания (M10 ревью S25)
+    # заметка о недоступности вместо нарушенного обещания (M10 ревью S25);
+    # S31: база рендерится по правам прогона (None — «права не загружены»)
     system = llm.calls[0]["messages"][0]["content"]
-    assert system.startswith(AGENT_SYSTEM_PROMPT)
+    assert system.startswith(cli_module._render_system_prompt(None, agent=True))
     assert RETRIEVAL_UNAVAILABLE_NOTE in system
     assert not any(e.event == "agent.retrieve" for e in tracer.events)
 
@@ -603,6 +606,10 @@ def _agent_container(tracer: Any, scripts: list[list[Any]] | None = None) -> Sim
         run_sql_tool=FakeTool(),
         vector_store=FakeStore(),
         tracer=tracer,
+        # S31: main верифицирует токен ДО флоу и берёт права для схемы промпта
+        auth_provider=DevTokenAuth({"u_logist": "dev-logist-token"}),
+        settings=SimpleNamespace(dev_token=SecretStr("dev-logist-token")),
+        permission_store=FakePermissionStore({"orders": ("*",), "customers": ("*",)}),
         # S07: графовый драйвер в контейнере — CLI закрывает его в finally
         graph_store=SimpleNamespace(close=lambda: None),
     )

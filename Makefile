@@ -35,9 +35,11 @@ e2e:
 	uv run pytest src/tests/e2e -q || [ $$? -eq 5 ]
 
 # Локальный запуск агента: make dev Q="Сколько заказов у клиентов из РФ?"
+# Identity (S31): проверенный токен обязателен для любого SQL-контура — берётся
+# DEV_TOKEN из .env; TOKEN= переопределяет разово (значения — AGENT_DEV_TOKENS)
 dev:
-	@test -n "$(Q)" || { echo 'Usage: make dev Q="бизнес-вопрос"'; exit 2; }
-	uv run python -m apps.cli "$(Q)"
+	@test -n "$(Q)" || { echo 'Usage: make dev Q="бизнес-вопрос" [TOKEN=dev-токен]'; exit 2; }
+	uv run python -m apps.cli --token "$(TOKEN)" "$(Q)"
 
 # Индексация кураторских знаний в pgvector (S06, feat-006): DDL/связи/глоссарий/few-shot;
 # идемпотентно по source_ref — повторный запуск обновляет, не дублирует
