@@ -81,15 +81,17 @@ make infra-up && uv run pytest src/tests/integration/test_execute_sql.py -q     
 - Порт: `PermissionStore.columns_catalog(tables: frozenset[str]) -> dict[str, frozenset[str]]`;
   адаптер `PgPermissionStore`; фейк в `src/tests/unit/fakes.py`.
 - Валидатор: `'*'` разрешает только существующие колонки; остальное — `hallucination`
-  «колонка X отсутствует у таблицы T — доступные: …» (имена только из мира пользователя). Оба входа
-  валидатора — FSM и свободный (S31).
+  «колонка X отсутствует у таблицы T — доступные: …» (имена только из мира пользователя). Правка —
+  в общей части ACL (`_check_columns`) для FSM-входа; свободный вход (тул-контур) получает только
+  адаптацию сигнатуры — новых проверок и тестов по нему нет (D-039/D-040: тул-контур не трогаем).
 - **Регрессия (падает на до-фиксовом коде):** права `{'orders': ['*']}`, SQL с `orders.client_id`
   → было `ok`, стало `hallucination`; исполнитель не вызывается.
 
 **✅ Самопроверка:**
 
 ```bash
-uv run pytest src/tests/unit/test_validate_sql.py src/tests/unit/test_validate_free_sql.py -q -k "star or catalog"
+uv run pytest src/tests/unit/test_validate_sql.py -q -k "star or catalog"   # FSM-вход: новые тесты
+uv run pytest src/tests/unit/test_validate_free_sql.py -q                    # регрессия общей части, без новых тестов
 uv run pytest src/tests/integration/test_execute_sql.py src/tests/integration/test_resolve_access.py -q
 ```
 
@@ -125,11 +127,9 @@ plan_joins ≤ 3, generate_sql ≤ 3, interpret ×1, degrade ×1, diagnose-LLM �
 фиксированный `message`. **Регрессия A7:** на до-фиксовом коде stdout degrade-исхода содержит
 `LINE 1:` и фрагмент SQL, после — нет.
 
-**✅ Самопроверка:**
-
-```bash
-uv run pytest src/tests/unit/test_agent_flow.py src/tests/unit/test_tool_loop.py -q -k "stdout or error"
-```
+**✅ Самопроверка:** регрессия A7 — живым прогоном Task 6 (`grep -c "does not exist\|LINE 1:"` → 0).
+Юнит-теста `_run_fsm` в наборе нет; `test_agent_flow.py` и `test_tool_loop.py` — тул-контур,
+по D-039/D-040 не трогаем.
 
 ### Task 6: Слой 3 — живые прогоны на сценах hw-05
 
