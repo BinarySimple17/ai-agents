@@ -12,7 +12,7 @@
 
 | Артефакт hw-plan §3 | Где лежит |
 |---|---|
-| ВИДЕО | [видео консоли](https://drive.google.com/file/d/1Bhp1qP8JDF7k0mD64_nrAQhbJYEY7hpg/view?usp=drive_link) |
+| ВИДЕО | [видео консоли](https://disk.yandex.ru/i/xOO_zyT_XcJstQ) |
 | Источник контекста | [docs/glossary.md](../docs/glossary.md) и [docs/few_shot.md](../docs/few_shot.md) (кураторские) плюс DDL из миграции 0001 и связи из вьюхи `agent_relationships_active`. Индексация в pgvector: `make index-knowledge` ([src/apps/index_knowledge.py](../src/apps/index_knowledge.py), 24 документа), хранилище за портом `VectorStore` ([pgvector_store.py](../src/text_to_sql_agent/infrastructure/memory/pgvector_store.py)) |
 | Подключение к агенту | retrieval-блок в системный промпт тул-контура, ≈2К токенов с резкой только по границе документа: [run_agent_flow в src/apps/cli.py](../src/apps/cli.py) (retrieval недоступен → деградация контекста, прогон продолжается) |
 | Streaming | [complete_stream в порте LLMProvider](../src/text_to_sql_agent/application/ports/llm_provider.py): дельты текста — в stdout по мере генерации, тул-вызовы модели собираются из дельт стрима в `StreamFinal.tool_calls` и исполняются ([RunSqlTool](../src/text_to_sql_agent/application/services/run_sql_tool.py), канал agent_ro с LIMIT/timeout/RLS — паритет ДЗ-02), Observation возвращается в историю, следующий ход |
