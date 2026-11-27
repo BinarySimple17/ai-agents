@@ -227,8 +227,9 @@ def validate_sql(
 def _check_into(audit: SqlAudit, issues_denied: list[str]) -> None:
     """Гейт «запись/DDL вне контура чтения» (BL-055): SELECT … INTO — denied.
 
-    sqlglot парсит INTO как arg ``into`` у ``exp.Select`` — корневые гейты
-    (корень ∈ Select/Union) и deny-поиск Insert/Create его не видят. Детекция —
+    sqlglot парсит INTO как arg ``into`` у ``exp.Select`` — корень легально
+    проходит гейты формы (корень ∈ Select/Union), отдельной DML-инструкции класс
+    не образует. Детекция —
     services (ruling R4: механика AST там), политика ЗДЕСЬ: write-попытка —
     сигнал безопасности (не «несуществующий синтаксис», retry не оправдан) —
     denied, degrade без retry (канон ADR-005 §4: «существует, но вне прав →

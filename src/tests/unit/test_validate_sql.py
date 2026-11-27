@@ -322,9 +322,9 @@ class TestStatementForm:
 class TestSelectIntoDeny:
     """BL-055 (S42): явный deny-гейт SELECT … INTO — запись/DDL-класс (denied).
 
-    sqlglot парсит INTO как arg «into» у exp.Select — корневые гейты и
-    deny-поиск Insert/Create его не видят; до BL-055 класс отсекался
-    whitelist-обходом как form-reject (hallucination) — семантика retry
+    sqlglot парсит INTO как arg «into» у exp.Select — корень легально проходит
+    гейты формы, отдельной DML-инструкции класс не образует; до BL-055 класс
+    отсекался whitelist-обходом как form-reject (hallucination) — семантика retry
     «уговорить валидатор» для write-попытки неверна. Ассерты — outcome и
     наличие INTO-issue, не точный список issues: цель INTO парсится exp.Table
     и добавляет hallucination-шум (ACL/«вне плана»), исход это не меняет —
@@ -1030,9 +1030,10 @@ class TestAdversarialGallery:
                 ValidationOutcome.HALLUCINATION,
             ),
             # SELECT … INTO — запись/DDL-класс (BL-055, S42): явный deny-гейт
-            # domain (arg «into» у exp.Select deny-поиск Insert/Create не видит);
-            # обе формы — корневая и вложенная (расширение whitelist на exp.Into —
-            # поверхность парсера выросла, корпус §4 п.8 обязан её покрыть)
+            # domain — arg «into» у exp.Select отдельной инструкции не образует,
+            # корень легально проходит гейты формы; обе формы — корневая и
+            # вложенная (расширение whitelist на exp.Into — поверхность парсера
+            # выросла, корпус §4 п.8 обязан её покрыть)
             (
                 "SELECT id INTO new_t FROM orders",
                 ValidationOutcome.DENIED,
