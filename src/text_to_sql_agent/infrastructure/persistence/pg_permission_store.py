@@ -34,6 +34,15 @@ _PERMISSIONS_SQL = (
 # SoT существования (BL-009): «что вообще есть в мире агента» — различение
 # «не существует» (hallucination) от «вне прав» (denied) в валидаторе S11
 _CATALOG_SQL = "SELECT table_name FROM agent_data_sources"
+# Фактические колонки (S33 R2 — разворот '*' из прав): information_schema
+# фильтруется по привилегиям роли — таблица без GRANT SELECT планировщику
+# колонок не отдаст (отсутствие записи в результате — сигнал GRANT-дрейфа,
+# ruling R1 S33: дефект стыка, не «пустая таблица»)
+_COLUMNS_SQL = (
+    "SELECT table_name, column_name FROM information_schema.columns "
+    "WHERE table_schema = 'public' AND table_name = ANY(%s) "
+    "ORDER BY table_name, ordinal_position"
+)
 
 
 def _shorten(message: str) -> str:
@@ -135,3 +144,29 @@ class PgPermissionStore:
             ) from exc
         names = {str(row[0]).strip().lower() for row in rows}
         return frozenset(name for name in names if name)
+
+    def columns_catalog(self, tables: frozenset[str]) -> dict[str, frozenset[str]]:
+        """Фактические колонки запрошенных таблиц (information_schema под agent_planner).
+
+        Нормализация имён — нижний регистр (IR валидатора сравнивает так же).
+        Запрошенная таблица без видимых колонок — отсутствует в результате
+        (GRANT-дрейф: решение принимает вызывающий — ruling R1 S33); пустой
+        `tables` — пустой результат без соединения (нет '*'-прав — интроспекция
+        не нужна)."""
+        if not tables:
+            return {}
+        requested = {str(t).strip().lower() for t in tables if str(t).strip()}
+        try:
+            with psycopg.connect(self._planner_dsn, connect_timeout=_CONNECT_TIMEOUT_S) as conn:
+                rows = conn.execute(_COLUMNS_SQL, (sorted(requested),)).fetchall()
+        except psycopg.Error as exc:
+            raise RightsUnavailableError(
+                f"каталог колонок information_schema недоступен: {_shorten(exc)}"
+            ) from exc
+        columns: dict[str, set[str]] = {}
+        for table_name, column_name in rows:
+            table = str(table_name).strip().lower()
+            column = str(column_name).strip().lower()
+            if table and column:
+                columns.setdefault(table, set()).add(column)
+        return {table: frozenset(cols) for table, cols in columns.items()}

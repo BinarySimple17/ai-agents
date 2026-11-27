@@ -57,6 +57,10 @@ class SQLFailureClass(StrEnum):
     """Класс сбоя исполнения — вход ретраев M1 и Observation diagnose_error (V4)."""
 
     SYNTAX = "syntax"
+    # Несуществующий объект (колонка/таблица/функция): регенерация выборки
+    # оправдана, в отличие от грамматики — диагностика строит подсказку из
+    # фактических колонок мира (аудит 2026-11-23 A4, S33)
+    SEMANTICS = "semantics"
     PERMISSION_DENIED = "permission_denied"
     TIMEOUT = "timeout"
     READ_ONLY = "read_only"

@@ -53,8 +53,11 @@ class FakePermissionStore:
     """Двойник `PermissionStore` (S31): снапшот прав + каталог мира без БД.
 
     Дефолтный мир — tester видит orders/customers целиком ('*'): ok-путь тула.
-    ``error`` — RightsUnavailableError у обоих чтений (fail-closed тула);
-    ``known=False`` — verified-пользователь вне agent_user_roles (R6 S05).
+    ``columns`` — фактические колонки для `columns_catalog` (S33 R2; дефолт —
+    зеркальные к правам: '*' видит всё); GRANT-дрейф моделируется исключением
+    таблицы из `columns` (адаптер отдаёт только видимые планировщику — ruling
+    R1 S33). ``error`` — RightsUnavailableError у обоих чтений (fail-closed
+    тула); ``known=False`` — verified-пользователь вне agent_user_roles (R6 S05).
     """
 
     def __init__(
@@ -62,6 +65,7 @@ class FakePermissionStore:
         tables: Mapping[str, tuple[str, ...]] | None = None,
         *,
         catalog: frozenset[str] | None = None,
+        columns: Mapping[str, tuple[str, ...]] | None = None,
         known: bool = True,
         error: Exception | None = None,
     ) -> None:
@@ -69,6 +73,11 @@ class FakePermissionStore:
             dict(tables) if tables is not None else {"orders": ("*",), "customers": ("*",)}
         )
         self._catalog = catalog if catalog is not None else frozenset(self._tables)
+        self._columns = (
+            dict(columns)
+            if columns is not None
+            else {"orders": ("id", "customer_id", "total"), "customers": ("id", "name")}
+        )
         self._known = known
         self._error = error
         self.calls: list[str] = []
@@ -92,3 +101,13 @@ class FakePermissionStore:
         if isinstance(self._error, RightsUnavailableError):
             raise self._error
         return self._catalog
+
+    def columns_catalog(self, tables: frozenset[str]) -> dict[str, frozenset[str]]:
+        if isinstance(self._error, RightsUnavailableError):
+            raise self._error
+        requested = {str(t).strip().lower() for t in tables}
+        return {
+            table: frozenset(cols)
+            for table, cols in self._columns.items()
+            if table in requested and cols
+        }

@@ -58,6 +58,20 @@ def _attempts_used(state: State) -> int:
     return count + 1
 
 
+def _plan_tables(state: State) -> frozenset[str] | None:
+    """Таблицы плана из skeleton (S33 A4: мир подсказки semantics).
+
+    diagnose_error — не владелец skeleton: отсутствие/мусор не дефект (план
+    проверяет validate_sql на своём ребре) — подсказка просто без раздела
+    «доступные колонки» (fallback сервиса).
+    """
+    raw = state.get("skeleton")
+    if not isinstance(raw, dict) or not isinstance(raw.get("tables"), (list, tuple)):
+        return None
+    names = frozenset(str(t).strip().lower() for t in raw["tables"] if str(t).strip())
+    return names or None
+
+
 def make_diagnose_error_node(
     service: DiagnoseService,
     *,
@@ -106,6 +120,12 @@ def make_diagnose_error_node(
             probe_context=(
                 str(raw_error["probe"]) if isinstance(raw_error.get("probe"), str) else None
             ),
+            # S33: сырой текст БД (error["detail"] — внутренний канал execute_sql)
+            # и таблицы плана — факты для код-подсказки semantics (без LLM)
+            error_detail=(
+                str(raw_error["detail"]) if isinstance(raw_error.get("detail"), str) else None
+            ),
+            plan_tables=_plan_tables(state),
         )
         budget = dict(state.get("budget_used") or {})
         budget["llm_calls"] = (budget.get("llm_calls") or 0) + result.llm_calls

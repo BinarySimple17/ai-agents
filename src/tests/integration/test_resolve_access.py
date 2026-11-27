@@ -114,6 +114,52 @@ class TestPermissionStoreIntegration:
         versions = PgPermissionStore(planner_dsn).settings_versions()
         assert set(versions) == {"permissions", "user_roles"}  # ruling R3: ОБА счётчика
 
+    def test_columns_catalog_covers_world_catalog(self, planner_dsn) -> None:
+        # Инвариант R1 S33: columns_catalog покрывает весь data_catalog()
+        # НЕПУСТО — GRANT-дрейф (таблица в мире без GRANT SELECT планировщику)
+        # иначе молча превращался бы в hallucination-цикл ретраев ('*' + пустой
+        # каталог колонок); дрейф ловится здесь, на стыке
+        store = PgPermissionStore(planner_dsn)
+        world = store.data_catalog()
+        assert world  # мир не пуст по определению (миграции 0002/0003)
+        catalog = store.columns_catalog(frozenset(world))
+        assert set(catalog) == set(world)
+        assert all(cols for cols in catalog.values())
+
+    def test_columns_catalog_known_columns_lowercased(self, planner_dsn) -> None:
+        # Сравнение валидатора — нижний регистр IR; seed 0003 создаёт orders.order_id
+        store = PgPermissionStore(planner_dsn)
+        catalog = store.columns_catalog(frozenset({"orders"}))
+        assert "order_id" in catalog["orders"]
+
+    def test_columns_catalog_empty_tables_no_connection(self, planner_dsn) -> None:
+        # Нет '*'-прав — интроспекция не нужна: пустой результат без соединения
+        store = PgPermissionStore(planner_dsn)
+        assert store.columns_catalog(frozenset()) == {}
+
+    def test_columns_catalog_grant_drift_table_missing(self, planner_dsn, admin_conn) -> None:
+        # R1 S33: таблица в мире/правах, но без GRANT SELECT планировщику —
+        # отсутствует в columns_catalog (дефект стыка решает вызывающий), не
+        # «пустая таблица»
+        store = PgPermissionStore(planner_dsn)
+        try:
+            with admin_conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO agent_data_sources (table_name, ds_id, protocol) "
+                    "VALUES ('integration_ghost_tbl', 'pg', 'sql') "
+                    "ON CONFLICT (table_name) DO NOTHING"
+                )
+            admin_conn.commit()
+            catalog = store.columns_catalog(frozenset({"integration_ghost_tbl", "orders"}))
+            assert "orders" in catalog and catalog["orders"]
+            assert "integration_ghost_tbl" not in catalog
+        finally:
+            with admin_conn.cursor() as cur:
+                cur.execute(
+                    "DELETE FROM agent_data_sources WHERE table_name = 'integration_ghost_tbl'"
+                )
+            admin_conn.commit()
+
 
 class TestRightsFreshness:
     """Правка строк настроек действует со следующего запроса (behavior feat-005)."""

@@ -3,8 +3,9 @@
 Два слоя (прецедент формы: generate_sql = сервис + node-фабрика):
 - ``ExecuteSqlNode`` (S13/feat-013) — исполнение: читает `sql` из state, пишет
   `rows`/`row_count`/`truncated`/`error`; SQL-ошибка — структурированный
-  ``{class, message}`` (не traceback — S00 правило 8). Пустой результат —
-  валидный исход, не ошибка.
+  ``{class, message, detail}`` (не traceback — S00 правило 8; message —
+  фиксированный текст по классу, detail — сырой текст БД для diagnose, S9/A7
+  S33). Пустой результат — валидный исход, не ошибка.
 - ``make_execute_sql_node`` (S14/feat-014) — FSM-glue: RunContext из state
   (identity/trace — ruling R4 S05/R3 S08), defense-in-depth проверки каркаса
   (SQL приходит только от validate_sql) и probe COUNT при 0 строк
@@ -62,6 +63,29 @@ _STEP_LOOP_FLAGS: frozenset[str] = frozenset(
 _MISSING_SQL_CLASS = SQLFailureClass.SYNTAX
 _MISSING_SQL_MESSAGE = "в state нет SQL для исполнения"
 
+# Фиксированный пользовательский текст по классу сбоя (S9/A7, S33): сырой текст
+# БД — внутренний error["detail"] (канал diagnose → подсказка регенерации), CLI
+# печатает message. Ключи — SQLFailureClass.value; словарь покрывает весь enum —
+# новый член без текста получает общий текст (fail-closed к «без деталей»).
+_SQL_ERROR_MESSAGES: dict[str, str] = {
+    SQLFailureClass.SEMANTICS.value: (
+        "по этому вопросу данных не нашлось — проверим условия выборки и повторим"
+    ),
+    SQLFailureClass.SYNTAX.value: (
+        "не удалось обработать запрос — попробуйте переформулировать вопрос"
+    ),
+    SQLFailureClass.PERMISSION_DENIED.value: (
+        "часть данных по этому вопросу вам недоступна — повторите позже"
+    ),
+    SQLFailureClass.READ_ONLY.value: (
+        "часть данных по этому вопросу вам недоступна — повторите позже"
+    ),
+    SQLFailureClass.TIMEOUT.value: "запрос оказался слишком тяжёлым — попробуйте сузить вопрос",
+    SQLFailureClass.CONNECTION.value: "хранилище временно недоступно — повторите запрос позже",
+    SQLFailureClass.UNKNOWN.value: "не удалось обработать запрос — попробуйте позже",
+}
+_GENERIC_SQL_ERROR_MESSAGE = _SQL_ERROR_MESSAGES[SQLFailureClass.UNKNOWN.value]
+
 # Фиксированные сообщения дефектов/пробы (S9-политика: пользовательский текст —
 # фиксированный; факты пробы с именами/счётчиками — внутренний ключ error["probe"]
 # (ревью S14 Important-1 — прецедент state.validation.issues S11: CLI печатает
@@ -98,7 +122,16 @@ class ExecuteSqlNode:
         try:
             result = self._executor.execute(QueryRequest(sql=sql), ctx=ctx)
         except SQLExecutionError as exc:
-            updated[ERROR_KEY] = {"class": exc.error_class.value, "message": str(exc)}
+            # A7/S33: message — фиксированный текст по классу (S9, печатается
+            # CLI); detail — сырой текст БД (внутренний канал: diagnose строит
+            # из него подсказку регенерации — модель видит фактические имена)
+            updated[ERROR_KEY] = {
+                "class": exc.error_class.value,
+                "message": _SQL_ERROR_MESSAGES.get(
+                    exc.error_class.value, _GENERIC_SQL_ERROR_MESSAGE
+                ),
+                "detail": str(exc),
+            }
             return _drop_stale_result(updated)
         updated[ERROR_KEY] = None
         updated[ROWS_KEY] = result.rows

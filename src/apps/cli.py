@@ -203,10 +203,14 @@ def _run_fsm(container: Container, question: str, *, token: str) -> int:
     print("Маршрут: " + " -> ".join(result.visited_nodes))
     print("Исход: " + str(result.outcome))
     _print_final_answer(result)
+    answer = getattr(result, "answer", None) or {}
     error = result.state.get("error")
-    if error:
+    if error and not answer.get("text"):
         # Сообщение отказа — фиксированный текст узла (S9): деталей настройки
-        # (host/роль БД) здесь нет, они — только в операторском трейсе (ревью I1)
+        # (host/роль БД) здесь нет, они — только в операторском трейсе (ревью I1).
+        # A7/S33: печать только для исходов БЕЗ текста ответа — сырая ошибка БД
+        # в stdout не попадает ни через message (фиксированный), ни вторым
+        # каналом поверх содержательного отказа
         print("Ошибка: " + str(error.get("message")))
     # Отказы — единообразный non-zero для скриптов (ревью S05 Minor-4 + re-review
     # Minor-2): rejected (отказ на входе) и fail (технический сбой прогона —

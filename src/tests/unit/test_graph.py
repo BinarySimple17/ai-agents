@@ -1112,6 +1112,12 @@ class TestRetryCycle:
                 "validate_sql": make_validate_sql_node(
                     ValidateSqlService(),
                     catalog_provider=lambda: set(self._CATALOG),
+                    # S33 R2: права фикстур — '*' → узлу нужен каталог колонок
+                    # (существование именованных колонок сверяется с ним)
+                    columns_catalog_provider=lambda tables: {
+                        table: frozenset({"order_id", "customer_id", "total", "item_id", "amount"})
+                        for table in tables
+                    },
                 ),
                 # execute_sql — реальный узел S14: строки есть — probe не запускается
                 "execute_sql": make_execute_sql_node(executor or FakeExecutor()),

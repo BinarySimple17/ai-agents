@@ -16,6 +16,7 @@ from text_to_sql_agent.application.ports.llm_provider import (
     ToolCall,
     Usage,
 )
+from text_to_sql_agent.application.ports.permission_store import RightsUnavailableError
 from text_to_sql_agent.application.services.diagnose_error_node import (
     RETRY_GENERATE_SQL_FLAG,
     RETRY_TARGET_FLAG,
@@ -124,25 +125,97 @@ def test_unknown_class_falls_back_to_service_llm() -> None:
 
 
 def test_llm_diagnosis_parses_tool_output() -> None:
-    llm = ScriptedLLM([_tool_response("semantics", "таблица metrics не существует — проверь мир")])
+    # S33: LLM-контур — прочий syntax/timeout/empty; validate_hallucination
+    # ушёл в код-подсказку (semantics без LLM) — тест см. test_semantics_hint_*
+    llm = ScriptedLLM([_tool_response("timeout", "ужать выборку периодом")])
     service = DiagnoseService(llm=llm)
     result = service.diagnose(
-        error_class="validate_hallucination",
-        error_message="запрос отклонён валидатором",
-        sql="SELECT * FROM metrics",
-        validation_issues=("таблица metrics вне каталога мира",),
+        error_class="timeout",
+        error_message="запрос превысил лимит времени",
+        sql="SELECT * FROM orders",
     )
     assert result.verdict is not None
-    assert result.verdict.error_class is DiagnoseClass.SEMANTICS
-    assert result.verdict.retry_futile is False
-    assert "metrics" in result.verdict.regeneration_hint
+    assert result.verdict.error_class is DiagnoseClass.TIMEOUT
+    assert result.verdict.retry_futile is False  # A3: вердикт модели ретрабелен по построению
     assert result.llm_calls == 1
-    # Контекст ретрая (D-016): последний SQL + ошибка + нарушения валидатора в промпте
+    # Контекст ретрая (D-016): последний SQL + ошибка в промпте
     role, messages = llm.calls[0]
     assert role == "cheap"
     prompt = messages[-1]["content"]
-    assert "SELECT * FROM metrics" in prompt
-    assert "metrics вне каталога мира" in prompt
+    assert "SELECT * FROM orders" in prompt
+    assert "превысил лимит времени" in prompt
+
+
+def test_semantics_hint_built_from_db_detail_and_catalog_no_llm() -> None:
+    """S33 A4: «объекта нет» с уровня БД → класс semantics, LLM не вызывается
+    (шпион), подсказка кода несёт фактические колонки (ловушка 2: модель не
+    видела реальных имён — при temperature 0 она повторяла бы тот же SQL)."""
+    llm = ScriptedLLM([])  # шпион: ни одного вызова быть не должно
+    service = DiagnoseService(
+        llm=llm,
+        columns_catalog=lambda tables: {"orders": ("order_id", "customer_id", "total")},
+    )
+    result = service.diagnose(
+        error_class="semantics",
+        error_message="по этому вопросу данных не нашлось — проверим условия выборки и повторим",
+        error_detail="column orders.client_id does not exist",
+        plan_tables=frozenset({"orders", "customers"}),
+        sql="SELECT orders.client_id FROM orders",
+    )
+    assert result.verdict is not None
+    assert result.verdict.error_class is DiagnoseClass.SEMANTICS
+    assert result.verdict.retry_futile is False  # регенерация оправдана
+    assert result.llm_calls == 0
+    assert llm.calls == []  # LLM не тратится (аудит A4)
+    hint = result.verdict.regeneration_hint
+    assert "client_id" in hint  # сырой текст БД — фактическое имя
+    assert "customer_id" in hint  # доступные колонки из каталога (мир пользователя)
+
+
+def test_semantics_hint_from_validator_issues_only() -> None:
+    """validate_hallucination: факты валидатора уже несут реальные имена —
+    каталог не читается, LLM не тратится (контур 2, S33)."""
+    llm = ScriptedLLM([])
+    catalog_calls: list[frozenset[str]] = []
+
+    def _catalog(tables: frozenset[str]) -> dict[str, frozenset[str]]:
+        catalog_calls.append(tables)
+        return {}
+
+    service = DiagnoseService(llm=llm, columns_catalog=_catalog)
+    result = service.diagnose(
+        error_class="validate_hallucination",
+        error_message="часть данных по этому вопросу вам недоступна — повторите позже",
+        validation_issues=(
+            "колонка client_id отсутствует в мире агента — у orders доступные: id, total",
+        ),
+    )
+    assert result.verdict is not None
+    assert result.verdict.error_class is DiagnoseClass.SEMANTICS
+    assert result.llm_calls == 0
+    assert catalog_calls == []  # факты валидатора достаточны — шов не читается
+    assert "client_id" in result.verdict.regeneration_hint
+
+
+def test_semantics_hint_survives_catalog_failure() -> None:
+    """Сбой шва каталога не роняет разбор: подсказка без раздела «доступные
+    колонки», факты из detail остаются (честный fallback, R2 S33)."""
+    llm = ScriptedLLM([])
+
+    def boom(tables: frozenset[str]) -> dict[str, frozenset[str]]:
+        raise RightsUnavailableError("db down")
+
+    service = DiagnoseService(llm=llm, columns_catalog=boom)
+    result = service.diagnose(
+        error_class="semantics",
+        error_message="фиксированный текст",
+        error_detail="column orders.client_id does not exist",
+        plan_tables=frozenset({"orders"}),
+    )
+    assert result.verdict is not None
+    hint = result.verdict.regeneration_hint
+    assert "client_id" in hint
+    assert "доступные колонки" not in hint
 
 
 def test_probe_context_flows_into_prompt() -> None:
@@ -163,9 +236,28 @@ def test_probe_context_flows_into_prompt() -> None:
     assert "проба COUNT" in prompt
 
 
+def test_db_detail_flows_into_prompt_for_llm_classes() -> None:
+    """S33: сырой текст БД (error["detail"]) — в промпте LLM-классов: модель
+    видит фактические имена (фиксированный message их больше не несёт)."""
+    llm = ScriptedLLM([_tool_response("timeout", "ужать")])
+    service = DiagnoseService(llm=llm)
+    result = service.diagnose(
+        error_class="timeout",
+        error_message="запрос оказался слишком тяжёлым — попробуйте сузить вопрос",
+        error_detail="canceling statement due to statement timeout",
+    )
+    assert result.verdict is not None
+    _, messages = llm.calls[0]
+    prompt = messages[-1]["content"]
+    assert "canceling statement due to statement timeout" in prompt
+
+
 def test_retry_futile_is_code_decision_not_model() -> None:
-    """Модель не решает security-исход (ADR-005): даже «permissions» от LLM
-    не делает флаг — но класс от LLM проверяется кодовой картой."""
+    """Регрессия A3 (падает на до-фиксовом коде): модель возвращает класс
+    «permissions» — до фикса ретрай снимался выходом модели (retry_futile=True
+    от класса LLM); после — класс вне enum тула отклоняется приёмкой (M1),
+    futile-вердикт может дать только детерминированная карта по классу ошибки.
+    """
 
     class FutileTool:
         def complete(self, role, messages, *, tools=None):
@@ -179,8 +271,11 @@ def test_retry_futile_is_code_decision_not_model() -> None:
 
     service = DiagnoseService(llm=FutileTool())
     result = service.diagnose(error_class="timeout", error_message="таймаут")
-    assert result.verdict is not None
-    assert result.verdict.retry_futile is True  # карта кода, не поле модели
+    # Верdict модели с классом permissions НЕ принимается: M1 исчерпан — честный
+    # «разбор не удался», ретрай не назначается (деградация — валидный исход),
+    # а не futile-вердикт от поля модели
+    assert result.verdict is None
+    assert result.llm_calls == 3  # все попытки M1 ушли на отклонённые выходы
 
 
 @pytest.mark.parametrize(
@@ -230,7 +325,7 @@ def test_escalation_attempt3_checks_budget_seam() -> None:
         [
             LLMResponse(text="мусор", model="m"),
             LLMResponse(text="мусор", model="m"),
-            _tool_response("semantics", "эскалация сработала"),
+            _tool_response("timeout", "эскалация сработала"),  # S33: enum тула без semantics
         ]
     )
     service = DiagnoseService(llm=llm, budget_remaining_roubles=lambda: 1.5)

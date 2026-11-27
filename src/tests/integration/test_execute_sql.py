@@ -117,6 +117,25 @@ def test_executor_wrapper_is_structurally_select_only(executor, ctx) -> None:
     assert exc.value.error_class == SQLFailureClass.SYNTAX
 
 
+def test_missing_column_is_semantics_not_syntax(executor, ctx) -> None:
+    # Аудит 2026-11-23 A4/S33: «объекта нет» с уровня БД — семантика выборки
+    # (UndefinedColumn → SEMANTICS), не грамматика: до фикса класс SYNTAX вёл
+    # к детерминированному повтору того же SQL при temperature 0 (3 одинаковые
+    # диагностики hw-05). Регенерация по подсказке с фактическими колонками —
+    # путь diagnose_error (S33 Task 3)
+    with pytest.raises(SQLExecutionError) as exc:
+        executor.execute(QueryRequest(sql="SELECT orders.nonexistent_col FROM orders"), ctx=ctx)
+    assert exc.value.error_class == SQLFailureClass.SEMANTICS
+
+
+def test_missing_table_is_semantics(executor, ctx) -> None:
+    # Аудит A4/S33, ветка UndefinedTable: несуществующая таблица — тоже семантика
+    # (в валидаторе её поймает каталог мира как hallucination; канал БД — второй рубеж)
+    with pytest.raises(SQLExecutionError) as exc:
+        executor.execute(QueryRequest(sql="SELECT id FROM nonexistent_table_xyz"), ctx=ctx)
+    assert exc.value.error_class == SQLFailureClass.SEMANTICS
+
+
 def test_agent_ro_session_is_read_only_at_db_level(ro_dsn) -> None:
     # Рубеж 5 (ADR-005): read-only проверен попыткой INSERT — отказ БД, не кода
     with pytest.raises(psycopg.errors.ReadOnlySqlTransaction):

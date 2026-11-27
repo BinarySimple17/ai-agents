@@ -55,12 +55,18 @@ def make_validate_sql_node(
     service: ValidateSqlService,
     *,
     catalog_provider: Callable[[], frozenset[str] | set[str]],
+    columns_catalog_provider: Callable[[frozenset[str]], dict[str, frozenset[str]]] | None = None,
     tracer: Tracer | None = None,
 ) -> Any:
     """Фабрика узла validate_sql: детерминированная валидация + маршрутизация.
 
     ``catalog_provider`` — чтение каталога мира (PermissionStore.data_catalog)
     на КАЖДЫЙ запрос (инвариант стыка 3: права/мир — не кэш узла).
+    ``columns_catalog_provider`` — фактические колонки (PermissionStore.
+    columns_catalog) по прецеденту того же стыка: чтение на КАЖДЫЙ визит,
+    но ТОЛЬКО при '*'-правах (именованные колонки под '*' сверяются с
+    каталогом — S33 A5; явные списки каталог не трогают). ``None`` при
+    '*'-правах → ValueError домена → дефект (fail-closed wiring, R2 S33).
     """
 
     def node(state: State) -> dict[str, Any]:
@@ -95,6 +101,18 @@ def make_validate_sql_node(
         except RightsUnavailableError as exc:
             # fail-closed: каталог недоступен → отказ, не «пустой мир» (S00-8)
             return _defect(flags, "catalog_unavailable", _DEFECT_MESSAGE, tracer, detail=str(exc))
+        # Каталог колонок — только при '*'-правах (S33 R2): ровно они поднимают
+        # вопрос «существует ли колонка вообще»; соединение планировщика — одно
+        # на визит валидации в '*'-сцене, вне её — ноль
+        star_tables = frozenset(table for table, cols in permissions.items() if "*" in (cols or ()))
+        columns_catalog: dict[str, frozenset[str]] | None = None
+        if star_tables and columns_catalog_provider is not None:
+            try:
+                columns_catalog = columns_catalog_provider(star_tables)
+            except RightsUnavailableError as exc:
+                return _defect(
+                    flags, "catalog_unavailable", _DEFECT_MESSAGE, tracer, detail=str(exc)
+                )
         try:
             result = service.validate(
                 sql,
@@ -104,6 +122,7 @@ def make_validate_sql_node(
                 permissions=permissions,
                 data_catalog=data_catalog,
                 row_limit=ROW_LIMIT,
+                columns_catalog=columns_catalog,
             )
         except ValueError as exc:
             # Нарушение контракта стыка (BL-014: CSV-строка в правах) — дефект

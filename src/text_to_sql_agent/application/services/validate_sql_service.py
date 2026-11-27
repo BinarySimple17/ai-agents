@@ -937,7 +937,11 @@ class ValidateSqlService:
         permissions: Mapping[str, Sequence[str]],
         data_catalog: frozenset[str] | set[str],
         row_limit: int,
+        columns_catalog: Mapping[str, Sequence[str]] | None = None,
     ) -> ValidateSqlResult:
+        """Прогон через парсинг → домен (без IO: каталог приходит из узла —
+        ruling R2 S33; ``None``/пустой при '*'-правах → ValueError домена,
+        fail-closed)."""
         try:
             tree = _parse_tree(sql)
             audit = _build_audit(tree)
@@ -951,5 +955,6 @@ class ValidateSqlService:
             permissions=permissions,
             data_catalog=data_catalog,
             row_limit=row_limit,
+            columns_catalog=columns_catalog,
         )
         return _result_with_rewrites(sql, tree, verdict, permissions)

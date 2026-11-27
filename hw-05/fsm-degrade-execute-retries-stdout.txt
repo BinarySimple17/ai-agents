@@ -1,5 +1,6 @@
-Маршрут: resolve_access -> clarify -> plan_joins -> build_skeleton -> generate_sql -> validate_sql -> check_cost -> execute_sql -> diagnose_error -> generate_sql -> validate_sql -> check_cost -> execute_sql -> diagnose_error -> generate_sql -> validate_sql -> check_cost -> execute_sql -> diagnose_error -> degrade
-Исход: degrade
-Ответ: К сожалению, я не могу выполнить ваш запрос в данный момент из-за временной технической неполадки. Я работаю с данными о рекламных кампаниях (campaigns), клиентах (customers), заказах (orders) и их позициях (order_items), а также информацией о товарах (products). Пожалуйста, попробуйте задать вопрос позже — я буду рад помочь вам с анализом данных по этим темам.
+Маршрут: resolve_access -> clarify -> plan_joins -> build_skeleton -> generate_sql -> validate_sql -> diagnose_error -> generate_sql -> validate_sql -> check_cost -> execute_sql -> compact_result -> interpret_result
+Исход: done
+Ответ: В рекламных кампаниях участвовали 367 клиентов. Уникальные идентификаторы клиентов (customer_id) варьируются от 1 до 20. Среднее значение customer_id составляет около 10,61. Данные не усечены и являются полными.
+SQL: SELECT orders.customer_id FROM campaigns INNER JOIN orders ON campaigns.campaign_id = orders.campaign_id LIMIT 1000
+Допущение: «пришли из рекламы» = first-touch: первый заказ клиента из ads-кампании; any-touch завышает цифру; campaign_id надёжен с 2026-03; NULL campaign_id — заказы вне кампаний, INNER JOIN их молча теряет (ADR-006 §4.7)
 Стоимость: 0.0000 руб.
-Ошибка: БД отклонила запрос (syntax): column orders.client_id does not exist LINE 1: SELECT * FROM (SELECT orders.client_id FROM campaigns INNER ... ^

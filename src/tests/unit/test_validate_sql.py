@@ -80,6 +80,14 @@ def _skeleton(plan: JoinPlan | None = None) -> Skeleton:
     return build_skeleton(plan or _plan())
 
 
+# Фактические колонки мира (S33 R2 — information_schema под agent_planner):
+# зеркальны к правам фикстур; несуществующие колонки ('*' -сцены) в них нет
+WORLD_COLUMNS: dict[str, frozenset[str]] = {
+    "orders": frozenset(ORDERS_COLUMNS),
+    "customers": frozenset(CUSTOMERS_COLUMNS),
+}
+
+
 def _validate(
     sql: str,
     *,
@@ -89,21 +97,34 @@ def _validate(
     permissions: dict[str, list[str]] | None = None,
     catalog: frozenset[str] = CATALOG,
     row_limit: int = ROW_LIMIT,
+    columns_catalog: dict[str, frozenset[str]] | None = None,
 ) -> ValidateSqlResult:
-    """Прогон через сервис с каноничными фикстурами (все входы обязательны — fail-closed)."""
+    """Прогон через сервис с каноничными фикстурами (все входы обязательны — fail-closed).
+
+    ``columns_catalog`` по умолчанию зеркален правам фикстур (S33 R2: узел
+    доставляет каталог при '*'-правах; без явного аргумента каталог мира).
+    """
     plan = plan or _plan()
     skeleton = skeleton if skeleton is not None else _skeleton(plan)
     skeleton_hash = skeleton_hash if skeleton_hash is not None else skeleton.skeleton_hash
+    effective_permissions = (
+        permissions if permissions is not None else {k: list(v) for k, v in PERMISSIONS.items()}
+    )
+    if columns_catalog is None:
+        columns_catalog = {
+            table: cols
+            for table, cols in WORLD_COLUMNS.items()
+            if "*" in effective_permissions.get(table, ())
+        }
     return ValidateSqlService().validate(
         sql,
         skeleton=skeleton,
         join_plan=plan,
         skeleton_hash=skeleton_hash,
-        permissions=(
-            permissions if permissions is not None else {k: list(v) for k, v in PERMISSIONS.items()}
-        ),
+        permissions=effective_permissions,
         data_catalog=catalog,
         row_limit=row_limit,
+        columns_catalog=columns_catalog,
     )
 
 
@@ -672,6 +693,76 @@ class TestStarExpansion:
         perms = {"orders": [], "customers": list(CUSTOMERS_COLUMNS)}
         result = _validate(
             "SELECT * FROM orders o INNER JOIN customers c ON o.customer_id = c.id LIMIT 10",
+            permissions=perms,
+        )
+        assert result.verdict.outcome is ValidationOutcome.DENIED
+
+
+class TestStarColumnsCatalog:
+    """S33 (аудит A5): '*' не пропускает несуществующую колонку — сверка с
+    каталогом фактических колонок (ruling R1/R2 S33)."""
+
+    def test_star_does_not_pass_nonexistent_column(self):
+        # Регрессия A5 (падает на до-фиксовом коде: было ok — '*' покрывал любую
+        # колонку, orders.client_id проходил валидацию и падал только в БД;
+        # hw-05: три одинаковые диагностики при temperature 0)
+        perms = {"orders": ["*"], "customers": list(CUSTOMERS_COLUMNS)}
+        result = _validate(
+            "SELECT o.client_id FROM orders o "
+            "INNER JOIN customers c ON o.customer_id = c.id LIMIT 10",
+            permissions=perms,
+        )
+        assert result.verdict.outcome is ValidationOutcome.HALLUCINATION
+        issue = "; ".join(result.verdict.issues)
+        assert "client_id" in issue
+        # подсказка регенерации несёт фактические колонки (Task 3 S33) —
+        # имена только из мира пользователя ('*'-таблица — его права)
+        for column in sorted(ORDERS_COLUMNS):
+            assert column in issue
+
+    def test_star_passes_column_present_in_catalog(self):
+        # реальная колонка под '*' — по-прежнему ok (оверблокировки нет)
+        perms = {"orders": ["*"], "customers": list(CUSTOMERS_COLUMNS)}
+        result = _validate(
+            "SELECT o.total FROM orders o INNER JOIN customers c ON o.customer_id = c.id LIMIT 10",
+            permissions=perms,
+        )
+        assert result.verdict.outcome is ValidationOutcome.OK
+
+    def test_star_refuted_but_explicit_candidate_possible_denied(self):
+        # Консервативное смешение (ruling R2 S33): orders ('*') опровергнут
+        # каталогом, но customers — явный список без колонки: колонка может
+        # существовать в customers (список — сужение) → denied, не hallucination.
+        # Неквалифицированный ref — два кандидата; квалифицированный o.region
+        # имел бы единственного кандидата (orders) и дал бы hallucination
+        perms = {"orders": ["*"], "customers": ["id", "name"]}
+        result = _validate(
+            "SELECT region FROM orders o INNER JOIN customers c ON o.customer_id = c.id LIMIT 10",
+            permissions=perms,
+        )
+        assert result.verdict.outcome is ValidationOutcome.DENIED
+
+    def test_star_catalog_missing_entry_is_contract_defect(self):
+        # R1 S33: '*'-таблица без записи каталога — дефект стыка/грантов
+        # (ValueError), не hallucination-цикл и не «вне прав»; узел FSM
+        # маршрутизирует дефект (fail-closed) — тест уровня домена
+        perms = {"orders": ["*"], "customers": list(CUSTOMERS_COLUMNS)}
+        with pytest.raises(ValueError, match="каталог колонок не покрывает"):
+            _validate(
+                "SELECT o.total FROM orders o "
+                "INNER JOIN customers c ON o.customer_id = c.id LIMIT 10",
+                permissions=perms,
+                columns_catalog={},
+            )
+
+    def test_explicit_list_unchecked_against_catalog(self):
+        # Отложено аудитором (вне S33): явный список — уже сужение прав,
+        # несуществующее имя в нём остаётся «вне прав» (denied), каталог его
+        # не опровергает — поведение до S33 сохранено
+        perms = {"orders": ["client_id"], "customers": list(CUSTOMERS_COLUMNS)}
+        result = _validate(
+            "SELECT o.client_id FROM orders o "
+            "INNER JOIN customers c ON o.customer_id = c.id LIMIT 10",
             permissions=perms,
         )
         assert result.verdict.outcome is ValidationOutcome.DENIED

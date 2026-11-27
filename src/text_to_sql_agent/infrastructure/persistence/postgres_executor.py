@@ -28,10 +28,10 @@ ADR-005 §4), `connect_timeout` — установка соединения вн
 `SQLFailureClass` (вход ретраев M1 в V4; MRO проверены — psycopg 3 ≠ psycopg 2):
 QueryCanceled → TIMEOUT; ReadOnlySqlTransaction → READ_ONLY;
 InsufficientPrivilege → PERMISSION_DENIED (whitelist-гранты);
-FeatureNotSupported/ProgrammingError → SYNTAX (грамматика, неизвестный объект,
-DML, отклонённый обёрткой); OperationalError → CONNECTION; прочее → UNKNOWN.
-Одинаковые имена колонок в результате (`SELECT a.id, b.id`) схлопываются в
-dict_row — алиасы обязательны на входе compact_result (S15; ревью S13 Minor-7).
+UndefinedColumn/UndefinedTable/UndefinedFunction → SEMANTICS (несуществующий
+объект — переписать выборку по фактическим колонкам мира, аудит 2026-11-23 A4/S33);
+FeatureNotSupported/ProgrammingError → SYNTAX (грамматика, DML, отклонённый
+обёрткой); OperationalError → CONNECTION; прочее → UNKNOWN.
 """
 
 import psycopg
@@ -67,6 +67,19 @@ def _classify(exc: psycopg.Error) -> SQLFailureClass:
     if isinstance(exc, psycopg.errors.FeatureNotSupported):
         # writable CTE в подзапросе и т.п.: SQL не принят каналом — как синтаксис
         return SQLFailureClass.SYNTAX
+    # Undefined* ⊂ ProgrammingError — раньше общей ветки: «объекта нет» —
+    # семантика выборки (переписать по фактическим колонкам мира), не грамматика
+    # (аудит 2026-11-23 A4/S33; регенерация при temperature 0 с прежним классом
+    # SYNTAX повторяла тот же запрос детерминированно)
+    if isinstance(
+        exc,
+        (
+            psycopg.errors.UndefinedColumn,
+            psycopg.errors.UndefinedTable,
+            psycopg.errors.UndefinedFunction,
+        ),
+    ):
+        return SQLFailureClass.SEMANTICS
     if isinstance(exc, psycopg.errors.ProgrammingError):
         return SQLFailureClass.SYNTAX
     if isinstance(exc, psycopg.OperationalError):

@@ -147,6 +147,13 @@ class _FakePermissionStore:
     def data_catalog(self) -> frozenset[str]:
         return frozenset({"orders", "order_items", "customers", "campaigns", "products"})
 
+    def columns_catalog(self, tables: frozenset[str]) -> dict[str, frozenset[str]]:
+        # S33 R2: права '*'-фикстур — узел валидации сверяет именованные колонки
+        return {
+            table: frozenset({"order_id", "customer_id", "total", "item_id", "amount"})
+            for table in tables
+        }
+
 
 def test_fsm_runner_wired_from_settings(tmp_path) -> None:
     # S04/feat-004: FSM-каркас собирается в composition, раннер соответствует

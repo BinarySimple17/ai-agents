@@ -72,3 +72,15 @@ class PermissionStore(Protocol):
         без retry). Грант SELECT agent_planner — миграция 0002:81; сбой чтения —
         `RightsUnavailableError` (fail-closed, не «пустой мир»)."""
         ...
+
+    def columns_catalog(self, tables: frozenset[str]) -> dict[str, frozenset[str]]:
+        """Фактические колонки запрошенных таблиц мира: `information_schema.columns`
+        под `agent_planner` (разворот '*' — DDL-интроспекция, зона S11/S09 —
+        предсказано в комментарии формата прав). Ключ — bare-имя таблицы,
+        значения — нижний регистр (как в IR валидатора). Таблица без видимых
+        планировщику колонок (GRANT-дрейф: есть в `agent_data_sources`/правах,
+        но без GRANT SELECT) — ОТСУТСТВУЕТ в результате: вызывающий трактует
+        отсутствие записи для '*'-таблицы как дефект стыка (fail-closed, ruling
+        R1 S33 — не «пустая таблица», не «пустые права»). Сбой чтения —
+        `RightsUnavailableError` (fail-closed)."""
+        ...

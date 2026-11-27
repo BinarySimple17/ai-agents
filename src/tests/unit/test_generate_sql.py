@@ -1055,6 +1055,33 @@ class TestGenerateSqlNode:
         assert seen["last_sql"] == "SELECT broken_column FROM orders"
         assert seen["last_error"] == "колонка broken_column не существует"
 
+    def test_fsm_retry_seeds_raw_detail_not_fixed_message(self) -> None:
+        # S33 (двухканальность S9/A7): в контекст ретрая сеется error["detail"]
+        # (сырой текст БД — фактические имена, ловушка 2 «та же подсказка при
+        # temp 0»); фиксированный message — пользовательский текст, модели
+        # больше не отдаётся. На до-фиксовом коде last_error сеется из
+        # message → «does not exist» в контекст не попадает (bite)
+        service = self._service_result(GenerateSqlOutcome.SQL, sql="SELECT 1")
+        make_generate_sql_node(service)(
+            {
+                "question": QUESTION,
+                "user_id": "u_analyst",
+                "skeleton": build_skeleton(_plan()).model_dump(),
+                "permissions": PERMISSIONS,
+                "retry_count": 1,
+                "route_flags": {RETRY_TARGET_FLAG: "generate_sql"},
+                "sql": "SELECT client_id FROM orders",
+                "error": {
+                    "class": "semantics",
+                    "message": "по этому вопросу данных не нашлось",
+                    "detail": "column orders.client_id does not exist",
+                },
+            }
+        )
+        seen = service.seen[0]
+        assert "does not exist" in seen["last_error"]  # факт — сырой канал
+        assert "данных не нашлось" not in seen["last_error"]  # message не сеется
+
     def test_retry_counter_of_other_node_does_not_seed(self) -> None:
         # Счётчик валиден только для активного ретрая (routing.attempts_used):
         # чужой retry_target — попытка 1, без контекста ретрая

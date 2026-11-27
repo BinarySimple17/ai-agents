@@ -206,11 +206,13 @@ def build_container(
             budget_remaining_roubles=budget_guard.remaining_rub,
         )
     # Разбор ошибок (S14/feat-014): qwen/cheap + futile-классы без LLM (ADR-005);
-    # шов бюджета — ruling Q7 (тот же, что plan_joins/clarify/generate_sql)
+    # шов бюджета — ruling Q7 (тот же, что plan_joins/clarify/generate_sql);
+    # S33: шов каталога колонок (semantics-подсказка из фактических колонок мира)
     if diagnose_service is None:
         diagnose_service = DiagnoseService(
             llm=llm,
             budget_remaining_roubles=budget_guard.remaining_rub,
+            columns_catalog=permission_store.columns_catalog,
         )
     # Финальный контур (S15/feat-015): compact_result — код; interpret_result —
     # strong по компакту (final_answer + ₽-снапшот guard'а R6); degrade — отказ
@@ -269,6 +271,10 @@ def build_container(
             "validate_sql": make_validate_sql_node(
                 validate_sql_service,
                 catalog_provider=permission_store.data_catalog,
+                # S33 R2: фактические колонки мира (information_schema под
+                # agent_planner) — чтение на каждый визит только при '*'-правах;
+                # тот же PermissionStore, тот же DSN
+                columns_catalog_provider=permission_store.columns_catalog,
                 tracer=tracer,
             ),
         },

@@ -6,17 +6,24 @@
 retry-контекст generate_sql (вместе с последним SQL), не «патч» SQL: SQL пишет
 только генератор (Ловушка 5 плана S14).
 
-Два контура классификации:
-- **Детерминированный (код, без LLM)** — классы, при которых регенерация
-  БЕСПОЛЕЗНА: права (permission_denied/read_only/acl_denied — ADR-005: модель
-  не «уговаривает» валидатор/RLS) и недоступное хранилище (connection — S00-8).
+Три контура классификации (S33, аудит A3/A4 — решение о ретрае ТОЛЬКО КОД):
+- **Futile (код, без LLM)** — классы, при которых регенерация БЕСПОЛЕЗНА:
+  права (permission_denied/read_only/acl_denied — ADR-005: модель не
+  «уговаривает» валидатор/RLS) и недоступное хранилище (connection — S00-8).
   Решение «повтор бессмыслен» — КОДА, не поле модели: security-исход не
   делегируется LLM (fail-closed).
-- **LLM-разбор (qwen, cheap — ADR-007 §4.2)** — синтаксис/семантика/таймаут/
-  пустой результат: модель возвращает класс + короткую подсказку одним абзацем
-  (structured output через тул — ADR-008 слой 2, прецеденты fill_skeleton
-  S10 / rank_paths S09 / record_clarification S08). ``retry_futile`` в
-  pydantic-выходе считается КОДОМ по классу — карта едина для обоих контуров.
+- **Semantics (код, без LLM, S33 A4)** — «объекта не существует» (колонка/
+  таблица/функция; класс SQLFailureClass.SEMANTICS с уровня БД и
+  validate_hallucination): причина известна коду — подсказку строит код из
+  фактов (тексты БД из error["detail"], нарушения валидатора, каталог колонок
+  таблиц плана). LLM-подсказка при temperature 0 без новых имён повторяла бы
+  тот же SQL детерминированно (hw-05: три одинаковые диагностики).
+- **LLM-разбор (qwen, cheap — ADR-007 §4.2)** — прочий syntax/таймаут/пустой
+  результат: модель возвращает класс + короткую подсказку одним абзацем
+  (structured output через тул — ADR-008 слой 2). Enum тула НЕ СОДЕРЖИТ
+  futile-классов: модель не может задать бесполезный класс — приёмка отклоняет
+  такой выход как невалидный (M1-ретрай), ``retry_futile`` для LLM-верdicta
+  всегда False по построению (A3: решение принадлежит коду, не модели).
 
 Ретраи M1 (невалидный выход тулa → повтор): попытка 1–2 — cheap, попытка 3 —
 эскалация cheap→mid при остатке бюджета выше резерва (шов ruling Q7 ARCH-GATE
@@ -25,8 +32,9 @@ S09 — тот же, что plan_joins/clarify/generate_sql). Шлюз недо�
 """
 
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from enum import StrEnum
+from typing import Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -36,6 +44,7 @@ from text_to_sql_agent.application.ports.llm_provider import (
     LLMResponse,
     Role,
 )
+from text_to_sql_agent.application.ports.permission_store import RightsUnavailableError
 from text_to_sql_agent.application.services.m1_policy import (
     ESCALATION_ATTEMPT,
     ESCALATION_RESERVE_ROUBLES,
@@ -64,6 +73,14 @@ _FUTILE_CLASSES: frozenset[DiagnoseClass] = frozenset(
     {DiagnoseClass.PERMISSIONS, DiagnoseClass.CONNECTION}
 )
 
+# Классы, доступные модели в туле report_diagnosis (A3/S33): enum тула БЕЗ
+# futile-классов — модель не может задать бесполезный класс; SEMANTICS тоже
+# вне тула (подсказку строит код из фактов — контур 2). Приёмка отклоняет
+# выход с классом вне множества (M1-ретрай) — enforcement в коде, не в схеме.
+_LLM_TOOL_CLASSES: frozenset[DiagnoseClass] = frozenset(
+    {DiagnoseClass.SYNTAX, DiagnoseClass.TIMEOUT, DiagnoseClass.EMPTY}
+)
+
 # Пред-классфикация сырья: класс ошибки state.error (SQLFailureClass S13,
 # вердикт валидатора S11, «empty» — probe S14) → домен диагностики.
 # «validate_hallucination» — семантика (модель назвала несуществующее);
@@ -77,6 +94,9 @@ _DETERMINISTIC_MAP: dict[str, DiagnoseClass] = {
     "connection": DiagnoseClass.CONNECTION,
     "validate_hallucination": DiagnoseClass.SEMANTICS,
     "syntax": DiagnoseClass.SYNTAX,
+    # «Объекта нет» с уровня БД (A4/S33): регенерация оправдана, но подсказку
+    # строит код из фактических колонок мира (Task 3) — не температура модели
+    "semantics": DiagnoseClass.SEMANTICS,
     "timeout": DiagnoseClass.TIMEOUT,
     "empty": DiagnoseClass.EMPTY,
     "generation": DiagnoseClass.SEMANTICS,
@@ -88,6 +108,57 @@ _PERMISSIONS_HINT = (
     "часть данных недоступна по правам — регенерация SQL не изменит вердикт (ADR-005)"
 )
 _CONNECTION_HINT = "хранилище недоступно — регенерация не поможет, повторите запрос позже (S00-8)"
+
+# Подсказка semantics — КОД из фактов (A4/S33): модель не видела фактических
+# имён — при temperature 0 она детерминированно повторяет тот же SQL (hw-05:
+# три одинаковые диагностики 614→167 токенов); факты несут то, чего модель
+# не видела (реальные имена/колонки)
+_SEMANTICS_HINT_TEMPLATE = (
+    "объект, названный в запросе, не существует в доступных данных — "
+    "перепиши выборку по фактическим именам: {facts}"
+)
+
+
+class _ColumnsCatalogCallable(Protocol):
+    """Шов каталога колонок (S33 A4/R2): bound-метод PermissionStore.columns_catalog."""
+
+    def __call__(self, tables: frozenset[str]) -> Mapping[str, Sequence[str]]: ...
+
+
+def _semantics_hint(
+    validation_issues: tuple[str, ...] | list[str],
+    error_detail: str | None,
+    plan_tables: frozenset[str] | None,
+    columns_catalog: _ColumnsCatalogCallable | None,
+) -> str:
+    """Подсказка semantics — КОД из фактов (A4/S33, ловушка 2: подсказка несёт
+    то, чего модель не видела).
+
+    Источники фактов, по убыванию специфичности: нарушения валидатора (уже
+    содержат фактические колонки мира — каталог при их построении читал
+    validate_sql); сырой текст БД (error["detail"] — реальные имена из
+    сообщения СУБД); каталог колонок таблиц плана (R2 S33 — тот же стык, что
+    у validate_sql; сбой чтения не роняет разбор — подсказка без раздела
+    «доступные колонки», честный fallback). Имена — только из мира
+    пользователя (ловушка 1: каталог читает только таблицы плана — они
+    разрешены resolve_access).
+    """
+    parts: list[str] = []
+    parts.extend(str(issue) for issue in validation_issues)
+    if error_detail:
+        parts.append(f"текст БД: {error_detail}")
+    if columns_catalog is not None and plan_tables:
+        try:
+            catalog = columns_catalog(frozenset(plan_tables))
+        except RightsUnavailableError:
+            catalog = {}
+        listed = "; ".join(
+            f"{table}: {', '.join(sorted(cols))}" for table, cols in sorted(catalog.items()) if cols
+        )
+        if listed:
+            parts.append(f"доступные колонки таблиц плана — {listed}")
+    return _SEMANTICS_HINT_TEMPLATE.format(facts="; ".join(parts) or "уточните имена объектов")
+
 
 # --- Тул structured output (ADR-008 слой 2) ---
 
@@ -106,8 +177,11 @@ _DIAG_TOOL_SPEC: dict[str, object] = {
             "properties": {
                 "error_class": {
                     "type": "string",
-                    "enum": [item.value for item in DiagnoseClass],
-                    "description": "Класс ошибки: синтаксис/семантика/таймаут/пустой результат.",
+                    # A3/S33: enum без futile-классов и без semantics — модель
+                    # не влияет на решение о ретрае; невалидный класс отклоняет
+                    # приёмка (ValueError → M1-ретрай), не поле модели
+                    "enum": sorted(item.value for item in _LLM_TOOL_CLASSES),
+                    "description": "Класс ошибки: синтаксис/таймаут/пустой результат.",
                 },
                 "regeneration_hint": {
                     "type": "string",
@@ -192,6 +266,14 @@ def _parse_diagnosis(response: LLMResponse) -> tuple[DiagnoseClass, str]:
         error_class = DiagnoseClass(raw_class)
     except ValueError:
         raise ValueError(f"класс ошибки вне домена диагностики: {raw_class!r}") from None
+    if error_class not in _LLM_TOOL_CLASSES:
+        # A3/S33: бесполезные/детерминированные классы ставит только карта по
+        # классу ошибки — выход модели с таким классом невалиден (M1-ретрай);
+        # enforcement в КОДЕ приёмки, не в схеме тула (N3 canon-check S33)
+        raise ValueError(
+            f"класс {error_class.value} не входит в тул report_diagnosis — "
+            "его ставит только детерминированная карта по классу ошибки"
+        )
     # Валидация подсказки тем же правилом, что в VO (пустая → ретрай M1)
     DiagnoseVerdict(
         error_class=error_class, regeneration_hint=hint if isinstance(hint, str) else ""
@@ -200,19 +282,24 @@ def _parse_diagnosis(response: LLMResponse) -> tuple[DiagnoseClass, str]:
 
 
 class DiagnoseService:
-    """Разбор ошибки + подсказка регенерации: futile — код, остальное — cheap-LLM."""
+    """Разбор ошибки + подсказка регенерации: futile/semantics — код, остальное — cheap-LLM."""
 
     def __init__(
         self,
         *,
         llm: LLMProvider,
         budget_remaining_roubles: Callable[[], float] | None = None,
+        columns_catalog: _ColumnsCatalogCallable | None = None,
     ) -> None:
         # budget_remaining_roubles — шов бюджета (ruling Q7 ARCH-GATE S09):
         # None = бюджетный контур не подключён — эскалация без проверки
         # (документированный fallback до S15 BudgetGuard, прецедент generate_sql)
+        # columns_catalog — шов каталога колонок (S33 R2: тот же PermissionStore):
+        # None = подсказка semantics без раздела «доступные колонки» (честный
+        # fallback — facts из detail/issues остаются)
         self._llm = llm
         self._budget_remaining_roubles = budget_remaining_roubles
+        self._columns_catalog = columns_catalog
 
     def diagnose(
         self,
@@ -222,14 +309,19 @@ class DiagnoseService:
         sql: str | None = None,
         validation_issues: tuple[str, ...] | list[str] = (),
         probe_context: str | None = None,
+        error_detail: str | None = None,
+        plan_tables: frozenset[str] | None = None,
     ) -> DiagnoseResult:
-        """Разобрать сбой: futile — без LLM, иначе cheap-LLM с ретраями M1.
+        """Разобрать сбой: futile/semantics — без LLM, иначе cheap-LLM с ретраями M1.
 
         ``error_class`` — сырой класс из state.error (SQLFailureClass/вердикт
         валидатора/«empty» пробы); ``sql`` — последняя попытка (D-016: в контексте
         только она); ``validation_issues`` — внутренний контекст валидатора (S11);
         ``probe_context`` — факты COUNT-пробы из error["probe"] (execute_sql, S14 —
-        S9: пользовательский message фиксированный, факты — внутренний канал).
+        S9: пользовательский message фиксированный, факты — внутренний канал);
+        ``error_detail`` — сырой текст БД из error["detail"] (S33: внутренний
+        канал execute_sql, модель видит фактические имена); ``plan_tables`` —
+        таблицы плана (skeleton) для раздела «доступные колонки» подсказки.
         """
         mapped = _DETERMINISTIC_MAP.get(error_class)
         if mapped in _FUTILE_CLASSES:
@@ -239,6 +331,17 @@ class DiagnoseService:
                     error_class=mapped,
                     regeneration_hint=hint,
                     retry_futile=True,
+                )
+            )
+        if mapped is DiagnoseClass.SEMANTICS:
+            # A4/S33: причина известна коду — LLM не тратится, подсказка из фактов
+            return DiagnoseResult(
+                verdict=DiagnoseVerdict(
+                    error_class=mapped,
+                    regeneration_hint=_semantics_hint(
+                        validation_issues, error_detail, plan_tables, self._columns_catalog
+                    ),
+                    retry_futile=False,  # ретрай оправдан: переписать по фактическим именам
                 )
             )
 
@@ -273,6 +376,7 @@ class DiagnoseService:
                         sql=sql,
                         validation_issues=validation_issues,
                         probe_context=probe_context,
+                        error_detail=error_detail,
                         error_text=error_text,
                     ),
                     tools=[_DIAG_TOOL_SPEC],
@@ -290,7 +394,9 @@ class DiagnoseService:
                 verdict=DiagnoseVerdict(
                     error_class=llm_class,
                     regeneration_hint=hint,
-                    retry_futile=llm_class in _FUTILE_CLASSES,
+                    # A3/S33: enum тула без futile-классов — вердикт модели по
+                    # построению ретрабелен; решение о futile принадлежит коду
+                    retry_futile=False,
                 ),
                 llm_calls=calls,
             )
@@ -307,6 +413,7 @@ class DiagnoseService:
         sql: str | None,
         validation_issues: tuple[str, ...] | list[str],
         probe_context: str | None,
+        error_detail: str | None,
         error_text: str | None,
     ) -> list[dict[str, str]]:
         """Промпт разбора: SQL + ошибка + контекст источника (D-016: не цепочка попыток)."""
@@ -318,6 +425,10 @@ class DiagnoseService:
             f"Нарушения валидатора: {issues}",
             f"Данные пробы COUNT: {probe_context or '(не было)'}",
         ]
+        if error_detail and error_detail != error_message:
+            # S33: сырой текст БД — внутренний канал; модель видит фактические
+            # имена из него (пользовательский message фиксированный — S9)
+            parts.append(f"Сырой текст БД: {error_detail}")
         messages = [
             {"role": "system", "content": _DIAG_SYSTEM_PROMPT},
             {"role": "user", "content": "\n".join(parts)},

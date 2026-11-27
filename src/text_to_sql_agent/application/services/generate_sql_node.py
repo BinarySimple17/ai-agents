@@ -106,12 +106,15 @@ def make_generate_sql_node(
         start_attempt = retry_count + 1 if on_fsm_retry else 1
         # Контекст ретрая — только на FSM-ретрае (ревью minor): затерявшийся
         # error другого узла не должен превращаться в «Ошибка предыдущей попытки»
-        # S14 (D-016): разбор ошибки — последний SQL + текст ошибки + подсказка
-        # диагностики (state.diagnosis пишет diagnose_error — S9: hint внутренний,
-        # пользовательский state.error.message не смешивается)
+        # S14 (D-016): разбор ошибки — последний SQL + внутренний факт ошибки +
+        # подсказка диагностики (state.diagnosis пишет diagnose_error — S9: hint
+        # внутренний). S33: факт — error["detail"] (сырой текст БД — модель
+        # видит фактические имена, ловушка 2), фиксированный message —
+        # пользовательский текст, модели его больше не отдаём
         last_error = None
         if on_fsm_retry:
-            raw_error = (state.get("error") or {}).get("message")
+            error_dict = state.get("error") or {}
+            raw_error = error_dict.get("detail") or error_dict.get("message")
             hint = (state.get("diagnosis") or {}).get("hint")
             last_error = raw_error
             if raw_error and hint:

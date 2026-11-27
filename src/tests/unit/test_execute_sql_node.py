@@ -139,6 +139,19 @@ def test_node_sql_error_routes_to_diagnose_context() -> None:
     assert len(executor.requests) == 1  # probe при ошибке не запускается
 
 
+def test_node_sql_error_two_channel_fixed_message_raw_detail() -> None:
+    # A7/S33: message — фиксированный текст по классу (S9, печатает CLI);
+    # сырой текст БД — внутренний detail (канал diagnose → retry-контекст).
+    # На до-фиксовом коде message = str(exc) → в нём LINE 1 и SQL (bite)
+    raw = "column orders.client_id does not exist LINE 1: SELECT o.client_id FROM orders"
+    executor = ScriptedExecutor([SQLExecutionError(raw, SQLFailureClass.SEMANTICS)])
+    updated = make_execute_sql_node(executor)(_base_state())
+    message = updated["error"]["message"]
+    assert "данных не нашлось" in message  # фиксированный текст класса semantics
+    assert "LINE 1" not in message and "SELECT" not in message  # сырой текст не утекает
+    assert updated["error"]["detail"] == raw  # факт — во внутреннем канале
+
+
 def test_node_missing_sql_is_fail_closed_defect() -> None:
     """SQL приходит только от validate_sql — отсутствие означает подмену каркаса."""
     executor = ScriptedExecutor([])

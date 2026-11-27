@@ -237,6 +237,7 @@ def validate_sql(
     permissions: Mapping[str, Sequence[str]],
     data_catalog: frozenset[str] | set[str],
     row_limit: int,
+    columns_catalog: Mapping[str, Sequence[str]] | None = None,
 ) -> ValidationVerdict:
     """Вердикт над IR (чистая функция; все входы обязательны — fail-closed wiring).
 
@@ -255,6 +256,11 @@ def validate_sql(
     плана с fanout_guard=true (инвариант ADR-006 §4.6/ADR-004, prd §6 «0
     случаев»); детекция — services (``aggregates``/``group_columns``), решение
     — здесь (``_check_fanout``), исход — hallucination (retry оправдан).
+    S33 (аудит A5): ``columns_catalog`` — фактические колонки мира
+    (information_schema под agent_planner, параметром — domain без IO, ruling
+    R2 S33): '*' больше не пропускает несуществующую колонку (hallucination с
+    фактическим списком); '*'-таблица без записи каталога — ValueError (R1,
+    fail-closed wiring).
     """
     if row_limit <= 0:
         raise ValueError(f"row_limit должен быть положительным, получен {row_limit}")
@@ -264,7 +270,9 @@ def validate_sql(
     _check_into(audit, issues_denied)
     _check_functions(audit, issues_hallucination)
     _check_tables(audit, permissions, data_catalog, issues_denied, issues_hallucination)
-    _check_columns(audit, permissions, data_catalog, issues_denied, issues_hallucination)
+    _check_columns(
+        audit, permissions, data_catalog, issues_denied, issues_hallucination, columns_catalog
+    )
     _check_stars(audit, permissions, issues_denied)
     _check_skeleton(audit, skeleton, join_plan, skeleton_hash, issues_hallucination)
     _check_fanout(audit, join_plan, issues_hallucination)
@@ -367,6 +375,7 @@ def _check_columns(
     data_catalog: frozenset[str] | set[str],
     issues_denied: list[str],
     issues_hallucination: list[str],
+    columns_catalog: Mapping[str, Sequence[str]] | None = None,
 ) -> None:
     """ACL колонок (Ловушка 5): решают кандидаты-таблицы мира, остальные — нет.
 
@@ -379,13 +388,30 @@ def _check_columns(
     разрешённым кандидатам (схемы БД у валидатора нет — «колонка существует»
     проксируется правами): ≥2 разрешённых → hallucination («квалифицируйте
     алиасом», retry оправдан), ровно 1 → resolved, 0 → denied.
+
+    Каталог колонок (S33, аудит A5): '*'-право больше не пропускает любую
+    колонку — существование именованной колонки сверяется с фактическим
+    каталогом (information_schema, приходит параметром — domain без IO):
+    колонка в каталоге → разрешена; колонки нет → hallucination «колонка X
+    отсутствует у T — доступные: …» (retry оправдан: с '*' пользователь имеет
+    все реальные колонки таблицы, отсутствие колонки в видимой части — факт
+    несуществования в мире пользователя). Консервативное смешение: есть
+    неопровергнутый кандидат (явный список/вне прав) → denied, не
+    hallucination — колонка может существовать там, где прав не хватает
+    (не «несуществует» — не зацикливать retry ложным «перепиши»). Явный список
+    каталогу не сверяется (список уже сужение — несуществующее имя в нём
+    отказывается как «вне прав», отложено аудитором вне S33). '*'-кандидат
+    без записи в каталоге — ValueError (дефект стыка/грантов, R1 S33:
+    fail-closed, не hallucination-цикл и не «вне прав»).
     """
     for column in audit.columns:
         if column.whole_row:
             # ревью S11 C1: whole-row-ссылка — семантика литеральной звезды;
             # явный список колонок её не покрывает — '*' на КАЖДОЙ таблице-
             # кандидате (неоднозначные multiple-кандидаты fail-closed); CTE/sub
-            # безопасны — их тело уже проверено на собственном скоупе
+            # безопасны — их тело уже проверено на собственном скоупе. Именованной
+            # колонки нет — каталог существования не сверяется (COUNT(*) не
+            # называет колонку; состав строки — истина БД)
             for c in column.candidates:
                 if c.kind != "table":
                     continue
@@ -400,27 +426,45 @@ def _check_columns(
         ]
         if not table_candidates:
             continue
-        permitted_in = [
-            c for c in table_candidates if _column_permitted(column.name, c.name, permissions)
-        ]
+        permitted_in: list = []
+        refuted: dict[str, Sequence[str]] = {}  # '*'-таблица: колонки нет в каталоге
+        for c in table_candidates:
+            permitted = permissions.get(c.name) or ()
+            if "*" in permitted:
+                available = (columns_catalog or {}).get(c.name)
+                if not available:
+                    raise ValueError(
+                        f"каталог колонок не покрывает таблицу {c.name} ('*'-право) — "
+                        "дефект стыка/грантов, fail-closed (ruling R1 S33)"
+                    )
+                if column.name in available:
+                    permitted_in.append(c)
+                else:
+                    refuted[c.name] = available
+            elif column.name in permitted:
+                permitted_in.append(c)
         if len(permitted_in) >= 2:
             issues_hallucination.append(
                 f"колонка {column.name} неоднозначна — разрешена таблицам "
                 f"{', '.join(c.name for c in permitted_in)}; квалифицируйте алиасом"
             )
-        elif not permitted_in:
+        elif permitted_in:
+            continue
+        elif refuted and all(c.name in refuted for c in table_candidates):
+            # Все кандидаты — '*'-таблицы, каталог опроверг каждую: колонки нет
+            # ни в одной видимой пользователю таблице — «не существует» (retry
+            # оправдан, подсказка называет фактические колонки — Task 3 S33)
+            detail = "; ".join(
+                f"у {table} доступные: {', '.join(sorted(cols))}" for table, cols in refuted.items()
+            )
+            issues_hallucination.append(
+                f"колонка {column.name} отсутствует в мире агента — {detail}"
+            )
+        else:
             issues_denied.append(
                 f"колонка {column.name} вне прав — таблицы запроса: "
                 f"{', '.join(c.name for c in table_candidates)}"
             )
-
-
-def _column_permitted(column: str, table: str, permissions: Mapping[str, Sequence[str]]) -> bool:
-    """Право на колонку: явное вхождение в список или '*' (все колонки, R5 S05)."""
-    permitted = permissions.get(table)
-    if permitted is None:
-        return False
-    return "*" in permitted or column in permitted
 
 
 def _check_stars(

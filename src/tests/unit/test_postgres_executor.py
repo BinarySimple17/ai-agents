@@ -19,7 +19,12 @@ from text_to_sql_agent.infrastructure.persistence.postgres_executor import _clas
         (psycopg.errors.InsufficientPrivilege("denied"), SQLFailureClass.PERMISSION_DENIED),
         (psycopg.errors.FeatureNotSupported("unsupported"), SQLFailureClass.SYNTAX),
         (psycopg.errors.SyntaxError("bad grammar"), SQLFailureClass.SYNTAX),
-        (psycopg.errors.UndefinedTable("no table"), SQLFailureClass.SYNTAX),
+        # Undefined* ⊂ ProgrammingError — резолвятся раньше общей ветки в
+        # SEMANTICS («объекта нет» — переписать выборку, аудит 2026-11-23 A4/S33;
+        # до фикса падали сюда с SYNTAX — bite-регресс)
+        (psycopg.errors.UndefinedColumn("no column"), SQLFailureClass.SEMANTICS),
+        (psycopg.errors.UndefinedTable("no table"), SQLFailureClass.SEMANTICS),
+        (psycopg.errors.UndefinedFunction("no function"), SQLFailureClass.SEMANTICS),
         (psycopg.errors.ProgrammingError("program"), SQLFailureClass.SYNTAX),
         (psycopg.OperationalError("connection"), SQLFailureClass.CONNECTION),
         (psycopg.DataError("data"), SQLFailureClass.UNKNOWN),
