@@ -613,9 +613,9 @@
       "dependencies": [
         "feat-011"
       ],
-      "state": "active",
-      "status": "active",
-      "evidence": "",
+      "state": "passing",
+      "status": "done",
+      "evidence": "command «uv run pytest src/tests/unit/test_fanout_guard.py src/tests/unit/test_validate_sql.py -q» exited 0 at 2026-11-27T23:44:15+03:00 (scripts/verify-feature.sh)",
       "layers": [
         {
           "label": "layer-1-static",
