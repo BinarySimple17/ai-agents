@@ -91,12 +91,17 @@ AGENT_TABLE_PREFIX = "agent_"
 #   SUM(DISTINCT …) — тоже: ruling R2 предписывает «SUM всегда», консервативно);
 #   AVG — математически корректен при GROUP BY по ключу стороны «1» (среднее
 #   N одинаковых = само значение), без ключа взвешен кратностью позиций —
-#   отклоняется только при отсутствии ВСЕХ колонок составного ключа;
+#   отклоняется при отсутствии ЛЮБОЙ колонки составного ключа (код требует
+#   присутствия ВСЕХ — _group_key_present);
 #   COUNT(DISTINCT …), MIN/MAX, агрегаты стороны «n», агрегат в подзапросе,
 #   план без guard-рёбер — проходят; COUNT(*) — вне правила (нет колонки
 #   стороны «1» под агрегатом, ловушка 3 плана).
 _FANOUT_REJECTED_ALWAYS = frozenset({"sum", "count"})
 _FANOUT_CONDITIONAL = "avg"
+# сентинелы чувствительности _fanout_sensitivity (ревью S32 M-4: один литерал —
+# одна именованная константа)
+_FANOUT_SENSITIVITY_ALWAYS = "always"
+_FANOUT_SENSITIVITY_AVG = "avg"
 
 
 class ValidationOutcome(StrEnum):
@@ -571,6 +576,10 @@ def _check_fanout(
     for edge in join_plan.edges:
         if not edge.fanout_guard:
             continue
+        # ревью S32 M-6: bare-нормализация стороны «1» — та же идиома, что в
+        # _check_skeleton; план несёт bare-имена, но квалифицированное имя
+        # не должно делать guard молчаливым no-op («читается, но не работает»)
+        one_side = edge.fanout_one_side.split(".", 1)[-1]
         key_columns = _fanout_edge_key(edge)
         if key_columns is None:
             # Битый инвариант ребра: сторона «1» не резолвится — матчить
@@ -595,10 +604,7 @@ def _check_fanout(
                 (
                     column
                     for column in aggregate.columns
-                    if any(
-                        c.kind == "table" and c.name == edge.fanout_one_side
-                        for c in column.candidates
-                    )
+                    if any(c.kind == "table" and c.name == one_side for c in column.candidates)
                 ),
                 None,
             )
@@ -607,26 +613,31 @@ def _check_fanout(
             sensitivity = _fanout_sensitivity(aggregate)
             if sensitivity is None:
                 continue
-            if sensitivity == "avg" and _group_key_present(
-                audit.group_columns, edge.fanout_one_side, key_columns
+            if sensitivity == _FANOUT_SENSITIVITY_AVG and _group_key_present(
+                audit.group_columns, one_side, key_columns
             ):
                 continue  # AVG с GROUP BY по ключу стороны «1» — корректен (R2)
-            if sensitivity == "avg":
+            if sensitivity == _FANOUT_SENSITIVITY_AVG:
+                # ревью S32 I-1: подсказка обязана называть ВСЕ колонки
+                # составного ключа (_group_key_present требует все) — частичная
+                # подсказка даёт детерминированный dead-end retry (ловушка 6)
+                key_list = ", ".join(f"{one_side}.{k}" for k in key_columns)
                 message = (
-                    f"агрегат avg({one_side_column.name}) над {edge.fanout_one_side} — "
+                    f"агрегат avg({one_side_column.name}) над {one_side} — "
                     f"стороной «1» fan-out ребра {edge.rel_id} — взвешен кратностью "
                     "строк другой стороны: сгруппируй по ключу джойна "
-                    f"{edge.fanout_one_side}.{key_columns[0]} или посчитай агрегат "
+                    f"{key_list} или посчитай агрегат "
                     "в подзапросе до джойна (предагрегация)"
                 )
             else:
                 message = (
                     f"агрегат {aggregate.func}({one_side_column.name}) над "
-                    f"{edge.fanout_one_side} — стороной «1» fan-out ребра "
+                    f"{one_side} — стороной «1» fan-out ребра "
                     f"{edge.rel_id} — размножает строки джойна (×N строк другой "
                     "стороны, GROUP BY по ключу не спасает): посчитай агрегат "
-                    "в подзапросе до джойна (предагрегация) или верни колонку "
-                    "без агрегации"
+                    "в подзапросе до джойна (предагрегация); если вопрос про "
+                    "отдельные значения — верни колонку и ключ без агрегации, "
+                    "GROUP BY не нужен"
                 )
             if message not in seen:
                 seen.add(message)
@@ -639,25 +650,29 @@ def _fanout_edge_key(edge: JoinPlanEdge) -> tuple[str, ...] | None:
     Ключи следуют своей таблице (ruling Q2 S09): from_columns принадлежат
     from_table, to_columns — to_table; сторона «1» — одна из таблиц ребра.
     """
-    if edge.fanout_one_side == edge.from_table:
+    # ревью S32 M-6: bare-сравнение (идиома _check_skeleton) — квалификация
+    # схемой не должна терять сторону «1»
+    one_side = edge.fanout_one_side.split(".", 1)[-1]
+    if one_side == edge.from_table:
         return edge.from_columns
-    if edge.fanout_one_side == edge.to_table:
+    if one_side == edge.to_table:
         return edge.to_columns
     return None
 
 
 def _fanout_sensitivity(aggregate: SqlAggregate) -> str | None:
     """Чувствительность агрегата над стороной «1» (ruling R2, строгий v1′):
-    'always' (SUM; COUNT без DISTINCT) | 'avg' (ключ в GROUP BY спасает) |
+    _FANOUT_SENSITIVITY_ALWAYS (SUM; COUNT без DISTINCT) |
+    _FANOUT_SENSITIVITY_AVG (ключ в GROUP BY спасает) |
     None (MIN/MAX/COUNT(DISTINCT)/без колонок). COUNT(*) — колонок нет —
     None (ловушка 3: без колонки стороны «1» под агрегатом кратность строк
     не переносится на агрегат)."""
     if aggregate.func == _FANOUT_CONDITIONAL:
-        return "avg"
+        return _FANOUT_SENSITIVITY_AVG
     if aggregate.func in _FANOUT_REJECTED_ALWAYS and not (
         aggregate.func == "count" and aggregate.distinct
     ):
-        return "always"
+        return _FANOUT_SENSITIVITY_ALWAYS
     return None
 
 

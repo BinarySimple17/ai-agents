@@ -353,3 +353,58 @@ class TestHintQuality:
         first = _validate(sql).verdict.issues
         second = _validate(sql).verdict.issues
         assert first == second
+
+
+class TestReviewFixWaves:
+    """Регрессии fix-волны ревью S32 (222fbdb..HEAD): находки I-1/I-2/M-6."""
+
+    def test_avg_composite_hint_lists_all_key_columns(self):
+        # I-1: подсказка AVG обязана называть ВСЕ колонки составного ключа
+        # (_group_key_present требует все) — подсказка с одной колонкой даёт
+        # детерминированный dead-end retry при temp 0 (ловушка 6);
+        # bite на до-фиксовом коде: в подсказке только orders.order_id
+        plan = _guarded_plan(
+            from_columns=("order_id", "customer_id"),
+            to_columns=("order_id", "customer_id"),
+        )
+        result = _validate(
+            "SELECT o.status, AVG(o.total) FROM orders o "
+            "INNER JOIN order_items oi ON o.order_id = oi.order_id "
+            "AND o.customer_id = oi.customer_id "
+            "GROUP BY o.status",
+            plan=plan,
+        )
+        assert result.verdict.outcome is ValidationOutcome.HALLUCINATION
+        hints = _hint_issues(result)
+        assert len(hints) == 1
+        assert "orders.order_id" in hints[0] and "orders.customer_id" in hints[0]
+
+    def test_nested_aggregating_subquery_known_residual(self):
+        # I-2 pin: вложенный скоуп, агрегирующий поверх ТОЙ ЖЕ fan-out пары,
+        # guard'ом не проверяется — политика смотрит только корневой скоуп
+        # (результат = N_i×total проходит; «результат подзапроса уже
+        # агрегирован» — НЕ аргумент для этой формы). Известный residual v1:
+        # RISKS R-Q6 п.(1), BL-060 (revisit — guard во вложенных скоупах)
+        result = _validate(
+            "SELECT o.order_id, "
+            "(SELECT SUM(o2.total) FROM orders o2 INNER JOIN order_items oi2 "
+            "ON o2.order_id = oi2.order_id) AS s "
+            "FROM orders o INNER JOIN order_items oi ON o.order_id = oi.order_id"
+        )
+        assert result.verdict.outcome is ValidationOutcome.OK  # known residual
+
+    def test_qualified_one_side_still_guarded(self):
+        # M-6: квалифицированное имя стороны «1» (гипотетический план с
+        # public.orders) не делает guard молчаливым no-op — bare-нормализация
+        # (идиома _check_skeleton) даёт штатную fan-out подсказку, не
+        # «план дефектен»
+        plan = _guarded_plan(fanout_one_side="public.orders")
+        result = _validate(
+            "SELECT SUM(o.total) FROM orders o "
+            "INNER JOIN order_items oi ON o.order_id = oi.order_id",
+            plan=plan,
+        )
+        assert result.verdict.outcome is ValidationOutcome.HALLUCINATION
+        hints = _hint_issues(result)
+        assert len(hints) == 1
+        assert "план дефектен" not in hints[0]
