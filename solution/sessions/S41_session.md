@@ -93,7 +93,7 @@ bl = pathlib.Path('solution/backlog')
 rows = {}
 for line in (bl/'README.md').read_text(encoding='utf-8').splitlines():
     m = re.match(r'\| \[(BL-\d+)\]', line)
-    if m: rows[m.group(1)] = 'closed' if 'закрыт' in line else 'open'
+    if m: rows[m.group(1)] = 'closed' if 'закрыт' in line.split('|')[3] else 'open'
 root = {re.match(r'(BL-\d+)', f.name).group(1) for f in bl.glob('BL-*.md')}
 arch = {re.match(r'(BL-\d+)', f.name).group(1) for f in (bl/'archive').glob('BL-*.md')}
 open_k = {k for k, v in rows.items() if v == 'open'}

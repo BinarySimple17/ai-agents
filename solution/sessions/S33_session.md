@@ -33,7 +33,7 @@
 
 ### Правила для исполнителя
 
-1. Ветка `harness/retry-quality` от `inter/hw05-hw06`; merge — в `inter/hw05-hw06` (трек пред ДЗ-06; `milestone/v4` — неприкосновенная точка сдачи ДЗ-05; поправка S41/п.1(в) плана ветки — было «от `milestone/v4`, merge — в `milestone/v4` (D-031)»).
+1. Ветка `harness/retry-quality` от `inter/hw05-hw06`; merge — в `inter/hw05-hw06` (трек пред ДЗ-06; `milestone/v4` — неприкосновенная точка сдачи ДЗ-05; поправка S41/п.1(в), D-042 — было «от `milestone/v4`, merge — в `milestone/v4` (D-031)»).
 2. **Решение о ретрае — только код** (AGENTS.md: MUST NOT позволять LLM управлять переходами).
    Модель в `diagnose_error` не может задать бесполезный класс: `permissions` и `connection`
    убираются из enum тула `report_diagnosis` — их ставит только детерминированная карта по классу
