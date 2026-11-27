@@ -1,8 +1,10 @@
 # BL-016 — Семантика FSM-ретрая генератора: эскалация attempt 3 при generation-fail на retry-визите
 
-**Приоритет:** P2 → **ЗАКРЫТ (2026-11-22: S14 ruling R3 ARCH-GATE — ребро `generate_sql → retry_generate_sql`; остаток «передано S15» выполнен — учёт попыток R6 зафиксирован в docstring порта BudgetGuard)**; перенос в archive — `make archive`
-**Источник:** re-review-2 S10 (Minor-5, 2026-11-22), заметка в set aside
-**Зона:** S14 (diagnose_error + retry-цикл) → S15 (остаток — BudgetGuard)
+- **Статус:** закрыт 2026-11-22 (S14 ruling R3 ARCH-GATE — ребро `generate_sql → retry_generate_sql`; остаток «передано S15» выполнен — учёт попыток R6 зафиксирован в docstring порта BudgetGuard; нормализация шапки под шаблон — S40, чтобы `make archive` переносил)
+- **Дата:** 2026-11-22
+- **Сессия-источник:** re-review-2 S10 (Minor-5, 2026-11-22), заметка в set aside
+- **Приоритет:** P2
+- **Зона:** S14 (diagnose_error + retry-цикл) → S15 (остаток — BudgetGuard)
 
 ## Контекст
 

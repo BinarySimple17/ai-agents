@@ -17,12 +17,13 @@
 - **E3b.** Синк графа только ручной (`make sync-graph`, `apps/sync_graph.py`); ADR-006 §4.3 говорит
   «счётчик будит синк», в коде никто не будит — прогон может идти по устаревшему снимку рёбер.
 
-Обе правки добавляющие: FSM и тул-контур продолжают работать, граница только сужается.
+Обе правки добавляющие: FSM продолжает работать, граница только сужается.
 
-**Тул-контур заморожен (D-039, 2026-11-26) и снимается после сдачи ДЗ-04 (BL-048 — после
-27.12); S35 идёт раньше (14–20.12).** Исправления в нём сняты (D-040), но проводка scope в
-`RunSqlTool` (Task 3) — условие работы, а не исправление: без неё тул-контур вернёт 0 строк
-(ловушка 5), а hw-04 воспроизводится им до сдачи. Подтвердить на ARCH-GATE до старта.
+**Тул-контур удалён (S39, 2026-11-27 — BL-048, D-041): контур исполнения один — FSM.**
+Пометка прежней редакции «проводка scope в `RunSqlTool` (Task 3) — условие работы» снята
+(S40 гигиена, п.1(б) плана ветки `inter/hw05-hw06`): предмета больше нет, Task 3 остаётся
+только для FSM-wiring (execute_sql_node + проба COUNT). Отдельное ARCH-GATE-подтверждение
+из прежней редакции не требуется — правки сугубо добавляющие для единственного контура.
 
 Границы скоупа: БЕЗ policy-движка рубежа 5 (резерв ADR-005, `AccessPolicy`), БЕЗ колоночного PII в
 БД (за валидатором), БЕЗ автоматического синка по расписанию (только сверка на старте прогона),
@@ -54,7 +55,7 @@
 
 ## Предусловия
 
-- [ ] S31 закрыта: тул-контур передаёт права в `RunContext` — `grep -n "| S31 |" solution/sessions.md` → ✅
+- [ ] S31 закрыта: валидатор и права — единый рубеж FSM-контура (`grep -n "| S31 |" solution/sessions.md` → ✅)
 - [ ] `make check` зелёный (baseline репозитория)
 - [ ] feat-002, feat-005, feat-007, feat-011, feat-013 в state=passing (сверка `feature_list.json`)
 - [ ] Инфра поднята: `make infra-up`; миграции применены: `make infra-migrate`
@@ -94,12 +95,14 @@ uv run pytest src/tests/integration/test_infra_schema.py -q    # новые пр
 uv run pytest src/tests/unit/test_postgres_executor.py src/tests/unit/test_domain_entities.py src/tests/integration/test_execute_sql.py -q
 ```
 
-### Task 3: Проводка scope
+### Task 3: Проводка scope (FSM)
 
-`execute_sql_node.py` (scope из `state.permissions`), `RunSqlTool` (S31), проба COUNT — тот же `ctx`.
-Тесты wiring: `test_execute_sql_node.py`, `test_run_sql_tool.py`, `test_container_wiring.py`.
+`execute_sql_node.py` (scope из `state.permissions`), проба COUNT (`_run_probe`) — тот же `ctx`.
+Контур исполнения один — FSM (тул-контур удалён, S39/D-041; прежняя редакция задачи с
+`RunSqlTool`/`test_run_sql_tool.py` снята S40 — файлы не существуют).
+Тесты wiring: `test_execute_sql_node.py`, `test_container_wiring.py`.
 
-**✅ Самопроверка:** `uv run pytest src/tests/unit/test_execute_sql_node.py src/tests/unit/test_run_sql_tool.py src/tests/unit/test_container_wiring.py -q`.
+**✅ Самопроверка:** `uv run pytest src/tests/unit/test_execute_sql_node.py src/tests/unit/test_container_wiring.py -q`.
 
 ### Task 4: Автосинк графа
 
@@ -138,7 +141,7 @@ uv run --env-file .env python -m apps.cli "Сколько заказов у кл
 
 - [ ] Обход валидатора (сырой SQL под `agent_ro` с чужой таблицей) возвращает 0 строк — integration-тест, падающий на до-фиксовом коде
 - [ ] Без scope — 0 строк на всех бизнес-таблицах; со scope — только разрешённые
-- [ ] FSM и тул-контур без регрессий: verification feat-002/005/011/013 прогнаны; happy-path hw-05 даёт прежний ответ
+- [ ] FSM без регрессий (контур исполнения один — тул-контур удалён, S39/D-041): verification feat-002/005/011/013 прогнаны; happy-path hw-05 даёт прежний ответ
 - [ ] Синк графа происходит сам при устаревшем снимке; при равных ревизиях вызова нет; недоступный синк — честный отказ
 - [ ] Миграция — новый файл, идемпотентна, чистая комната зелёная; er/security/ADR-005/ADR-006/S00 синхронны
 - [ ] `make check` EXIT=0, CI зелёный (S30); вердикт ARCH-GATE записан до кода
@@ -154,11 +157,7 @@ uv run --env-file .env python -m apps.cli "Сколько заказов у кл
    поставленный `FORCE` сломает `test_infra_schema` и демо-данные.
 4. **Синк на старте — обращение к Neo4j при каждом прогоне:** сверка ревизий — один дешёвый запрос;
    полная загрузка — только при расхождении.
-5. **Тул-контур после S31** получает права в `RunSqlTool` — scope должен выставляться там же, где
-   права, иначе тул-контур останется с пустым scope и вернёт 0 строк молча. Контур заморожен
-   (D-039) и снимается после сдачи ДЗ-04; проводка scope — единственная правка в нём, которую
-   S35 оставляет (D-040), без неё hw-04 невоспроизводим с 20.12 по 27.12.
-6. **DSN — `127.0.0.1`, не `localhost`** (Windows/IPv6-ловушка S02).
+5. **DSN — `127.0.0.1`, не `localhost`** (Windows/IPv6-ловушка S02).
 
 ## Гейты субагентов (заполняется по факту, до закрытия сессии)
 

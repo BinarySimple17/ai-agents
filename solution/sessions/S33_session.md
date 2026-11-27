@@ -23,7 +23,8 @@
   `error.message`, `cli.py:818–822` печатает его («column orders.client_id does not exist LINE 1:
   SELECT …» — трейс `hw-05/fsm-degrade-execute-retries-stdout.txt`).
 
-Опора: S31 (тул-контур за рубежом), S32 (детерминированная подсказка fan-out — здесь этот механизм
+Опора: S31 (единый рубеж: валидатор и права — общий модуль FSM-контура; тул-контур с тех пор
+удалён — BL-048/S39), S32 (детерминированная подсказка fan-out — здесь этот механизм
 становится общим). A6 (ребро перепланирования) — отдельно, в S34, и опирается на каталог колонок из
 этой сессии.
 
@@ -67,7 +68,8 @@
 
 `SQLFailureClass` + `SEMANTICS = "semantics"` (аддитивно); `_classify`: `psycopg.errors.UndefinedColumn`,
 `UndefinedTable`, `UndefinedFunction` → `SEMANTICS` раньше общей ветки `ProgrammingError`;
-`_DETERMINISTIC_MAP` + `"semantics"`. Класс ошибки — тот же для FSM и тул-контура.
+`_DETERMINISTIC_MAP` + `"semantics"`. Класс ошибки — один на контур исполнения (FSM —
+единственный контур: тул-контур удалён, BL-048/S39).
 
 **✅ Самопроверка:**
 
@@ -82,8 +84,9 @@ make infra-up && uv run pytest src/tests/integration/test_execute_sql.py -q     
   адаптер `PgPermissionStore`; фейк в `src/tests/unit/fakes.py`.
 - Валидатор: `'*'` разрешает только существующие колонки; остальное — `hallucination`
   «колонка X отсутствует у таблицы T — доступные: …» (имена только из мира пользователя). Правка —
-  в общей части ACL (`_check_columns`) для FSM-входа; свободный вход (тул-контур) получает только
-  адаптацию сигнатуры — новых проверок и тестов по нему нет (D-039/D-040: тул-контур не трогаем).
+  в общей части ACL (`_check_columns`) для FSM-входа (контур исполнения один — FSM;
+  оговорка прежней редакции про свободный вход снята S40: тул-контур удалён — BL-048/S39,
+  D-039/D-040 предметно не действуют).
 - **Регрессия (падает на до-фиксовом коде):** права `{'orders': ['*']}`, SQL с `orders.client_id`
   → было `ok`, стало `hallucination`; исполнитель не вызывается.
 
@@ -91,7 +94,7 @@ make infra-up && uv run pytest src/tests/integration/test_execute_sql.py -q     
 
 ```bash
 uv run pytest src/tests/unit/test_validate_sql.py -q -k "star or catalog"   # FSM-вход: новые тесты
-uv run pytest src/tests/unit/test_validate_free_sql.py -q                    # регрессия общей части, без новых тестов
+uv run pytest src/tests/unit/test_validate_sql.py -q                        # регрессия общей части ACL (актуализация S40: test_validate_free_sql.py удалён вместе с тул-контуром — BL-048/S39; регрессы общей части живут в FSM-корпусе)
 uv run pytest src/tests/integration/test_execute_sql.py src/tests/integration/test_resolve_access.py -q
 ```
 
@@ -128,8 +131,8 @@ plan_joins ≤ 3, generate_sql ≤ 3, interpret ×1, degrade ×1, diagnose-LLM �
 `LINE 1:` и фрагмент SQL, после — нет.
 
 **✅ Самопроверка:** регрессия A7 — живым прогоном Task 6 (`grep -c "does not exist\|LINE 1:"` → 0).
-Юнит-теста `_run_fsm` в наборе нет; `test_agent_flow.py` и `test_tool_loop.py` — тул-контур,
-по D-039/D-040 не трогаем.
+Юнит-теста `_run_fsm` в наборе нет; `test_agent_flow.py`/`test_tool_loop.py` удалены вместе
+с тул-контуром (BL-048/S39) — сцены контура закрываются живым прогоном Task 6.
 
 ### Task 6: Слой 3 — живые прогоны на сценах hw-05
 
