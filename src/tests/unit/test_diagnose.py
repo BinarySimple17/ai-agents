@@ -176,8 +176,10 @@ def test_semantics_hint_built_from_db_detail_and_catalog_no_llm() -> None:
 def test_semantics_hint_respects_column_grant_no_leak() -> None:
     """Ревью S33 I-1 (ловушка 1): раздел «доступные колонки» строится из ГРАНТОВ,
     не из сырого каталога — при явном списке колонок имена вне гранта (в т.ч.
-    PII) во внешний LLM не отдаются. На до-фиксовом коде hint содержит
-    client_id из каталога (bite)."""
+    PII) во внешний LLM не отдаются. Bite: на до-фиксовом коде 00fc386 тест
+    падает TypeError (нет permissions-параметра); PII-утверждения кусают
+    частичный фикс «сигнатура есть, фильтр снят» — hint содержит client_id/
+    email из каталога (воспроизведено мутацией ревьюера)."""
     llm = ScriptedLLM([])
     service = DiagnoseService(
         llm=llm,

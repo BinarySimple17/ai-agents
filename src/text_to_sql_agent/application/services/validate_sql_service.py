@@ -940,8 +940,8 @@ class ValidateSqlService:
         columns_catalog: Mapping[str, Sequence[str]] | None = None,
     ) -> ValidateSqlResult:
         """Прогон через парсинг → домен (без IO: каталог приходит из узла —
-        ruling R2 S33; ``None``/пустой при '*'-правах → ValueError домена,
-        fail-closed)."""
+        ruling R2 S33; ``None``/пустой при '*'-правах → ColumnsCatalogMissError
+        домена, fail-closed)."""
         try:
             tree = _parse_tree(sql)
             audit = _build_audit(tree)

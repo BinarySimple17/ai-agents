@@ -122,6 +122,17 @@ class ColumnsCatalogMissError(ValueError):
     """
 
 
+def has_star_grant(permissions: Mapping[str, Sequence[str]], table: str) -> bool:
+    """Единственный предикат «таблица разрешена целиком» (ревью S33 re-M-4:
+    одна семантика гранта в одном месте — узел validate_sql и подсказка
+    semantics диагностики читают его, а не дублируют inline-проверку).
+
+    Отсутствие таблицы в правах и None-значение — не '*'-грант (fail-closed).
+    """
+    grant = permissions.get(table)
+    return grant is not None and "*" in grant
+
+
 class SqlSource(BaseModel):
     """Источник скоупа в IR: bare-имя сущности + природа источника.
 
@@ -411,8 +422,8 @@ def _check_columns(
     (не «несуществует» — не зацикливать retry ложным «перепиши»). Явный список
     каталогу не сверяется (список уже сужение — несуществующее имя в нём
     отказывается как «вне прав», отложено аудитором вне S33). '*'-кандидат
-    без записи в каталоге — ValueError (дефект стыка/грантов, R1 S33:
-    fail-closed, не hallucination-цикл и не «вне прав»).
+    без записи в каталоге — ColumnsCatalogMissError (дефект стыка/грантов,
+    R1 S33: fail-closed, не hallucination-цикл и не «вне прав»).
     """
     for column in audit.columns:
         if column.whole_row:
@@ -425,7 +436,7 @@ def _check_columns(
             for c in column.candidates:
                 if c.kind != "table":
                     continue
-                if "*" not in (permissions.get(c.name) or ()):
+                if not has_star_grant(permissions, c.name):
                     issues_denied.append(
                         f"вся строка {c.name} требует '*' в правах — явный список "
                         "колонок не покрывает whole-row-ссылку"
@@ -440,7 +451,7 @@ def _check_columns(
         refuted: dict[str, Sequence[str]] = {}  # '*'-таблица: колонки нет в каталоге
         for c in table_candidates:
             permitted = permissions.get(c.name) or ()
-            if "*" in permitted:
+            if has_star_grant(permissions, c.name):
                 available = (columns_catalog or {}).get(c.name)
                 if not available:
                     raise ColumnsCatalogMissError(

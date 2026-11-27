@@ -36,7 +36,11 @@ from text_to_sql_agent.application.services.validate_sql_service import Validate
 from text_to_sql_agent.domain.entities import Trace
 from text_to_sql_agent.domain.join_plan import JoinPlan
 from text_to_sql_agent.domain.skeleton import Skeleton
-from text_to_sql_agent.domain.sql_validation import ColumnsCatalogMissError, ValidationOutcome
+from text_to_sql_agent.domain.sql_validation import (
+    ColumnsCatalogMissError,
+    ValidationOutcome,
+    has_star_grant,
+)
 
 # application не импортирует orchestration — имена флагов дублируются из
 # routing.FLAG_*; совпадение строк гвардит parity-тест (прецедент
@@ -69,7 +73,8 @@ def make_validate_sql_node(
     columns_catalog) по прецеденту того же стыка: чтение на КАЖДЫЙ визит,
     но ТОЛЬКО при '*'-правах (именованные колонки под '*' сверяются с
     каталогом — S33 A5; явные списки каталог не трогают). ``None`` при
-    '*'-правах → ValueError домена → дефект (fail-closed wiring, R2 S33).
+    '*'-правах → ColumnsCatalogMissError домена → дефект (fail-closed
+    wiring, R2 S33).
     """
 
     def node(state: State) -> dict[str, Any]:
@@ -106,8 +111,11 @@ def make_validate_sql_node(
             return _defect(flags, "catalog_unavailable", _DEFECT_MESSAGE, tracer, detail=str(exc))
         # Каталог колонок — только при '*'-правах (S33 R2): ровно они поднимают
         # вопрос «существует ли колонка вообще»; соединение планировщика — одно
-        # на визит валидации в '*'-сцене, вне её — ноль
-        star_tables = frozenset(table for table, cols in permissions.items() if "*" in (cols or ()))
+        # на визит валидации в '*'-сцене, вне её — ноль. Предикат гранта —
+        # доменный has_star_grant (ревью re-M-4: одна семантика в одном месте)
+        star_tables = frozenset(
+            table for table in permissions if has_star_grant(permissions, table)
+        )
         columns_catalog: dict[str, frozenset[str]] | None = None
         if star_tables and columns_catalog_provider is not None:
             try:

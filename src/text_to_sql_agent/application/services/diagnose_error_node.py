@@ -110,6 +110,12 @@ def make_diagnose_error_node(
             issues = validation.get("issues")
             if isinstance(issues, (list, tuple)):
                 validation_issues = tuple(str(item) for item in issues)
+        # Латентный инвариант (re-review S33, контрольный вопрос 2): issues
+        # непусты ⟺ вердикт валидатора hallucination; execute_sql — единственный
+        # преемник check_cost ← validate_sql, и OK-вердикт пишет outcome=ok с
+        # пустыми issues — на semantics-сбое исполнителя issues гарантированно
+        # пусты, гейт специфичности подсказки (issues подавляют detail/каталог)
+        # не глотает сырой текст БД. Изменение этой связки — пересмотр гейта.
 
         result: DiagnoseResult = service.diagnose(
             error_class=str(raw_error.get("class")),

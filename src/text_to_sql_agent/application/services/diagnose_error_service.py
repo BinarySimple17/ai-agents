@@ -51,6 +51,7 @@ from text_to_sql_agent.application.services.m1_policy import (
     MAX_ATTEMPTS,
     ROLE_UP,
 )
+from text_to_sql_agent.domain.sql_validation import has_star_grant
 
 # --- Классы разбора (домен диагностики; имя SQLFailureClass сохраняется) ---
 
@@ -125,11 +126,6 @@ class _ColumnsCatalogCallable(Protocol):
     def __call__(self, tables: frozenset[str]) -> Mapping[str, Collection[str]]: ...
 
 
-def _is_star_grant(permissions: Mapping[str, Sequence[str]], table: str) -> bool:
-    grant = permissions.get(table)
-    return grant is not None and "*" in grant
-
-
 def _granted_columns(
     permissions: Mapping[str, Sequence[str]],
     table: str,
@@ -140,11 +136,12 @@ def _granted_columns(
     '*' → каталог (пользователь видит таблицу целиком); явный список → сам
     список (уже сужение гранта, каталог не читается); таблицы нет в правах →
     пусто — имена за пределами гранта во внешний LLM не отдаются
-    (defense-in-depth против дрейфа skeleton).
+    (defense-in-depth против дрейфа skeleton). Предикат гранта — доменный
+    has_star_grant (ревью re-M-4: одна семантика в одном месте).
     """
     if table not in permissions:
         return ()
-    if _is_star_grant(permissions, table):
+    if has_star_grant(permissions, table):
         return tuple(catalog.get(table) or ())
     return tuple(permissions[table])
 
@@ -159,27 +156,27 @@ def _semantics_hint(
     """Подсказка semantics — КОД из фактов (A4/S33, ловушка 2: подсказка несёт
     то, чего модель не видела).
 
-    Источники фактов, по убыванию специфичности (ревью S33 I-1 — порядок
-    соблюдается, не конъюнкция): нарушения валидатора (уже содержат фактические
-    колонки мира — каталог при их построении читал validate_sql) — при их
-    наличии остальные источники не подключаются; сырой текст БД
-    (error["detail"] — реальные имена из сообщения СУБД); каталог колонок
-    таблиц плана (R2 S33 — тот же стык, что у validate_sql) — fallback без
-    более специфичных фактов, сбои чтения не роняют разбор (подсказка без
-    раздела «доступные колонки», честный fallback). Имена — ТОЛЬКО из мира
-    пользователя (ловушка 1, ревью I-1): раздел «доступные колонки» строится
-    из прав — '*' показывает каталог, явный список показывает сам себя,
-    таблицы вне прав не показываются вовсе.
+    Источники фактов по убыванию специфичности (ревью S33 I-1): нарушения
+    валидатора (уже содержат фактические колонки мира — каталог при их
+    построении читал validate_sql) подавляют ВСЕ остальные источники — при
+    непустых issues фактов больше не нужно и шов каталога не читается; при
+    пустых issues сырой текст БД (error["detail"] — реальные имена из
+    сообщения СУБД) и раздел «доступные колонки» дополняют друг друга —
+    каталог колонок таблиц плана (R2 S33 — тот же стык, что у validate_sql)
+    читается только по '*'-таблицам, сбой чтения не роняет разбор (подсказка
+    без раздела, честный fallback). Имена — ТОЛЬКО из мира пользователя
+    (ловушка 1, ревью I-1): раздел строится из прав — '*' показывает каталог,
+    явный список показывает сам себя, таблицы вне прав не показываются вовсе.
     """
     parts: list[str] = []
     parts.extend(str(issue) for issue in validation_issues)
     if not validation_issues:
-        # Специфичность: issues уже несут имена мира — каталог не дублирует их
-        # (одно соединение вместо каждого semantics-разбора, ревью I-1)
+        # Специфичность: issues уже несут имена мира — остальные источники
+        # избыточны, шов не читается (одно соединение меньше, ревью I-1)
         if error_detail:
             parts.append(f"текст БД: {error_detail}")
         if plan_tables and permissions is not None:
-            star_tables = frozenset(t for t in plan_tables if _is_star_grant(permissions, t))
+            star_tables = frozenset(t for t in plan_tables if has_star_grant(permissions, t))
             catalog: Mapping[str, Collection[str]] = {}
             if star_tables and columns_catalog is not None:
                 try:
