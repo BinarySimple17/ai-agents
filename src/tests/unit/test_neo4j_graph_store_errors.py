@@ -69,3 +69,67 @@ def test_sync_typed_error_on_service_unavailable(monkeypatch: pytest.MonkeyPatch
     monkeypatch.setattr(store, "_read_registry", lambda: ([], 5))
     with pytest.raises(SchemaGraphError, match="загрузка снапшота"):
         store.sync()
+
+
+# --- BL-050(c) (S39): контракт v1 — только join_operator='='; fail-closed в
+# --- считывателе семантики рёбер (единственная точка входа оператора в мир
+# --- агента); plan_joins_service переводит SchemaGraphError в честный отказ
+# --- до генерации SQL. Bite: тест падает на до-правочном коде (проверка новая).
+
+
+class _FakeConn:
+    """Fake-соединение psycopg: отдаёт готовые строки реестра (dict_row)."""
+
+    def __init__(self, rows: list[dict]) -> None:
+        self._rows = rows
+
+    def execute(self, sql: str, params: object) -> object:
+        return SimpleNamespace(fetchall=lambda: self._rows)
+
+    def __enter__(self) -> "_FakeConn":
+        return self
+
+    def __exit__(self, *exc_info: object) -> bool:
+        return False
+
+
+def _semantics_row(join_operator: str = "=") -> dict:
+    return {
+        "edge_id": "e_test",
+        "join_type": "inner",
+        "meaning": "тестовое ребро",
+        "usage_notes": None,
+        "intent_tags": [],
+        "left_table": "orders",
+        "left_columns": ["customer_id"],
+        "right_table": "customers",
+        "right_columns": ["id"],
+        "join_operator": join_operator,
+        "mandatory_predicates": {},
+        "cardinality": "n:1",
+        "fanout_guard": False,
+        "temporal": None,
+    }
+
+
+def _store_with_rows(monkeypatch: pytest.MonkeyPatch, rows: list[dict]) -> Neo4jGraphStore:
+    store = _store(monkeypatch)
+    monkeypatch.setattr(
+        neo4j_graph_store.psycopg,
+        "connect",
+        lambda *a, **kw: _FakeConn(rows),
+    )
+    return store
+
+
+def test_path_semantics_rejects_non_eq_join_operator(monkeypatch: pytest.MonkeyPatch):
+    store = _store_with_rows(monkeypatch, [_semantics_row(join_operator="<")])
+    with pytest.raises(SchemaGraphError, match="вне контракта v1"):
+        store.path_semantics(["e_test"], ctx=CTX)
+
+
+def test_path_semantics_accepts_eq_join_operator(monkeypatch: pytest.MonkeyPatch):
+    store = _store_with_rows(monkeypatch, [_semantics_row(join_operator="=")])
+    semantics = store.path_semantics(["e_test"], ctx=CTX)
+    assert semantics[0].join_operator == "="
+    assert semantics[0].rel_id == "e_test"

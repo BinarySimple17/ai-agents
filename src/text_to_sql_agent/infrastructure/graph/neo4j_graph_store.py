@@ -57,6 +57,15 @@ from text_to_sql_agent.domain.entities import RunContext
 
 _ERROR_MESSAGE_MAX_CHARS = 300  # сообщения стыка — не простыня psycopg/neo4j-хинтов
 
+# BL-050(c) (решение владельца 2026-11-26, D-041): контракт v1 ребра — только '='.
+# Оператор ≠ '=' не поддержан сквозняком: скелет рендерит оператор ребра, а IR-сверка
+# ON принимает только EQ-конъюнкты — FSM отклонил бы СОБСТВЕННЫЙ SQL как
+# hallucination (M1-петля на каждом вопросе по такому ребру). Рубеж переносит
+# отказ в жизненный цикл ребра — честный отказ до генерации SQL
+# (plan_joins_service переводит SchemaGraphError в fail). При постройке CI-гейта
+# активации пункт наследует BL-026 (ADR-006 §4.2); CHECK — в ближайшей миграции.
+SUPPORTED_JOIN_OPERATOR = "="
+
 # База данных Neo4j (композит: community-дефолт compose NEO4J_AUTH без NEO4J_DB —
 # БД 'neo4j'); повторяющийся литерал вынесен (AGENTS.md, магические литералы).
 NEO4J_DATABASE = "neo4j"
@@ -338,6 +347,16 @@ class Neo4jGraphStore:
             raise SchemaGraphError(
                 "рёбра отсутствуют в active-реестре (снапшот устарел — "
                 f"перезапустите make sync-graph): {missing}"
+            )
+        unsupported = sorted(
+            row["edge_id"] for row in rows if row["join_operator"] != SUPPORTED_JOIN_OPERATOR
+        )
+        if unsupported:
+            # BL-050(c): контракт v1 — только '='; ребро с иным оператором
+            # активации не подлежит (ADR-006 §4.2) — fail-closed, не «не заметили».
+            raise SchemaGraphError(
+                "ребро с оператором вне контракта v1 (поддержан только "
+                f"'{SUPPORTED_JOIN_OPERATOR}'; BL-050c/D-041): {unsupported}"
             )
         try:
             return [
