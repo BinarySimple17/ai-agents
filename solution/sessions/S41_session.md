@@ -22,8 +22,9 @@
 **Sweep-результат (по реестру `solution/backlog/README.md`, сверка 2026-11-27):** из 36 открытых
 записей исполнимы в текущем треке пред ДЗ-06 только **BL-055** (P3 — маленькая задача, явный запрет
 SELECT…INTO в domain-валидаторе; очередь — п.1(в)) и **BL-057** (P2 — синк S00). Остальные 34 —
-вне батча: V5/ДЗ-06 (BL-001, BL-021, BL-023, BL-047; датасет BL-025), V6/выпускная (BL-014,
-BL-024…BL-033), после сдачи ДЗ-06 (BL-006/008/017/034/037/039/041; S37/S38 — D-040), триггерные
+вне батча: V5/ДЗ-06 (BL-001, BL-021, BL-023, BL-047), V6/выпускная (BL-014, BL-024…BL-033;
+BL-025 — запись V6, датасет-часть нужна V5 после BL-021), после сдачи ДЗ-06 (BL-006/008/017/034/
+037/039/041, BL-018 — прод-фронтенд D-032; S37/S38 — D-040), триггерные
 (BL-011 — рост реестра; BL-036 — «при следующей правке `plan_joins_demo`», батч demo не трогает;
 BL-019 — исполнитель S17 в V5), parked (BL-042/043 — якоря D-041, правка артефактов не планируется —
 D-037), решения владельца (BL-049 шаг 1, BL-056), вне плана (BL-003 п.4, BL-012/013/054).
@@ -54,8 +55,11 @@ S33←S32, S34←S33, S36←S31–S35; S35←S31 (закрыта) — позиц
    строка «Правки 2026-11-27 (S41…)».
 3. Поправка rule 1 в S32–S36 — точечная, только строка «Ветка …»: «от `milestone/v4`;
    merge — в `milestone/v4` (D-031)» → «от `inter/hw05-hw06`; merge — в `inter/hw05-hw06`
-   (трек пред ДЗ-06; milestone/v4 — неприкосновенная точка сдачи ДЗ-05)». Цитата D-031 снимается
-   (milestone-мерж не затрагивается); окна/deps/задачи шапок не трогаются.
+   (трек пред ДЗ-06; milestone/v4 — неприкосновенная точка сдачи ДЗ-05)». Цитата D-031 снимается:
+   мерж хвостов в milestone/v4 больше не предусмотрен — смена правила веток фиксируется решением
+   **D-042** в DECISIONS.md (суперседир D-031 в части веток хвостов; сама дисциплина
+   milestone-слияний D-031 сохраняется) + строка в AGENTS.md § Branch Hygiene — синх в той же
+   волне; окна/deps/задачи шапок не трогаются.
 4. Файл S42 создаётся с полным планом BL-055 («Что сделать» записи): проверка корня
    `ast.args.get("into")` + `ast.find(exp.Into)` в `domain/sql_validation.py`, формулировка issue
    в стиле существующих, docstring гейтов, регресс-тест в `test_validate_sql.py`. Старт S42 —
@@ -85,15 +89,21 @@ S33←S32, S34←S33, S36←S31–S35; S35←S31 (закрыта) — позиц
 ```bash
 uv run python - <<'PY'
 import re, pathlib
-root = pathlib.Path('solution/backlog')
-rows = [l for l in (root/'README.md').read_text(encoding='utf-8').splitlines() if l.startswith('| [BL-')]
-files = {f.name for f in root.glob('BL-*.md')}
-open_rows = [r for r in rows if 'открыт' in r.split('|')[3]]
-closed_files = {f.name for f in (root/'archive').glob('BL-*.md')}
-print(f'rows={len(rows)} open={len(open_rows)} root_files={len(files)} archived={len(closed_files)}')
-print('registry_files_match:', files == {f for f in files if f in {r.split('(')[1].rstrip(')') for r in rows}})
+bl = pathlib.Path('solution/backlog')
+rows = {}
+for line in (bl/'README.md').read_text(encoding='utf-8').splitlines():
+    m = re.match(r'\| \[(BL-\d+)\]', line)
+    if m: rows[m.group(1)] = 'closed' if 'закрыт' in line else 'open'
+root = {re.match(r'(BL-\d+)', f.name).group(1) for f in bl.glob('BL-*.md')}
+arch = {re.match(r'(BL-\d+)', f.name).group(1) for f in (bl/'archive').glob('BL-*.md')}
+open_k = {k for k, v in rows.items() if v == 'open'}
+closed_k = {k for k, v in rows.items() if v == 'closed'}
+print(f"open={len(open_k)} root={len(root)} match={open_k==root} closed={len(closed_k)} archived={len(arch)} match={closed_k==arch}")
 PY
-grep -c "sessions/archive/\|backlog/archive/" solution/sessions.md solution/backlog/README.md   # таргеты архива; битых — 0 (сверка существованием)
+# baseline (до закрытия BL-057): open=36 root=36 match=True closed=21 archived=21 match=True
+# после закрытия BL-057 в коммите волны — транзитное состояние (закрытая строка при файле в корне):
+# open=35 root=36 / closed=22 archived=21 — легально до make archive закрытия S41 (ловушка 4), финальная сверка — в финализации
+grep -c "sessions/archive/\|backlog/archive/" solution/sessions.md solution/backlog/README.md   # таргеты архива; битых — 0 (сверка существованием — скрипт-сверка отчёта)
 ```
 
 ### Task 2: BL-057 — синк канона S00, закрытие FIX-019/BL-057 (атом i)
@@ -122,8 +132,8 @@ grep -c "sessions/archive/\|backlog/archive/" solution/sessions.md solution/back
 **✅ Самопроверка:**
 
 ```bash
-grep -n "join_edges\|--plain\|validate_free_sql\|RunSqlTool" solution/sessions/S00_session.md   # 0 живых вхождений (исторический журнал «Правки» — ок)
-grep -n "streamlit" solution/sessions/S00_session.md                                            # 0 (дерево и точки входа — по факту)
+grep -n "join_edges\|--plain\|validate_free_sql\|RunSqlTool" solution/sessions/S00_session.md   # попадания ТОЛЬКО: :53 (формулировка удаления), :171 (исторический якорь S25), :173 (журнал «Правки») — живых описаний удалённого контура 0
+grep -ni "streamlit" solution/sessions/S00_session.md                                           # регистронезависимо: только :53/:57 (формулировки D-040 «не строится»), исторические :165/:166 (журнал «Правки» S00) и :173 (журнал правок S41) — живых 0 (ревью I-1: регистрозависимый grep пропускал :57 «В MVP отсутствуют»)
 grep -c "^- Правки 2026-11-27" solution/sessions/S00_session.md                                 # 1
 grep -n "FIX-019" solution/FIXES.md | tail -1                                                   # статус ЗАКРЫТ
 ```
@@ -154,10 +164,11 @@ grep -n "| S4[12] |" solution/sessions.md                                  # о�
 
 ## Критерии приёмки
 
-- [ ] Sweep: 36 открытых ↔ 36 файлов корня, 21 закрытый ↔ 21 архивный, битых ссылок реестров 0 (вывод в отчёте)
+- [ ] Sweep: 36 открытых ↔ 36 файлов корня, 21 закрытый ↔ 21 архивный, битых ссылок реестров 0 (вывод в отчёте; классификация перечисляет все 34 вне-батчевые записи — вкл. BL-018, без двойного счёта BL-025)
 - [ ] Батч-очередь записана в `progress.md` п.1(в): S42→S32→S33→S34→S35→S36 (окна/оценки/deps); rule 1 шапок S32–S36 — ветки от `inter/hw05-hw06`
+- [ ] Смена правила веток зафиксирована: D-042 в `DECISIONS.md` + суперседир-пометки в D-031/D-037 + строка в AGENTS.md § Branch Hygiene
 - [ ] S42 создана с полным планом BL-055; строка реестра BL-055 отсылает к S42
-- [ ] S00: :53/:75/:85/:118 синхронны факту; живых вхождений `join_edges`/`--plain`/`validate_free_sql`/`streamlit` — 0; строка «Правки 2026-11-27» в истории
+- [ ] S00: :53/:57/:75/:85/:118 синхронны факту; живых вхождений `join_edges`/`validate_free_sql`/`RunSqlTool` — 0, `--plain`/Streamlit — только формулировки удаления/ретира (D-040/D-041) и исторический журнал (регистронезависимая grep-сверка); строка «Правки 2026-11-27» в истории
 - [ ] FIX-019 закрыт; BL-057 закрыт (файл + строка реестра синхронны)
 - [ ] states `feature_list.json` не тронуты (`git diff` по файлу пуст)
 - [ ] `make check` EXIT=0
@@ -180,7 +191,8 @@ grep -n "| S4[12] |" solution/sessions.md                                  # о�
 ## Гейты субагентов (заполняется по факту, до закрытия сессии)
 
 - ARCH-GATE: N/A — журнальная сессия + правка канона S00 к факту уже принятых решений (D-041/D-040)
-  и код-факту removal (1533749), по готовому предписанию BL-057 «Что сделать»; границы модулей,
+  и код-факту removal (1533749), по готовому предписанию BL-057 «Что сделать»; фиксация D-042 —
+  операционное правило веток по команде владельца, не архитектурное решение; границы модулей,
   зависимости, схема/ER не затрагиваются, новых архитектурных решений нет
 - REVIEW-GATE: [✅ <Ready to merge? вердикт> + <BASE7>..<HEAD7> | N/A — <причина>]
 
