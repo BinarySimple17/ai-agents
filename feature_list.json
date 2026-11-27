@@ -269,7 +269,7 @@
     {
       "id": "feat-011",
       "name": "validate_sql (AST + ACL)",
-      "description": "Главный рубеж безопасности: sqlglot-парсинг (диалект postgres, только SELECT, одна инструкция, запрет SET/COPY/CALL/DO и функций deny-list, обход CTE/UNION/подзапросов/LATERAL, LIMIT к внешнему запросу), таблицы/колонки ∈ правам (вкл. ACL колонок соединения), deny-list схем (pg_catalog, information_schema, служебные схемы графа, agent_*), скелет не изменён (skeleton_hash, mandatory_predicates на месте), джойны ⊆ edge_id плана. Три исхода: ok / галлюцинация (→ diagnose_error, retry) / чужие данные (→ degrade, без retry)",
+      "description": "Главный рубеж безопасности: sqlglot-парсинг (диалект postgres, только SELECT, одна инструкция, запрет SET/COPY/CALL/DO и функций deny-list, обход CTE/UNION/подзапросов/LATERAL, LIMIT к внешнему запросу), таблицы/колонки ∈ правам (вкл. ACL колонок соединения), deny-list схем (pg_catalog, information_schema, служебные схемы графа, agent_*), скелет не изменён (skeleton_hash, mandatory_predicates на месте), джойны ⊆ edge_id плана. Три исхода: ok / галлюцинация (→ diagnose_error, retry) / чужие данные (→ degrade, без retry) (S39/BL-051(a): все таблицы запроса ⊆ плану — вложенные тела читают только таблицы плана.)",
       "behavior": "Запрос с DML/DDL, второй инструкцией, запрещённой схемой/таблицей/колонкой, джойном вне edge_id плана, изменённым скелетом или отсутствующим mandatory_predicates не выполняется; несуществующее → retry-ветка, вне прав → degrade без retry; валидный SELECT с LIMIT к внешнему запросу проходит дальше. (S39/BL-048/D-041: свободный вход тул-контура удалён вместе с контуром — behavior = FSM-вход; вложенные тела — ACL + «таблицы ⊆ план», BL-051(a).)",
       "verification": "uv run pytest src/tests/unit/test_validate_sql.py -q",
       "dependencies": [
@@ -520,7 +520,7 @@
       "name": "Объединённый контур ДЗ-03: retrieval + тул run_sql + стриминг (РЕТИРЕН — BL-048/D-041)",
       "description": "РЕТИРЕН (S39, BL-048/D-041): объединённый контур ДЗ-03 (retrieval + тул run_sql + стриминг, директива владельца S24 вариант B) удалён вместе с тул-контуром — единственный контур FSM (feat-004). Стриминговая механика порта (StreamFinal.tool_calls, canon-check 2026-11-21, прецедент D-021) живёт в LLMProvider; retrieval-утилиты (format_retrieval_block, RETRIEVAL_TOP_K) сохранены для bench_retrieval/test_hybrid_memory. Воспроизведение ДЗ-03 — milestone/v2 (D-041).",
       "behavior": "РЕТИРЕН (S39, BL-048/D-041): дефолтный прогон CLI = FSM (_run_fsm); флаг --plain и merged-flow run_agent_flow/run_tool_loop удалены; токен-рубеж S31 сохранён (verify внутри _run_fsm).",
-      "verification": "uv run pytest src/tests/unit/test_agent_flow.py -q",
+      "verification": "— (ретирено: контур удалён BL-048/D-041, S39; воспроизведение — milestone/v2)",
       "dependencies": [
         "feat-003",
         "feat-006",
@@ -536,7 +536,7 @@
         },
         {
           "label": "layer-2-runtime",
-          "cmd": "uv run pytest src/tests/unit/test_agent_flow.py -q",
+          "cmd": "— (ретирено: контур удалён BL-048/D-041, S39; воспроизведение — milestone/v2)",
           "repair": "Read failing test (LLM/хранилище мокаются, S00 правило 7); fix flow handling and re-run."
         }
       ],

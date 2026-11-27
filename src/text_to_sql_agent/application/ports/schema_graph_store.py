@@ -88,7 +88,7 @@ class EdgeSemantics(BaseModel):
     left_columns: tuple[str, ...] = ()
     right_table: str = ""
     right_columns: tuple[str, ...] = ()
-    join_operator: str = "="
+    join_operator: str = "="  # контракт v1: только '=' (≠ '=' отклоняется рубежом — BL-050c)
     mandatory_predicates: dict[str, Any] = Field(default_factory=dict)  # skeleton-якоря S10
     cardinality: str = ""  # 1:1 | 1:n | n:1 | n:m
     fanout_guard: bool = False  # агрегация поверх ребра требует предагрегации (ADR-004)

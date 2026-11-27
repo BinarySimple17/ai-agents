@@ -11,6 +11,8 @@ from typing import Protocol, runtime_checkable
 
 from text_to_sql_agent.domain.entities import Trace
 
+# RETIRED (S39, BL-048/D-041): события тул-контура CLI — эмиттеров нет после удаления
+# контура; константы оставлены как история (observability §2.4 — блок «РЕТИРЕНЫ»).
 EVENT_AGENT_START = "agent.start"  # вопрос принят (question, trace_id, mode)
 EVENT_AGENT_ROUND = "agent.round"  # вызов модели (call — порядковый номер)
 EVENT_AGENT_TOOL_CALL = "agent.tool_call"  # модель позвала тул (name, sql)

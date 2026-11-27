@@ -441,8 +441,8 @@ def _check_skeleton(
     for table in audit.tables:
         if table.split(".", 1)[-1] not in plan_tables:
             issues.append(
-                f"таблица {table} вне плана — вложенные тела (CTE/подзапросы/"
-                "LATERAL) читают только таблицы плана (BL-051a «таблицы ⊆ план»)"
+                f"таблица {table} вне плана — разрешены только таблицы плана "
+                "(«таблицы ⊆ план»; ретрай оправдан)"
             )
     conjuncts = set(audit.where_conjuncts)
     for predicate in skeleton.mandatory_predicates:

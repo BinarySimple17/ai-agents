@@ -741,7 +741,8 @@ class ValidateSqlResult(BaseModel):
 
 def _form_reject(sql: str, reason: str, row_limit: int) -> ValidateSqlResult:
     """Форм-отказ парсинга/обхода — вердикт hallucination с исходным SQL без
-    изменений (ничего не исполняется); общий для обоих входов (FSM/свободный)."""
+    изменений (ничего не исполняется); вход один — FSM (v1.9, BL-048/D-041:
+    свободный вход удалён)."""
     return ValidateSqlResult(
         verdict=ValidationVerdict(
             outcome=ValidationOutcome.HALLUCINATION,
@@ -760,7 +761,8 @@ def _result_with_rewrites(
 ) -> ValidateSqlResult:
     """Ok-вердикт → перепись текста на AST (ruling R1/R2 ARCH-GATE S11): внешний
     LIMIT добавлен/скламплен, литеральные звёзды развёрнуты в разрешённые колонки —
-    к исполнителю уходит только проверенный текст. Общий для обоих входов."""
+    к исполнителю уходит только проверенный текст. (Прежде — общий для
+    FSM/свободного; контур один.)"""
     final_sql = sql
     if verdict.outcome is ValidationOutcome.OK:
         expanded = _expand_stars(tree, permissions)

@@ -1101,3 +1101,15 @@ def _enclosing_selects(node: exp.Expression) -> Iterator[exp.Select]:
         if type(current) is exp.Select:
             yield current
         current = current.parent
+
+    def test_schema_qualified_nested_reference_no_false_positive(self):
+        # ревью S39 Minor-7: schema-квалификация во вложенном теле не даёт
+        # ложного «вне плана» — _collect_tables срезает схему (public.orders
+        # резолвится в orders, таблицу плана); регресс на случай правки
+        # _collect_tables (CTE-случай прикрыт test_cte_body_checked_...)
+        result = _validate(
+            "SELECT o.id FROM orders o INNER JOIN customers c ON o.customer_id = c.id "
+            "WHERE EXISTS (SELECT 1 FROM public.orders o2 WHERE o2.id = o.id) LIMIT 10",
+            permissions=self._RESIDUAL_PERMS,
+        )
+        assert result.verdict.outcome is ValidationOutcome.OK

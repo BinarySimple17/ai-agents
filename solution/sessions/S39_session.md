@@ -120,8 +120,16 @@ progress.md (Current State/Next Steps/Files Modified), sessions.md строка 
 ## Отчёт по сессии (заполняется по факту)
 
 - Сделано:
-  - [заполняется]
+  - **Task 1 (removal, коммит `1533749`):** тул-контур удалён одним коммитом по листьям BL-048 п.1 — run_sql_tool.py; validate_free_sql/_check_join_pairs/IR-поля `join_table_pairs`/`unresolved_join_scopes` (ACL-часть корреляции в `_build_audit` СОХРАНЕНА — кандидаты внешнего скоупа, whole-row, `_resolve_outer_ref`; удалена только Registry-часть построения пар); `validate_free` + механика пар/корреляций S31 (`_join_tie_refs`…`_names_connected`, `_COMPARISON_TYPES`; `_COMPLEX_ON` сохранён — FSM-сверка скелета на нём); порт+реализация `join_edges`; cli.py перезаписан FSM-only (сохранены `format_retrieval_block`/`RETRIEVAL_TOP_K` — потребители bench_retrieval/test_hybrid_memory; `--fsm` сохранён, дефолт → `_run_fsm`); container.py; Makefile-комментарий; 5 тест-файлов + wiring-тест + join_edges-тест + FakeSchemaGraphStore удалены; B2-кейсы (2 контур-независимых) мигрированы в FSM-галерею, два флипа вердикта помечены; **pin-тесты residual BL-051(a)** — оба кейса BL-051 ожидают OK с правами на bonuses/campaigns. Самопроверка: grep чистый, make check EXIT=0, 835 passed (было 1002).
+  - **Task 2+3 (волна канона + D-041, коммит `aa9dabb`):** 13 документов — ADR-002 v1.7, ADR-005 v1.4, ADR-006 v1.9 (§4.2 пункт гейта BL-050(c) — формулировка «fail-closed в считывателе сейчас + пункт наследует BL-026»), prd v1.9 (FR-2/FR-4/§9), security v2.0 (§3 целиком), ARCHITECTURE (инварианты 2/5), RISKS R-Q1, adr/README (строка ADR-002 :17 — находка canon-check), observability v1.6 (agent.* ретирены, contour снят), model-card (ПДн-пункт сохранён — самопроверка по diff), er v1.11, c4-l3 v1.7; feature_list — только тексты feat-004/011/013/020 (states не тронуты, json-прогон); quality-document — 3 строки (находка canon-check, Task 6); D-041 в DECISIONS.md.
+  - **Task 4 (BL-050(c), коммит `a8078e8`):** `SUPPORTED_JOIN_OPERATOR = "="` + fail-closed в `path_semantics` → SchemaGraphError; TDD — тест RED на до-правочном коде, контроль зелёный (FakeConn psycopg).
+  - **Task 5 (BL-051(a), коммит `ace5ea7`):** правило «все таблицы запроса ⊆ план» в `_check_skeleton` (квалификация срезается, CTE-имена уже отсечены `_collect_tables`); два pin-теста флипнуты ДО реализации (RED×2) → GREEN; полный корпус 837 passed — ни один легальный кейс не сломан.
 - Отклонения от плана:
-  - [заполняется]
+  - «docs в том же коммите» — волна канона отдельным коммитом после removal (структура BL-048 §2; canon-check note — допустимо, окно = сессия, исключение зафиксировано в D-041 и здесь).
+  - ER/ADR-006-пометки BL-050(c) исполнены в волне Task 2 (не отдельным коммитом Task 4) — чтобы ADR-006 не править дважды; зафиксировано в плане сессии заранее (правило №2).
+  - `_DEMO_SCHEMA_COLUMNS`-синк-тест (test_retrieval_flow.py) удалён вместе с картой промпта — каталог-гвард остаётся в test_hybrid_memory (план, ловушка 2).
 - Перенесено в другие сессии:
-  - [заполняется]
+  - BL-050 уровень 2 (CHECK-ограничение `status <> 'active' OR join_operator = '='`) — ближайшая миграция V5 (BL-047), решение владельца 2026-11-26.
+  - Пометка S35 Task 3 (предмет снят контуром) — валидационная волна п.1(б) плана ветки.
+  - Риск-запись «выдуманная связь во вложенном теле» (mitигации после правила) — S36 Task 7; eval-кейс — BL-025.
+  - Пуш `inter/hw05-hw06` — по команде владельца (CI не триггерится, D-035).
