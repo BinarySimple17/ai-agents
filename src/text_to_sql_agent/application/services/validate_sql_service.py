@@ -39,6 +39,7 @@ from sqlglot.errors import TokenError as SqlTokenError
 from text_to_sql_agent.domain.join_plan import JoinPlan
 from text_to_sql_agent.domain.skeleton import Skeleton, normalize_sql_fragment
 from text_to_sql_agent.domain.sql_validation import (
+    SqlAggregate,
     SqlAudit,
     SqlColumn,
     SqlJoin,
@@ -182,6 +183,19 @@ _STRUCTURAL_FUNCS: tuple[type[exp.Expression], ...] = (
 # Маркер пары ON, которую извлекатель не свёл к равенству колонок (OR, литералы,
 # USING) — сверка со скелетом равенством даст mismatch: ON фиксирован скелетом.
 _COMPLEX_ON = ("__complex_on__", "__complex_on__")
+
+# Узлы-агрегаты для IR корневого скоупа (feat-023, ruling R2 S32): классы
+# allow-list функций-агрегатов (domain.sql_validation ALLOWED_FUNCTIONS);
+# остальные функции не агрегаты (stddev → Anonymous → allow-list отклонит
+# раньше политики). Оконные формы (SUM(…) OVER) парсятся sqlglot как
+# exp.Window(this=агрегат) — узел агрегата доходит обходом сам.
+_AGGREGATE_NODES: tuple[type[exp.Expression], ...] = (
+    exp.Count,
+    exp.Sum,
+    exp.Avg,
+    exp.Min,
+    exp.Max,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -337,6 +351,7 @@ def _build_audit(tree: exp.Expression) -> SqlAudit:
             star_sources.append(tuple(SqlSource(name=s.name, kind=s.kind) for s in sources))
 
     root_maps = maps_by_scope.get(id(root_select), []) if root_select is not None else []
+    root_sources = sources_by_scope.get(id(root_select), []) if root_select is not None else []
     return SqlAudit(
         from_table=_from_table(root_select),
         tables=_collect_tables(tree),
@@ -347,6 +362,8 @@ def _build_audit(tree: exp.Expression) -> SqlAudit:
         functions=_collect_functions(tree),
         star_sources=tuple(star_sources),
         has_into=_detect_into(tree),
+        aggregates=_collect_aggregates(root_select, root_maps, root_sources),
+        group_columns=_collect_group_columns(root_select, root_maps, root_sources),
     )
 
 
@@ -688,6 +705,112 @@ def _detect_into(tree: exp.Expression) -> bool:
     Решение (denied) принимает domain — механика здесь
     (ruling R4, прецедент-паттерн functions/star_sources)."""
     return tree.args.get("into") is not None or tree.find(exp.Into) is not None
+
+
+def _column_ir(
+    column: exp.Column,
+    maps: list[dict[str, _Source]],
+    local_sources: list[_Source],
+    local_refs: set[str],
+) -> SqlColumn:
+    """IR колонки — резолюция как в основном обходе (кандидаты-источники +
+    whole-row): квалифицированная — один кандидат, unqualified — все источники
+    скоупа (Ловушка 5); unqualified, совпавший с алиасом источника СВОЕГО или
+    объемлющего скоупа, — whole-row (ревью S11 C1: вся строка, PG), внешний
+    ref ДОПОЛНЯЕТ кандидатов (ревью волна-3: при коллизии PG читает локальную
+    колонку). Отдельная функция, не рефакторинг основного цикла: у него своя
+    skip-семантика ORDER BY-алиасов, здесь не применимая."""
+    candidates = _resolve_candidates(column, maps, local_sources)
+    sources = tuple(SqlSource(name=s.name, kind=s.kind) for s in candidates)
+    name_lower = column.name.lower()
+    whole_row = False
+    if not column.table:
+        if name_lower in local_refs:
+            whole_row = True
+        else:
+            outer = _resolve_outer_ref(name_lower, maps)
+            if outer is not None:
+                whole_row = True
+                extra = SqlSource(name=outer.name, kind=outer.kind)
+                if all(s != extra for s in sources):
+                    sources = (*sources, extra)
+    return SqlColumn(name=name_lower, candidates=sources, whole_row=whole_row)
+
+
+def _collect_aggregates(
+    root_select: exp.Select | None,
+    maps: list[dict[str, _Source]],
+    local_sources: list[_Source],
+) -> tuple[SqlAggregate, ...]:
+    """Агрегаты КОРНЕВОГО скоупа (feat-023, ruling R2 S32): проекция, HAVING,
+    ORDER BY и оконные формы (SUM(…) OVER — узел агрегата лежит под
+    exp.Window, доходит обходом сам; обойти правило через OVER нельзя).
+    Колонки под агрегатом собираются рекурсивно (CASE/fen — few-shot
+    «выручка-по-кампаниям»), колонки вложенных скоупов не входят (PG не
+    допускает подзапросы в аргументе агрегата — защита от парсерных форм).
+    Подзапросные агрегаты на корневой набор не попадают — «агрегат целиком
+    внутри подзапроса» проходит политику fan-out. Решение принимает domain
+    (``_check_fanout``) — механика здесь (ruling R4, прецедент has_into)."""
+    if root_select is None:
+        return ()
+    local_refs = {src.ref for src in local_sources}
+    nested = {id(s) for s in root_select.find_all(exp.Select) if s is not root_select}
+    aggregates: list[SqlAggregate] = []
+    for node in _local_nodes(root_select):
+        if not isinstance(node, _AGGREGATE_NODES):
+            continue
+        columns = tuple(
+            _column_ir(column, maps, local_sources, local_refs)
+            for column in node.find_all(exp.Column)
+            if not isinstance(column.this, exp.Star) and not _inside_nested(column, node, nested)
+        )
+        aggregates.append(
+            SqlAggregate(
+                func=node.sql_name().lower(),
+                columns=columns,
+                # sqlglot 30.x: DISTINCT-аргумент — this=exp.Distinct(expressions)
+                # (не arg «distinct»); колонки внутри Distinct доходит find_all сам
+                distinct=isinstance(node.this, exp.Distinct),
+            )
+        )
+    return tuple(aggregates)
+
+
+def _collect_group_columns(
+    root_select: exp.Select | None,
+    maps: list[dict[str, _Source]],
+    local_sources: list[_Source],
+) -> tuple[SqlColumn, ...]:
+    """Колонки GROUP BY корневого скоупа (feat-023, ruling R4 S32): только
+    голые колонки — позиционные (GROUP BY 1) и выражения (date_trunc) не
+    собираются: ключ в GROUP BY «не найден» → консервативный reject политики
+    (residual v1, пин в RISKS; выразимый фикс в подсказке — «группируй по
+    ключу явно»). Output-алиас в GROUP BY PG резолвит в input-колонку при
+    коллизии — fail-closed основного обхода (skip-семантика ORDER BY
+    неприменима). Резолюция единая с агрегатами (_column_ir)."""
+    if root_select is None:
+        return ()
+    group = root_select.args.get("group")
+    if group is None:
+        return ()
+    local_refs = {src.ref for src in local_sources}
+    return tuple(
+        _column_ir(item, maps, local_sources, local_refs)
+        for item in group.expressions
+        if isinstance(item, exp.Column) and not isinstance(item.this, exp.Star)
+    )
+
+
+def _inside_nested(column: exp.Column, boundary: exp.Expression, nested: set[int]) -> bool:
+    """Колонка внутри вложенного скоупа ПОД границей (аргумент агрегата с
+    подзапросом — парсерная форма, PG её не исполняет): не включать, чтобы
+    чужие кандидаты не смешались с корневыми."""
+    parent = column.parent
+    while parent is not None and parent is not boundary:
+        if id(parent) in nested:
+            return True
+        parent = parent.parent
+    return False
 
 
 def _collect_functions(tree: exp.Expression) -> tuple[str, ...]:

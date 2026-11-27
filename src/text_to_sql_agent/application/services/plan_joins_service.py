@@ -546,6 +546,9 @@ class PlanJoinsService:
                         "usage_notes": sem.usage_notes,
                         "intent_tags": sem.intent_tags,
                         "cardinality": sem.cardinality,
+                        # feat-023 (rule 6 плана S32): guard-ребро рядом с
+                        # cardinality — модель видит цену агрегации поверх пути
+                        "fanout_guard": sem.fanout_guard,
                         "temporal": sem.temporal,
                     }
                 )
@@ -676,6 +679,8 @@ class PlanJoinsService:
                     to_columns=to_columns,
                     join_operator=sem.join_operator,
                     join_type=sem.join_type,
+                    fanout_guard=sem.fanout_guard,
+                    fanout_one_side=_fanout_one_side(sem),
                 )
             )
             if sem.usage_notes:
@@ -731,6 +736,26 @@ def _normalize_permissions(
         else:
             normalized[table] = list(columns)
     return normalized
+
+
+def _fanout_one_side(sem: EdgeSemantics) -> str:
+    """Сторона «1» fan-out ребра из cardinality (feat-023, ruling R3 ARCH-GATE
+    S32): «1:n» — левая таблица, «n:1» — правая; guard=False — "" (проверка
+    fan-out не применяется). Guard на «n:m»/«1:1»/пустой cardinality — дрейф
+    реестра: сторона «1» не определена, политика validate_sql была бы
+    невычислимой — fail-closed ValueError (прецедент BL-050(c)), честный FAIL
+    плана, не «не проверили → пропустили».
+    """
+    if not sem.fanout_guard:
+        return ""
+    if sem.cardinality == "1:n":
+        return sem.left_table
+    if sem.cardinality == "n:1":
+        return sem.right_table
+    raise ValueError(
+        f"ребро {sem.rel_id}: fanout_guard=true при cardinality {sem.cardinality!r} — "
+        "сторона «1» не определена; guard-ребро реестра обязано нести cardinality 1:n/n:1"
+    )
 
 
 def _columns_for_direction(

@@ -341,3 +341,32 @@ def test_unserializable_object_rejected_on_dump() -> None:
     ckpt = _checkpointer()
     with _pytest.raises(TypeError):
         ckpt.serde.dumps_typed((_Foreign(),))
+
+
+def test_join_plan_edge_guard_fields_roundtrip_and_legacy() -> None:
+    """feat-023 (ловушка 4 плана S32): guard-поля JoinPlanEdge в чекпойнте.
+
+    join_plan в state живёт model_dump()-dict (S27): новые поля — bool/str,
+    базовые типы msgpack (allowlist сериализатора не расширяется); старый
+    чекпойнт без полей валидируется дефолтами (fanout_guard=False)."""
+    from text_to_sql_agent.domain.join_plan import JoinPlanEdge
+
+    edge = JoinPlanEdge(
+        rel_id="e_orders_items",
+        from_table="orders",
+        to_table="order_items",
+        from_columns=("order_id",),
+        to_columns=("order_id",),
+        join_type="inner",
+        fanout_guard=True,
+        fanout_one_side="orders",
+    )
+    ckpt = _checkpointer()
+    blob = ckpt.serde.dumps_typed((edge.model_dump(),))
+    (raw,) = ckpt.serde.loads_typed(blob)
+    assert JoinPlanEdge.model_validate(raw) == edge
+
+    legacy_payload = {k: v for k, v in raw.items() if k not in ("fanout_guard", "fanout_one_side")}
+    legacy = JoinPlanEdge.model_validate(legacy_payload)
+    assert legacy.fanout_guard is False
+    assert legacy.fanout_one_side == ""

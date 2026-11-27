@@ -39,6 +39,17 @@ class JoinPlanEdge(BaseModel):
     to_columns: tuple[str, ...] = Field(min_length=1)
     join_operator: str = "="  # из ребра реестра
     join_type: str = Field(min_length=1)  # inner | left — из ребра реестра
+    # feat-023 (ruling R3 ARCH-GATE S32): fan-out guard ребра реестра — инвариант
+    # ADR-006 §4.6 «агрегация поверх fan-out ребра без предагрегации не
+    # пропускается» (validate_sql._check_fanout). fanout_one_side — bare-имя
+    # таблицы стороны «1», выводится из cardinality при сборке плана
+    # (plan_joins_service._fanout_one_side: 1:n→left, n:1→right) и непусто
+    # ТОЛЬКО при guard=True — инвариант проверяет validate_join_plan
+    # (defense-in-depth по аналогии с skeleton_hash). Дефолты — старые
+    # чекпойнты валидируются (join_plan в state — model_dump()-dict; bool/str —
+    # базовые типы msgpack, allowlist сериализатора S27 не расширяется).
+    fanout_guard: bool = False
+    fanout_one_side: str = ""
 
 
 class JoinPlan(BaseModel):
@@ -151,6 +162,18 @@ def validate_join_plan(
                     f"ребро {edge.rel_id}: ключ джойна {missing} на {table} вне прав колонок — "
                     "ребро без доступа к ключам недоступно целиком"
                 )
+
+    # --- Инвариант fan-out guard (feat-023, ruling R3 ARCH-GATE S32) ---
+    # guard=True обязан нести сторону «1» (fanout_one_side), и она — одна из
+    # таблиц ребра: без неё политика validate_sql невычислима (fail-closed
+    # там), дрейф ловится здесь — план собирает код, дефект сборки честнее
+    # тихой потери проверки.
+    for edge in plan.edges:
+        if edge.fanout_guard and edge.fanout_one_side not in (edge.from_table, edge.to_table):
+            issues.append(
+                f"ребро {edge.rel_id}: fanout_one_side {edge.fanout_one_side!r} не указывает "
+                "на таблицу ребра — guard без стороны «1», дефект сборки плана"
+            )
 
     return issues
 

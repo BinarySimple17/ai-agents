@@ -32,7 +32,12 @@ from text_to_sql_agent.application.services.validate_sql_service import (
 )
 from text_to_sql_agent.domain.join_plan import JoinPlan, JoinPlanEdge
 from text_to_sql_agent.domain.skeleton import Skeleton, build_skeleton
-from text_to_sql_agent.domain.sql_validation import ValidationOutcome
+from text_to_sql_agent.domain.sql_validation import (
+    SqlAggregate,
+    SqlColumn,
+    SqlSource,
+    ValidationOutcome,
+)
 
 # --- Фикстуры мира агента (S00 контракт 3: {table: [columns]}, '*' — все) ---
 
@@ -1171,3 +1176,133 @@ def _enclosing_selects(node: exp.Expression) -> Iterator[exp.Select]:
         if type(current) is exp.Select:
             yield current
         current = current.parent
+
+
+class TestAuditAggregates:
+    """Корпус IR-извлечения агрегатов/GROUP BY (feat-023, Task 1 S32):
+
+    агрегаты корневого скоупа совпадают с ручной разметкой; оконные формы
+    (SUM … OVER) и HAVING/ORDER BY-агрегаты входят (обход через OVER/HAVING —
+    не обход правила, ruling R2); колонки под агрегатом собираются рекурсивно
+    (CASE — few-shot «выручка-по-кампаниям»); агрегаты подзапросов/CTE в
+    корневой набор не попадают; GROUP BY — только голые колонки, позиционные
+    и выражения не собираются (ruling R4 — консервативный reject политики).
+    """
+
+    @staticmethod
+    def _col(name: str, *tables: str, whole_row: bool = False) -> SqlColumn:
+        return SqlColumn(
+            name=name,
+            candidates=tuple(SqlSource(name=t, kind="table") for t in tables),
+            whole_row=whole_row,
+        )
+
+    def test_root_aggregate_with_qualified_column(self):
+        audit = build_sql_audit(
+            "SELECT o.order_id, SUM(o.total) FROM orders o "
+            "INNER JOIN order_items oi ON o.order_id = oi.order_id GROUP BY o.order_id"
+        )
+        assert audit.aggregates == (
+            SqlAggregate(func="sum", columns=(self._col("total", "orders"),), distinct=False),
+        )
+        assert audit.group_columns == (self._col("order_id", "orders"),)
+
+    def test_count_star_has_no_columns(self):
+        # ловушка 3: COUNT(*) — колонки стороны «1» под агрегатом нет
+        audit = build_sql_audit("SELECT COUNT(*) FROM orders o")
+        assert audit.aggregates == (SqlAggregate(func="count", columns=(), distinct=False),)
+
+    def test_count_distinct_flag(self):
+        # sqlglot 30.x: DISTINCT — this=exp.Distinct(expressions)
+        audit = build_sql_audit("SELECT COUNT(DISTINCT o.order_id) FROM orders o")
+        assert audit.aggregates == (
+            SqlAggregate(func="count", columns=(self._col("order_id", "orders"),), distinct=True),
+        )
+
+    def test_case_columns_collected_recursively(self):
+        audit = build_sql_audit(
+            "SELECT SUM(CASE WHEN o.status = 'paid' THEN o.total END) FROM orders o"
+        )
+        assert len(audit.aggregates) == 1
+        agg = audit.aggregates[0]
+        # порядок обхода дерева — деталь парсера; контракт — множество колонок
+        assert agg.func == "sum" and agg.distinct is False
+        assert {c.name for c in agg.columns} == {"status", "total"}
+        assert all(s.name == "orders" for c in agg.columns for s in c.candidates)
+
+    def test_having_and_order_by_aggregates_included(self):
+        audit = build_sql_audit(
+            "SELECT o.customer_id FROM orders o GROUP BY o.customer_id "
+            "HAVING SUM(o.total) > 100 ORDER BY SUM(o.total) DESC"
+        )
+        assert [a.func for a in audit.aggregates] == ["sum", "sum"]
+        assert all(a.columns == (self._col("total", "orders"),) for a in audit.aggregates)
+
+    def test_window_aggregate_included(self):
+        # ruling R2: SUM(…) OVER — узел агрегата под exp.Window; обход правила
+        # через оконную форму невозможен — IR обязан её видеть
+        audit = build_sql_audit("SELECT o.order_id, SUM(o.total) OVER () FROM orders o")
+        assert audit.aggregates == (
+            SqlAggregate(func="sum", columns=(self._col("total", "orders"),), distinct=False),
+        )
+
+    def test_subquery_aggregate_excluded_from_root(self):
+        # «агрегат целиком внутри подзапроса» — политика fan-out его не видит
+        audit = build_sql_audit(
+            "SELECT o.order_id, (SELECT SUM(c.id) FROM customers c WHERE c.id = o.customer_id) "
+            "FROM orders o"
+        )
+        assert audit.aggregates == ()
+
+    def test_cte_body_aggregate_excluded_from_root(self):
+        audit = build_sql_audit(
+            "WITH t AS (SELECT SUM(o.total) AS s FROM orders o) SELECT s FROM t"
+        )
+        assert audit.aggregates == ()
+
+    def test_unqualified_column_candidates_all_sources(self):
+        audit = build_sql_audit(
+            "SELECT SUM(id) FROM orders o INNER JOIN customers c ON o.customer_id = c.id"
+        )
+        assert audit.aggregates == (
+            SqlAggregate(
+                func="sum", columns=(self._col("id", "orders", "customers"),), distinct=False
+            ),
+        )
+
+    def test_alias_resolved_to_real_source(self):
+        audit = build_sql_audit("SELECT SUM(o.total) FROM orders AS o")
+        assert audit.aggregates == (
+            SqlAggregate(func="sum", columns=(self._col("total", "orders"),), distinct=False),
+        )
+
+    def test_multiple_aggregates_in_order(self):
+        audit = build_sql_audit(
+            "SELECT AVG(o.total), MIN(o.created_at), MAX(o.created_at) FROM orders o"
+        )
+        assert [a.func for a in audit.aggregates] == ["avg", "min", "max"]
+
+    def test_group_by_positional_not_collected(self):
+        # ruling R4: позиционный GROUP BY не колонка — консервативный reject
+        audit = build_sql_audit("SELECT o.order_id, SUM(o.total) FROM orders o GROUP BY 1")
+        assert audit.group_columns == ()
+
+    def test_group_by_expression_not_collected(self):
+        audit = build_sql_audit(
+            "SELECT date_trunc('month', o.created_at) FROM orders o "
+            "GROUP BY date_trunc('month', o.created_at)"
+        )
+        assert audit.group_columns == ()
+
+    def test_group_by_unqualified_candidates_all_sources(self):
+        audit = build_sql_audit(
+            "SELECT o.order_id FROM orders o INNER JOIN order_items oi "
+            "ON o.order_id = oi.order_id GROUP BY order_id"
+        )
+        assert audit.group_columns == (self._col("order_id", "orders", "order_items"),)
+
+    def test_set_operation_root_collects_nothing(self):
+        # UNION-корень = изменённый скелет (_check_skeleton), IR корня пуст
+        audit = build_sql_audit("SELECT o.id FROM orders o UNION SELECT c.id FROM customers c")
+        assert audit.aggregates == ()
+        assert audit.group_columns == ()

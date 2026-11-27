@@ -41,6 +41,7 @@ from text_to_sql_agent.application.services.plan_joins_service import (
     PlanJoinsService,
     PlanOutcome,
     _columns_for_direction,
+    _fanout_one_side,
     _parse_ranking,
 )
 from text_to_sql_agent.domain.entities import RunContext
@@ -1129,3 +1130,169 @@ def test_version_change_during_semantics_fails() -> None:
     ).plan(_QUESTION, ctx=CTX, permissions=PERMISSIONS_ALL)
     assert result.outcome is PlanOutcome.FAIL
     assert "изменился при чтении семантики" in (result.error or "")
+
+
+# --- feat-023 (S32): fan-out guard — вывод стороны «1», проводка в план/payload ---
+
+
+class TestFanoutOneSide:
+    """Вывод one_side из cardinality (ruling R3 ARCH-GATE S32): «1:n» — левая,
+    «n:1» — правая; guard на «n:m»/пустой cardinality — дрейф реестра,
+    fail-closed ValueError (прецедент BL-050(c))."""
+
+    def test_one_to_n_left_is_one_side(self) -> None:
+        sem = _REGISTRY_SEM["e_orders_items"]  # 1:n, left=orders
+        assert _fanout_one_side(sem) == "orders"
+
+    def test_n_to_one_right_is_one_side(self) -> None:
+        sem = EdgeSemantics(
+            rel_id="e_x",
+            join_type="inner",
+            meaning="m",
+            left_table="items",
+            left_columns=("order_id",),
+            right_table="orders",
+            right_columns=("order_id",),
+            cardinality="n:1",
+            fanout_guard=True,
+        )
+        assert _fanout_one_side(sem) == "orders"
+
+    def test_no_guard_no_side(self) -> None:
+        assert _fanout_one_side(_REGISTRY_SEM["e_customers_orders"]) == ""
+
+    @pytest.mark.parametrize("cardinality", ["n:m", "1:1", ""])
+    def test_guard_without_direction_is_value_error(self, cardinality: str) -> None:
+        sem = EdgeSemantics(
+            rel_id="e_x",
+            join_type="inner",
+            meaning="m",
+            left_table="orders",
+            left_columns=("order_id",),
+            right_table="order_items",
+            right_columns=("order_id",),
+            cardinality=cardinality,
+            fanout_guard=True,
+        )
+        with pytest.raises(ValueError, match="сторона «1» не определена"):
+            _fanout_one_side(sem)
+
+
+class TestBuildPlanFanout:
+    """Guard-ребро попадает в JoinPlanEdge с выводом one_side; направление
+    обхода против left/right реестра не меняет сторону «1» (ruling R3)."""
+
+    @staticmethod
+    def _build(edges: list[JoinEdge]) -> JoinPlan:
+        return PlanJoinsService._build_plan(
+            JoinPath(edges=edges, total_weight=1.0),
+            _REGISTRY_SEM,
+            graph_version=1,
+        )
+
+    def test_guarded_edge_carries_one_side(self) -> None:
+        path_edge = JoinEdge(
+            rel_id="e_orders_items", from_table="orders", to_table="order_items", weight=0.9
+        )
+        plan = self._build([path_edge])
+        assert plan.edges[0].fanout_guard is True
+        assert plan.edges[0].fanout_one_side == "orders"  # левая «1:n»
+
+    def test_reversed_traversal_keeps_registry_one_side(self) -> None:
+        # путь развёрнут против реестра (order_items→orders): сторона «1» —
+        # по-прежнему orders (левая «1:n»), не from_table ребра пути
+        path_edge = JoinEdge(
+            rel_id="e_orders_items", from_table="order_items", to_table="orders", weight=0.9
+        )
+        plan = self._build([path_edge])
+        assert plan.edges[0].from_table == "order_items"
+        assert plan.edges[0].fanout_one_side == "orders"
+        assert plan.edges[0].fanout_one_side in (plan.edges[0].from_table, plan.edges[0].to_table)
+
+    def test_unguarded_edge_has_empty_side(self) -> None:
+        path_edge = JoinEdge(
+            rel_id="e_customers_orders", from_table="customers", to_table="orders", weight=1.0
+        )
+        plan = self._build([path_edge])
+        assert plan.edges[0].fanout_guard is False
+        assert plan.edges[0].fanout_one_side == ""
+
+
+class TestValidatorFanoutInvariant:
+    """Инвариант guard→one_side ∈ {from,to} (ruling R3, defense-in-depth):
+    validate_join_plan ловит дефект сборки плана до ретраев."""
+
+    def test_broken_one_side_is_issue(self) -> None:
+        edge = JoinPlanEdge(
+            rel_id="e_orders_items",
+            from_table="orders",
+            to_table="order_items",
+            from_columns=("order_id",),
+            to_columns=("order_id",),
+            join_type="inner",
+            fanout_guard=True,
+            fanout_one_side="",  # guard без стороны «1»
+        )
+        issues = validate_join_plan(
+            JoinPlan(tables=["orders", "order_items"], edges=[edge], graph_version=1),
+            permissions=PERMISSIONS_ALL,
+            active_rel_ids=frozenset({"e_orders_items"}),
+        )
+        assert any("fanout_one_side" in issue and "e_orders_items" in issue for issue in issues)
+
+    def test_one_side_outside_edge_is_issue(self) -> None:
+        edge = JoinPlanEdge(
+            rel_id="e_orders_items",
+            from_table="orders",
+            to_table="order_items",
+            from_columns=("order_id",),
+            to_columns=("order_id",),
+            join_type="inner",
+            fanout_guard=True,
+            fanout_one_side="customers",  # не таблица ребра
+        )
+        issues = validate_join_plan(
+            JoinPlan(tables=["orders", "order_items"], edges=[edge], graph_version=1),
+            permissions=PERMISSIONS_ALL,
+            active_rel_ids=frozenset({"e_orders_items"}),
+        )
+        assert any("не указывает на таблицу ребра" in issue for issue in issues)
+
+    def test_correct_one_side_passes(self) -> None:
+        edge = JoinPlanEdge(
+            rel_id="e_orders_items",
+            from_table="orders",
+            to_table="order_items",
+            from_columns=("order_id",),
+            to_columns=("order_id",),
+            join_type="inner",
+            fanout_guard=True,
+            fanout_one_side="orders",
+        )
+        assert (
+            validate_join_plan(
+                JoinPlan(tables=["orders", "order_items"], edges=[edge], graph_version=1),
+                permissions=PERMISSIONS_ALL,
+                active_rel_ids=frozenset({"e_orders_items"}),
+            )
+            == []
+        )
+
+
+class TestRankingPayloadFanout:
+    """Rule 6 плана S32: fanout_guard в payload ранжирования рядом с cardinality
+    (планёр видит цену агрегации поверх пути; код-предранжирование не растёт)."""
+
+    def test_payload_carries_fanout_guard(self) -> None:
+        path = JoinPath(
+            edges=[
+                JoinEdge(
+                    rel_id="e_orders_items", from_table="orders", to_table="order_items", weight=0.9
+                )
+            ],
+            total_weight=0.9,
+        )
+        payload = PlanJoinsService._ranking_payload([path], _REGISTRY_SEM)
+        edge_payload = payload[0]["edges"][0]
+        assert edge_payload["fanout_guard"] is True
+        assert edge_payload["cardinality"] == "1:n"

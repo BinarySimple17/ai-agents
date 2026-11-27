@@ -1,6 +1,6 @@
 # S32 — fan-out guard: валидатор не пускает двойной счёт (feat-023)
 
-Этап: Веха V4 (ДЗ-05) · долг аудита, окно 01–07.12.2026 | Владелец: агент | Зависимости: S31 | Оценка: 1 | Статус: [ ] не начата
+Этап: Веха V4 (ДЗ-05) · долг аудита, окно 01–07.12.2026 | Владелец: агент | Зависимости: S31 | Оценка: 1 | Статус: ◐ в работе
 Фичи: feat-023 — Fan-out guard: защита от двойного счёта (validate_sql); их dependencies уже в passing
 Роль по фиче: закрывает feat-023 — финальная сессия, через make verify-feature
 
@@ -49,11 +49,11 @@ fan-out, БЕЗ eval-сета агрегатов (BL-025).
 
 ## Предусловия
 
-- [ ] S31 закрыта (общие файлы валидатора — порядок исполнения): `grep -n "| S31 |" solution/sessions.md` → ✅
-- [ ] `make check` зелёный (baseline репозитория)
-- [ ] feat-011 и feat-007 в state=passing; feat-023 переведена в `active` на старте
-- [ ] Инфра поднята и актуальна: `make infra-up && make infra-migrate && make sync-graph && make index-knowledge`
-- [ ] Сессия СТАРТУЕТ: статус в шапке переведён в «◐ в работе» и ARCH-GATE резолвлен ДО кода (canon-check architect ✅ либо обоснованный N/A) — старт-гейт (`guard-subagents.sh --phase start`, D-027) проверяет только стартованные (◐) сессии; «[ ] не начата» — план, гейт её скипает
+- [x] S31 закрыта (общие файлы валидатора — порядок исполнения): `grep -n "| S31 |" solution/sessions.md` → ✅ (строка :72, «✅ 2026-11-25», файл в archive/)
+- [x] `make check` зелёный (baseline репозитория) — EXIT=0 до переворота шапки (гейт скипал запланированную сессию)
+- [x] feat-011 и feat-007 в state=passing; feat-023 переведена в `active` на старте (первое действие сессии, правило 7)
+- [x] Инфра поднята и актуальна: `make infra-up && make infra-migrate && make sync-graph && make index-knowledge` → exit 0
+- [x] Сессия СТАРТУЕТ: статус в шапке переведён в «◐ в работе» и ARCH-GATE резолвлен ДО кода (canon-check architect ✅ либо обоснованный N/A) — старт-гейт (`guard-subagents.sh --phase start`, D-027) проверяет только стартованные (◐) сессии; «[ ] не начата» — план, гейт её скипает
 
 ## Задачи
 
@@ -142,7 +142,7 @@ uv run --env-file .env python -m apps.cli "<вопрос>" --fsm --token dev-ana
 
 ## Гейты субагентов (заполняется по факту, до закрытия сессии)
 
-- ARCH-GATE: [✅ <verdict: compliant | violations | needs-decision> + <план/файл> | N/A — <причина>]
+- ARCH-GATE: ✅ compliant (canon-check architect до кода, 2026-11-27; план/файл: S32_session.md + src/domain/sql_validation.py, join_plan.py, services/validate_sql_service.py, plan_joins_service.py). Вердикт: слой — ровно ruling R4 S11/S42 (детекция services → IR SqlAudit.aggregates/group_columns → политика domain._check_fanout; guard через JoinPlan, уже в сигнатуре validate_sql). Rulings: **R1** — разделение слоёв compliant, прецедент has_into. **R2** — правило v1 уточнено до строгого v1′ (предложено исполнителем, подтверждено архитектором): правило 3 плана в буквальной записи пропускает двойной счёт — SUM(orders.total) остаётся ×N_i даже с GROUP BY по ключу стороны «1» (в группе N_i копий total; ключ коллапсирует группу, не убирает копии); принято: SUM и COUNT-без-distinct над колонкой стороны «1» guard-ребра → отклоняются ВСЕГДА; AVG стороны «1» → отклоняется только без ключа джойна стороны «1» (все колонки составного ключа) в GROUP BY; MIN/MAX/COUNT(DISTINCT)/агрегаты стороны «n»/агрегат в подзапросе/план без guard — проходят; COUNT(*) вне правила (ловушка 3); подсказки детерминированные, только выразимое (подзапрос-предагрегация; для зерна «на заказ» — колонка без агрегации); требование к Task 1: оконные (SUM OVER) и HAVING-агрегаты входят в IR, колонки под агрегатом рекурсивно (CASE — few-shot :30), корпус с SUM OVER/HAVING/CASE/DISTINCT. **R3** — кодирование: JoinPlanEdge аддитивно +{fanout_guard: bool = False, fanout_one_side: str = ""} (bare-имя стороны «1», непусто при guard=True); _build_plan выводит из cardinality ('1:n'→left, 'n:1'→right, 'n:m'/'1:1'+guard → ValueError fail-closed, прецедент BL-050(c)); инвариант guard→one_side ∈ {from,to} — в validate_join_plan (план-время, defense-in-depth по аналогии skeleton_hash); Skeleton не трогается (guard не рендерится в SQL, носитель один — «/Skeleton» из правила 5 вычеркнуто); чекпойнты: bool+str — базовые типы msgpack, allowlist S27 не расширяется, дефолты валидируют старые чекпойнты. **R4** — group_columns = tuple[SqlColumn, ...] с резолюцией как у columns; позиционные/выражения GROUP BY не собираются → консервативный reject (выразимый фикс — «группируй по ключу явно», ловушка 1); мэтчинг ключа для AVG: имя == ключевой колонке И one_side ∈ кандидаты; lenient-мэтч не открывает обход (SUM безусловен, неоднозначность уронит PG). **R5** — исход hallucination (ошибка содержания SQL, не прав — ADR-005 §4, прецедент _check_skeleton «не вне прав, а выдумка»); ранжирование — аддитивный ключ «fanout_guard» рядом с cardinality, предранжирование кодом не появляется; residual v1 (агрегаты в подзапросах проверяются только на корневом скоупе-потребителе, guard=false-рёбра — ответственность владельца, позиционные/выражения GROUP BY) — пин в RISKS + pin-тесты. Findings: [warning] правило 3 плана несостоятельно буквально — закрыт R2; [warning] сид-ребро e_campaigns_orders cardinality 'n:1' при left=campaigns против конвенции left-is-«1» остальных рёбер (вне blast-radius: guard=false) → BL в backlog + конвенция вывода one_side в правке ADR-006 §4.6 (Task 4); [note] exp.Window в whitelist — SUM(...) OVER () обязан попадать в IR (R2-требование к Task 1, adversarial-кейс); [note] правка ADR-006 §4.6 согласует канон с выразимым (подзапрос/GROUP BY), не повторяет «CTE» (невыразимо в корне — скелет). Находки закрыты/решены rulings ДО кода — D-027 удовлетворён.
 - REVIEW-GATE: [✅ <Ready to merge? вердикт> + <BASE7>..<HEAD7> | N/A — <причина>]
 
 ## Отчёт по сессии (заполняется по факту)

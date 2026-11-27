@@ -78,9 +78,25 @@ ALLOWED_FUNCTIONS: frozenset[str] = frozenset(
 PUBLIC_SCHEMA = "public"
 
 # Служебные таблицы агента (agent_permissions, agent_query_trace, …) — сборка
-# префиксом: infraструктура существует, но вне мира аналитики (ADR-005 рубеж 3) —
+# префиксом: инфраструктура существует, но вне мира аналитики (ADR-005 рубеж 3) —
 # deny, degrade без retry (не «не существует»: она существует, просто не для SQL)
 AGENT_TABLE_PREFIX = "agent_"
+
+# Fan-out guard (feat-023, ruling R2 ARCH-GATE S32) — чувствительность агрегата
+# над колонкой стороны «1» ребра плана с fanout_guard=true. Математика двойного
+# счёта: orders JOIN order_items (1:n) размножает строку заказа N_i раз, и ключ
+# в GROUP BY группу до зерна заказа коллапсирует, но N_i копий total в группе
+# НЕ убирает — SUM = N_i×total всегда. Отсюда строгий v1′:
+#   SUM, COUNT без DISTINCT — отклоняются ВСЕГДА (ключ GROUP BY не спасает;
+#   SUM(DISTINCT …) — тоже: ruling R2 предписывает «SUM всегда», консервативно);
+#   AVG — математически корректен при GROUP BY по ключу стороны «1» (среднее
+#   N одинаковых = само значение), без ключа взвешен кратностью позиций —
+#   отклоняется только при отсутствии ВСЕХ колонок составного ключа;
+#   COUNT(DISTINCT …), MIN/MAX, агрегаты стороны «n», агрегат в подзапросе,
+#   план без guard-рёбер — проходят; COUNT(*) — вне правила (нет колонки
+#   стороны «1» под агрегатом, ловушка 3 плана).
+_FANOUT_REJECTED_ALWAYS = frozenset({"sum", "count"})
+_FANOUT_CONDITIONAL = "avg"
 
 
 class ValidationOutcome(StrEnum):
@@ -139,6 +155,25 @@ class SqlJoin(BaseModel):
     on_pairs: tuple[tuple[str, str], ...] = ()
 
 
+class SqlAggregate(BaseModel):
+    """Агрегат корневого скоупа в IR (feat-023, S32): функция + колонки аргумента.
+
+    ``columns`` — колонки аргумента агрегата с кандидатами-источниками (та же
+    резолюция, что у ``columns``; рекурсивно сквозь выражения — CASE/fen —
+    ruling R2 ARCH-GATE S32; скоупы подзапросов не входят — «агрегат целиком
+    внутри подзапроса» остаётся заботой своего скоупа и политикой fan-out не
+    проверяется). ``distinct`` — аргумент дистинктен (COUNT(DISTINCT …)/
+    SUM(DISTINCT …)). Пустой ``columns`` = агрегат без колонки (COUNT(*),
+    ловушка 3 плана S32 — вне правила fan-out).
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    func: str = Field(min_length=1)
+    columns: tuple[SqlColumn, ...] = ()
+    distinct: bool = False
+
+
 class SqlAudit(BaseModel):
     """Нейтральный IR запроса (ruling R4 ARCH-GATE): построен services из sqlglot.
 
@@ -163,6 +198,13 @@ class SqlAudit(BaseModel):
     # BL-055: признак SELECT … INTO (детекция — services: arg «into» корня или
     # узел exp.Into в любом скоупе); решение принимает domain (_check_into)
     has_into: bool = False
+    # feat-023 (S32, ruling R2 ARCH-GATE): агрегаты корневого скоупа — проекция/
+    # HAVING/ORDER BY, включая оконные формы (SUM(…) OVER — узел агрегата под
+    # exp.Window); и колонки GROUP BY корневого скоупа (только голые колонки —
+    # позиционные/выражения не собираются, R4). Носитель политики fan-out guard
+    # (_check_fanout); извлечение — services (ruling R4, прецедент has_into)
+    aggregates: tuple[SqlAggregate, ...] = ()
+    group_columns: tuple[SqlColumn, ...] = ()
 
 
 class ValidationVerdict(BaseModel):
@@ -204,6 +246,10 @@ def validate_sql(
     BL-055 (S42): deny SELECT … INTO — запись/DDL-класс (Postgres переписывает
     в CREATE TABLE AS), сигнал безопасности (denied, degrade без retry);
     детекция — services (``has_into``), решение — здесь.
+    feat-023 (S32): fan-out guard — двойной счёт при агрегации поверх рёбра
+    плана с fanout_guard=true (инвариант ADR-006 §4.6/ADR-004, prd §6 «0
+    случаев»); детекция — services (``aggregates``/``group_columns``), решение
+    — здесь (``_check_fanout``), исход — hallucination (retry оправдан).
     """
     if row_limit <= 0:
         raise ValueError(f"row_limit должен быть положительным, получен {row_limit}")
@@ -216,6 +262,7 @@ def validate_sql(
     _check_columns(audit, permissions, data_catalog, issues_denied, issues_hallucination)
     _check_stars(audit, permissions, issues_denied)
     _check_skeleton(audit, skeleton, join_plan, skeleton_hash, issues_hallucination)
+    _check_fanout(audit, join_plan, issues_hallucination)
     enforced = _enforced_limit(audit.outer_limit, row_limit)
     return ValidationVerdict(
         outcome=_merge_outcome(issues_denied, issues_hallucination),
@@ -493,6 +540,145 @@ def _expected_joins(plan: JoinPlan) -> tuple[SqlJoin, ...]:
         SqlJoin(join_type=edge.join_type, table=edge.to_table, on_pairs=edge_pairs(edge))
         for edge in plan.edges
     )
+
+
+def _check_fanout(
+    audit: SqlAudit,
+    join_plan: JoinPlan,
+    issues: list[str],
+) -> None:
+    """Fan-out guard (feat-023, ruling R2 ARCH-GATE S32): агрегация поверх
+    ребра плана с fanout_guard=true без предагрегации — двойной счёт, самый
+    частый класс тихих ошибок Text-to-SQL (ADR-006 §4.6, ADR-004, prd §6
+    «0 случаев»). Инвариант принят каноном без реализации (аудит 2026-11-23,
+    E3a: fanout_guard читался адаптером, но ни один узел его не использовал).
+
+    Исход — hallucination, НЕ denied: ошибка содержания SQL (выдумка модели
+    поверх корректных прав), прецедент ``_check_skeleton`` — «не вне прав,
+    а выдумка»; retry оправдан, подсказка детерминированная и ТОЛЬКО
+    выразимая (корень фиксирован скелетом — «предагрегация в CTE» модели
+    недоступна, ловушка 1 плана): подзапрос-предагрегация в проекции или
+    GROUP BY по ключу (для AVG). Классификация чувствительности —
+    ``_fanout_sensitivity``; мэтчинг ключа GROUP BY — ``_group_key_present``
+    (ruling R4: имя == ключевой колонке И one_side ∈ кандидаты).
+
+    Нарушенный инвариант ребра (fanout_one_side вне {from_table, to_table})
+    невозможен для планов кода (``validate_join_plan`` проверяет на
+    плане-времени), но чекпойнт-дрейф fail-closed: чувствительность
+    невычислима — reject при любом чувствительном агрегате корня.
+    """
+    seen: set[str] = set()
+    for edge in join_plan.edges:
+        if not edge.fanout_guard:
+            continue
+        key_columns = _fanout_edge_key(edge)
+        if key_columns is None:
+            # Битый инвариант ребра: сторона «1» не резолвится — матчить
+            # агрегаты по fanout_one_side нельзя (молчаливый проход был бы
+            # потерей проверки). Fail-closed: ЛЮБОЙ чувствительный агрегат
+            # корня → reject (нечувствительные агрегаты не трогаются).
+            for aggregate in audit.aggregates:
+                if _fanout_sensitivity(aggregate) is None:
+                    continue
+                column = aggregate.columns[0].name if aggregate.columns else "*"
+                message = (
+                    f"агрегат {aggregate.func}({column}) при ребре "
+                    f"{edge.rel_id} с fanout_guard: fanout_one_side не указывает на "
+                    "таблицу ребра — план дефектен, чувствительность невычислима"
+                )
+                if message not in seen:
+                    seen.add(message)
+                    issues.append(message)
+            continue
+        for aggregate in audit.aggregates:
+            one_side_column = next(
+                (
+                    column
+                    for column in aggregate.columns
+                    if any(
+                        c.kind == "table" and c.name == edge.fanout_one_side
+                        for c in column.candidates
+                    )
+                ),
+                None,
+            )
+            if one_side_column is None:
+                continue
+            sensitivity = _fanout_sensitivity(aggregate)
+            if sensitivity is None:
+                continue
+            if sensitivity == "avg" and _group_key_present(
+                audit.group_columns, edge.fanout_one_side, key_columns
+            ):
+                continue  # AVG с GROUP BY по ключу стороны «1» — корректен (R2)
+            if sensitivity == "avg":
+                message = (
+                    f"агрегат avg({one_side_column.name}) над {edge.fanout_one_side} — "
+                    f"стороной «1» fan-out ребра {edge.rel_id} — взвешен кратностью "
+                    "строк другой стороны: сгруппируй по ключу джойна "
+                    f"{edge.fanout_one_side}.{key_columns[0]} или посчитай агрегат "
+                    "в подзапросе до джойна (предагрегация)"
+                )
+            else:
+                message = (
+                    f"агрегат {aggregate.func}({one_side_column.name}) над "
+                    f"{edge.fanout_one_side} — стороной «1» fan-out ребра "
+                    f"{edge.rel_id} — размножает строки джойна (×N строк другой "
+                    "стороны, GROUP BY по ключу не спасает): посчитай агрегат "
+                    "в подзапросе до джойна (предагрегация) или верни колонку "
+                    "без агрегации"
+                )
+            if message not in seen:
+                seen.add(message)
+                issues.append(message)
+
+
+def _fanout_edge_key(edge: JoinPlanEdge) -> tuple[str, ...] | None:
+    """Ключ джойна стороны «1» (fanout_one_side); None — инвариант R3 нарушен.
+
+    Ключи следуют своей таблице (ruling Q2 S09): from_columns принадлежат
+    from_table, to_columns — to_table; сторона «1» — одна из таблиц ребра.
+    """
+    if edge.fanout_one_side == edge.from_table:
+        return edge.from_columns
+    if edge.fanout_one_side == edge.to_table:
+        return edge.to_columns
+    return None
+
+
+def _fanout_sensitivity(aggregate: SqlAggregate) -> str | None:
+    """Чувствительность агрегата над стороной «1» (ruling R2, строгий v1′):
+    'always' (SUM; COUNT без DISTINCT) | 'avg' (ключ в GROUP BY спасает) |
+    None (MIN/MAX/COUNT(DISTINCT)/без колонок). COUNT(*) — колонок нет —
+    None (ловушка 3: без колонки стороны «1» под агрегатом кратность строк
+    не переносится на агрегат)."""
+    if aggregate.func == _FANOUT_CONDITIONAL:
+        return "avg"
+    if aggregate.func in _FANOUT_REJECTED_ALWAYS and not (
+        aggregate.func == "count" and aggregate.distinct
+    ):
+        return "always"
+    return None
+
+
+def _group_key_present(
+    group_columns: tuple[SqlColumn, ...], one_side: str, key_columns: tuple[str, ...]
+) -> bool:
+    """Все колонки составного ключа стороны «1» присутствуют в GROUP BY
+    (ruling R4): имя == ключевой колонке И one_side ∈ кандидаты-таблицы.
+    Unqualified-ссылка с обоими источниками в кандидатах матчится lenient —
+    обход не открывает: неоднозначность уронит PostgreSQL, а 'always'-класс
+    от мэтчинга не зависит. Позиционные/выражения GROUP BY не собираются
+    (ruling R4) — ключ «не найден» → консервативный reject (retry с
+    подсказкой «группируй по ключу явно» — выразимый фикс)."""
+    for key in key_columns:
+        if not any(
+            column.name == key
+            and any(c.kind == "table" and c.name == one_side for c in column.candidates)
+            for column in group_columns
+        ):
+            return False
+    return True
 
 
 def _enforced_limit(original: int | None, row_limit: int) -> int:
