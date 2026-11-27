@@ -427,15 +427,16 @@ class TestNestedTraversal:
 
 
 class TestNestedBodyResidualPins:
-    """BL-051(a) п.2 — pin-тесты residual вложенных тел (S39, коммит удаления).
+    """BL-051(a) п.3 — регрессионные тесты правила «таблицы ⊆ план» (S39).
 
-    Вложенные тела (CTE/подзапросы/LATERAL) FSM-валидатор проверяет только по
-    ACL: таблица вне плана и «выдуманное» условие связи во вложенном теле
-    проходят, если таблица в правах и каталоге. Решение владельца (a):
-    residual принят, формулировка инварианта смягчается (волна ревизий BL-048);
-    усиление «таблицы ⊆ план» — отдельным коммитом после removal — перевернёт
-    оба пина осознанно. Права включают bonuses/campaigns (в дефолтных
-    фикстурах bonuses вне прав — DENIED замаскировал бы residual).
+    До правила — pin-тесты residual (коммит удаления 1533749: оба кейса
+    ожидали OK с пометкой «known residual, BL-051»); правило «таблицы ⊆ план»
+    в `_check_skeleton` переворачивает их осознанно по решению владельца (a)
+    (BL-051, отдельный коммит после removal). Права включают bonuses/campaigns
+    (в дефолтных фикстурах bonuses вне прав — DENIED замаскировал бы суть:
+    отказ именно за таблицу вне плана, не за ACL). Residual после правила —
+    условия связи между таблицами самого плана во вложенных телах (revisit —
+    вариант (b) BL-051 при первом кейсе злоупотребления формой).
     """
 
     _RESIDUAL_PERMS = {
@@ -445,27 +446,30 @@ class TestNestedBodyResidualPins:
         "campaigns": ["campaign_id", "name", "channel"],
     }
 
-    def test_nested_body_table_outside_plan_passes_acl(self):
-        # EXISTS с таблицей вне плана (bonuses) и выдуманным условием связи
-        # (bonuses↔orders ребра реестра не имеет) — ACL-чист, FSM ok (residual)
+    def test_nested_body_table_outside_plan_hallucination(self):
+        # EXISTS с таблицей вне плана (bonuses) и выдуманным условием связи —
+        # таблица в правах, ACL-чист; отказ именно за «таблицы ⊆ план» (ретрай
+        # оправдан: модель уберёт таблицу или план перестроится)
         result = _validate(
             "SELECT o.id FROM orders o INNER JOIN customers c ON o.customer_id = c.id "
             "WHERE EXISTS (SELECT 1 FROM bonuses b WHERE b.employee_id = o.customer_id) "
             "LIMIT 10",
             permissions=self._RESIDUAL_PERMS,
         )
-        assert result.verdict.outcome is ValidationOutcome.OK
+        assert result.verdict.outcome is ValidationOutcome.HALLUCINATION
+        assert any("вне плана" in issue for issue in result.verdict.issues)
 
-    def test_nested_body_join_without_edge_passes_acl(self):
-        # вложенный JOIN без ребра (bonuses↔campaigns) — тела проверены ACL,
-        # корень скелета цел — FSM ok (residual)
+    def test_nested_body_join_without_edge_hallucination(self):
+        # вложенный JOIN без ребра (bonuses↔campaigns) — обе таблицы в правах,
+        # корень скелета цел; отказ за таблицы вне плана (BL-051(a))
         result = _validate(
             "SELECT o.id FROM orders o INNER JOIN customers c ON o.customer_id = c.id "
             "WHERE o.id IN (SELECT b.employee_id FROM bonuses b "
             "JOIN campaigns ca ON b.employee_id = ca.campaign_id) LIMIT 10",
             permissions=self._RESIDUAL_PERMS,
         )
-        assert result.verdict.outcome is ValidationOutcome.OK
+        assert result.verdict.outcome is ValidationOutcome.HALLUCINATION
+        assert any("вне плана" in issue for issue in result.verdict.issues)
 
 
 # --- Task 2: ACL — схемы, таблицы, колонки, '*' (ruling R2, BL-014) ---

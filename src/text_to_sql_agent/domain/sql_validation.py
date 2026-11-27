@@ -428,6 +428,22 @@ def _check_skeleton(
             "структура джойнов не соответствует плану (тип/таблица/пары ON/порядок) — "
             "скелет рендерит рёбра JoinPlan, модель их не пишет"
         )
+    # BL-051(a) (решение владельца 2026-11-26, D-041): «все таблицы запроса ⊆
+    # план». Вложенные тела (CTE, подзапросы FROM/WHERE, LATERAL) проверены
+    # ACL'ом, но таблица вне плана во вложенном теле — та же выдумка, что и
+    # лишний JOIN: модель читает данные, которых план не касается. audit.tables
+    # собирает все relation-ссылки, включая тела CTE (ссылки на CTE-имена — не
+    # таблицы, _collect_tables их отсекает); квалификация схемой срезается —
+    # план несёт bare-имена. Residual после правила — условия связи между
+    # таблицами самого плана во вложенных телах (pin «known residual» снят;
+    # revisit — вариант (b) BL-051 при первом кейсе злоупотребления формой).
+    plan_tables = {table.split(".", 1)[-1] for table in join_plan.tables}
+    for table in audit.tables:
+        if table.split(".", 1)[-1] not in plan_tables:
+            issues.append(
+                f"таблица {table} вне плана — вложенные тела (CTE/подзапросы/"
+                "LATERAL) читают только таблицы плана (BL-051a «таблицы ⊆ план»)"
+            )
     conjuncts = set(audit.where_conjuncts)
     for predicate in skeleton.mandatory_predicates:
         if normalize_sql_fragment(predicate) not in conjuncts:
