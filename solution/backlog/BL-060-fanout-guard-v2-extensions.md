@@ -14,10 +14,12 @@
    `SELECT o.order_id, (SELECT SUM(o2.total) FROM orders o2 INNER JOIN order_items oi2 ON o2.order_id = oi2.order_id) FROM orders o INNER JOIN order_items oi …` —
    проходит с результатом N_i×total (pin-тест «known residual» в test_fanout_guard.py).
    Fix v2: рекурсивный обход скоупов с проверкой fan-out пары на каждом (аналог BL-051(b)).
-2. **DISTINCT-формы** (M-7): SUM/AVG DISTINCT над стороной «1» отклоняются
-   консервативно (ruling R2 санкционировал «SUM всегда» без DISTINCT-карвы-аута;
-   AVG(DISTINCT) не покрыт ruling'ом вовсе), хотя кратность ими снимается — ложные
-   срабатывания. Fix v2: distinct-карвы-ауты с обоснованием в ruling-правке.
+2. **DISTINCT-формы** (M-7): SUM(DISTINCT) над стороной «1» отклоняется всегда
+   (ruling R2 санкционировал «SUM всегда» без DISTINCT-карвы-аута) — ложное
+   срабатывание (кратность снимается); AVG(DISTINCT) ведёт себя как AVG
+   (без ключа — reject, с ключом — проходит; ревью-2 проверено прогоном —
+   DISTINCT на классификацию AVG не влияет). Fix v2: distinct-карвы-ауты
+   с обоснованием в ruling-правке.
 3. **Мэтчер ключа** (M-8): `GROUP BY oi.order_id` (ключ стороны «n», то же зерно) —
    ложный reject: мэтчер требует one_side ∈ кандидаты (R4-строгость). Fix v2: мэтчинг
    равенством ключей (колонка ключа стороны «n» ↔ one_side-колонка того же ребра).

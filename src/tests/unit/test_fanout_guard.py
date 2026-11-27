@@ -408,3 +408,27 @@ class TestReviewFixWaves:
         hints = _hint_issues(result)
         assert len(hints) == 1
         assert "план дефектен" not in hints[0]
+
+
+class TestReviewFixWave2:
+    """Регрессии re-review-2 (f248573..HEAD): точность residual-формулировок."""
+
+    def test_avg_distinct_with_key_ok(self):
+        # M(re)-1 pin: AVG(DISTINCT) ведёт себя как AVG — классификацию
+        # определяет функция, DISTINCT не влияет (без ключа — reject,
+        # с ключом — проходит); residual честен: ложное срабатывание
+        # только у SUM(DISTINCT) (always-класс)
+        result = _validate(
+            "SELECT o.order_id, AVG(DISTINCT o.total) FROM orders o "
+            "INNER JOIN order_items oi ON o.order_id = oi.order_id GROUP BY o.order_id"
+        )
+        assert result.verdict.outcome is ValidationOutcome.OK
+
+    def test_sum_distinct_still_rejected(self):
+        # пара пина M(re)-1: SUM(DISTINCT) — always-класс, отклоняется
+        # консервативно при каноне v1′ «SUM всегда» (BL-060 п.2)
+        result = _validate(
+            "SELECT o.order_id, SUM(DISTINCT o.total) FROM orders o "
+            "INNER JOIN order_items oi ON o.order_id = oi.order_id GROUP BY o.order_id"
+        )
+        assert result.verdict.outcome is ValidationOutcome.HALLUCINATION

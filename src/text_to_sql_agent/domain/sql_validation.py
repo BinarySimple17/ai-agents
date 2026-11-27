@@ -650,12 +650,15 @@ def _fanout_edge_key(edge: JoinPlanEdge) -> tuple[str, ...] | None:
     Ключи следуют своей таблице (ruling Q2 S09): from_columns принадлежат
     from_table, to_columns — to_table; сторона «1» — одна из таблиц ребра.
     """
-    # ревью S32 M-6: bare-сравнение (идиома _check_skeleton) — квалификация
-    # схемой не должна терять сторону «1»
+    # ревью S32 M-6/M(re)-2: bare-сравнение ОБЕИХ сторон (идиома
+    # _check_skeleton — нормализуются и plan_tables, и table): асимметрия
+    # «one_side нормализован, from/to — нет» при гипотетической квалификации
+    # таблиц плана уводила бы guard в fail-closed на каждом ребре (глобальный
+    # ложный reject, инвариант validate_join_plan сырым сравнением не ловит)
     one_side = edge.fanout_one_side.split(".", 1)[-1]
-    if one_side == edge.from_table:
+    if one_side == edge.from_table.split(".", 1)[-1]:
         return edge.from_columns
-    if one_side == edge.to_table:
+    if one_side == edge.to_table.split(".", 1)[-1]:
         return edge.to_columns
     return None
 
