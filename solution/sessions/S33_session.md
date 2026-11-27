@@ -131,8 +131,9 @@ plan_joins ≤ 3, generate_sql ≤ 3, interpret ×1, degrade ×1, diagnose-LLM �
 `LINE 1:` и фрагмент SQL, после — нет.
 
 **✅ Самопроверка:** регрессия A7 — живым прогоном Task 6 (`grep -c "does not exist\|LINE 1:"` → 0).
-Юнит-теста `_run_fsm` в наборе нет; `test_agent_flow.py`/`test_tool_loop.py` удалены вместе
-с тул-контуром (BL-048/S39) — сцены контура закрываются живым прогоном Task 6.
+Юнит-теста `_run_fsm` в наборе нет; `test_agent_flow.py`/`test_tool_loop.py` сняты вместе
+с тул-контуром (BL-048/S39) — их сцены ретирены, замены не требуется; Task 6 — живые прогоны
+сцен FSM hw-05.
 
 ### Task 6: Слой 3 — живые прогоны на сценах hw-05
 
