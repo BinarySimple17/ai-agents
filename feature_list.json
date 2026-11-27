@@ -520,7 +520,7 @@
       "name": "Объединённый контур ДЗ-03: retrieval + тул run_sql + стриминг (РЕТИРЕН — BL-048/D-041)",
       "description": "РЕТИРЕН (S39, BL-048/D-041): объединённый контур ДЗ-03 (retrieval + тул run_sql + стриминг, директива владельца S24 вариант B) удалён вместе с тул-контуром — единственный контур FSM (feat-004). Стриминговая механика порта (StreamFinal.tool_calls, canon-check 2026-11-21, прецедент D-021) живёт в LLMProvider; retrieval-утилиты (format_retrieval_block, RETRIEVAL_TOP_K) сохранены для bench_retrieval/test_hybrid_memory. Воспроизведение ДЗ-03 — milestone/v2 (D-041).",
       "behavior": "РЕТИРЕН (S39, BL-048/D-041): дефолтный прогон CLI = FSM (_run_fsm); флаг --plain и merged-flow run_agent_flow/run_tool_loop удалены; токен-рубеж S31 сохранён (verify внутри _run_fsm).",
-      "verification": "— (ретирено: контур удалён BL-048/D-041, S39; воспроизведение — milestone/v2)",
+      "verification": "",
       "dependencies": [
         "feat-003",
         "feat-006",
@@ -536,7 +536,7 @@
         },
         {
           "label": "layer-2-runtime",
-          "cmd": "— (ретирено: контур удалён BL-048/D-041, S39; воспроизведение — milestone/v2)",
+          "cmd": "N/A (не команда — фича ретирена, BL-048/D-041, S39; воспроизведение — milestone/v2)",
           "repair": "Read failing test (LLM/хранилище мокаются, S00 правило 7); fix flow handling and re-run."
         }
       ],

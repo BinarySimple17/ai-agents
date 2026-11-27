@@ -8,8 +8,8 @@ reasoning-дельты не ответ по guard'у finish_reason (e, D-021-а�
 шлюз без usage → usage_missing=true, стоимость 0 не маскируется (f, finding
 ARCH-GATE S19); тул-дельты склеиваются в StreamFinal.tool_calls (g, S25); бюджет/
 breaker — те же guard'ы, что у complete() (правило 4 плана: стрим — не обход
-экономики ADR-007). Флоу-семантика (printer, `_stream_outcome`, D-022) — в
-этот файл (прежде test_agent_flow.py — удалён вместе с тул-контуром, BL-048/D-041, S39).
+экономики ADR-007). Флоу-семантика printer/`_stream_outcome` ретирена вместе с тул-контуром
+(BL-048/D-041, S39); стриминговые тесты этого файла — только llm.* адаптера.
 
 Помощники мок-шлюза (_settings/_provider/_http_error) — переиспользование
 двойников test_llm_client (тот же компонент), без дубля.
