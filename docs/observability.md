@@ -133,15 +133,7 @@ best-effort — сбой приёмника не рвёт запрос). Сбо�
 
 | Событие | Payload | Этап |
 |---|---|---|
-| `agent.start` | question, trace_id, mode (agent / tool_loop) | вопрос принят |
-| `agent.retrieve` | docs, source_refs | объединённый контур ДЗ-03 (feat-020): контекст знаний собран (после фильтра прав); недоступность retrieval — не здесь, а `agent.degrade` («контур продолжит без контекста») |
-| `agent.round` | call | вызов модели (порядковый номер) |
-| `agent.tool_call` | name, sql | модель позвала тул |
-| `agent.observation` | ok; columns, rows_preview (≤5 строк), row_count, truncated — либо error_class, error | результат тулa / отказ |
-| `agent.empty_retry` | left | пустой/битый ответ — повтор |
-| `agent.cap_exhausted` | rounds | кап ходов — финальный вызов без тулов |
-| `agent.degrade` | reason | деградация исхода (S00 правило 8) или контекста — для retrieval non-terminal (прогон продолжается без блока знаний) |
-| `agent.answer` | source: text / final_no_tools / agent_stream | финальный ответ |
+| `agent.*` — РЕТИРЕНЫ | — | BL-048/D-041 (S39): события тул-контура CLI (`start`/`retrieve`/`round`/`tool_call`/`observation`/`empty_retry`/`cap_exhausted`/`degrade`/`answer`, mode agent/tool_loop) удалены вместе с контуром; константы EVENT_AGENT_* — история порта Tracer, эмиттеров нет. FSM-сцена — `graph.node` + узловые вердикты ниже |
 | `graph.node` | node | FSM (S04/feat-004): содержательный узел вошёл — трейс-спан узла (ADR-002 §2), порядок сцены читается из trace 1:1; константа — порт Tracer (EVENT_GRAPH_NODE) |
 | `resolve.rights_unavailable` | user_id, detail | FSM (S05/feat-005): сбой чтения прав в resolve_access — деталь сбоя (psycopg) оператору в JSONL, не пользователю; отказ в state — фиксированный текст (S9, ревью I1); константа — порт Tracer (EVENT_RESOLVE_RIGHTS_UNAVAILABLE) |
 | `clarify.verdict` | user_id, outcome, assumptions | FSM (S08/feat-008): вердикт классификатора однозначности (unambiguous/clarify/fail) + число допущений — сцена «как вопрос был классифицирован»; константа — порт Tracer (EVENT_CLARIFY_VERDICT) |
@@ -153,8 +145,8 @@ best-effort — сбой приёмника не рвёт запрос). Сбо�
 | `skeleton.unavailable` | detail | FSM (S10/feat-010): дефект каркаса на узле чистого кода build_skeleton (план не дошёл/не валиден) — fail-closed в degrade, деталь оператору в JSONL (S9: пользовательский текст фиксированный); константа — порт Tracer (EVENT_SKELETON_UNAVAILABLE) |
 | `generate_sql.verdict` | user_id, outcome, llm_calls, escalated, tables | FSM (S10/feat-010): вердикт генератора (sql/fail) + расход вызовов M1 и факт эскалации mid→strong — payload факты, БЕЗ SQL-текста (D-022-аналог); константа — порт Tracer (EVENT_GENERATE_SQL_VERDICT) |
 | `generate_sql.unavailable` | user_id, detail | FSM (S10/feat-010): сбой генератора (M1 исчерпан/шлюз/retrieval) — деталь оператору в JSONL, не пользователю (S9); отказ в state — фиксированный текст, ребро generate_sql → degrade (ruling R2); константа — порт Tracer (EVENT_GENERATE_SQL_UNAVAILABLE) |
-| `validate_sql.verdict` | contour, user_id, outcome, issues_count, enforced_limit[, issues] | Единый рубеж безопасности, ОБОИХ контуров (S31/D-033 п.5): `contour=fsm` — FSM (S11/feat-011: issues_count — СЧЁТ нарушений, тексты — в state.validation для ретрая M1/diagnose, БЕЗ SQL-текста — D-022-аналог); `contour=tool_loop` — тул-контур CLI (S31/R3 — те же имена событий, новое ПОЛЕ контура: issues-тексты в JSONL для оператора — R2/S9, в Observation denied не попадают); denied → degrade без retry / стоп тула, hallucination → diagnose_error / retry тула; константа — порт Tracer (EVENT_VALIDATE_SQL_VERDICT) |
-| `validate_sql.unavailable` | contour, class, detail | Единый рубеж, ОБОИХ контуров (S31): `contour=fsm` — FSM (S11/feat-011: fail-closed дефект каркаса/стыка — identity/sql/скелет/план/хэш, каталог недоступен, контракт прав BL-014); `contour=tool_loop` — тул-контур (rights_unavailable/graph_unavailable/identity_unknown/permissions_contract — ToolGateError, стоп); деталь оператору в JSONL, не пользователю/модели (S9); константа — порт Tracer (EVENT_VALIDATE_SQL_UNAVAILABLE) |
+| `validate_sql.verdict` | user_id, outcome, issues_count, enforced_limit[, issues] | Единый рубеж безопасности, ребро FSM (S11/feat-011; v1.6, BL-048/D-041: поле `contour` снято — его эмитил только тул-контур, «ОБОИХ контуров» S31 — история): issues_count — СЧЁТ нарушений, тексты — в state.validation для ретрая M1/diagnose, БЕЗ SQL-текста — D-022-аналог; denied → degrade без retry, hallucination → diagnose_error; константа — порт Tracer (EVENT_VALIDATE_SQL_VERDICT) |
+| `validate_sql.unavailable` | class, detail | Единый рубеж, ребро FSM (S11/feat-011: fail-closed дефект каркаса/стыка — identity/sql/скелет/план/хэш, каталог недоступен, контракт прав BL-014; v1.6, BL-048/D-041: contour/tool-классы сняты с контуром); деталь оператору в JSONL, не пользователю/модели (S9); константа — порт Tracer (EVENT_VALIDATE_SQL_UNAVAILABLE) |
 | `diagnose.verdict` | user_id, error_class, retry_futile, llm_calls | FSM (S14/feat-014): вердикт разбора ошибки/пустого результата (qwen/cheap; futile-классы — код БЕЗ LLM: права/RLS → degrade без ретрая — ADR-005); подсказка регенерации — в state.diagnosis (retry-контекст generate_sql, D-016), БЕЗ SQL-текста (D-022-аналог); константа — порт Tracer (EVENT_DIAGNOSE_VERDICT) |
 | `diagnose.unavailable` | user_id или class, detail | FSM (S14/feat-014): разбор не удался (шлюз недоступен/невалидные выходы M1 исчерпаны) или дефект каркаса (identity/error отсутствуют — fail-closed) — ретрай не назначается, деградация — валидный исход (S00-8); деталь оператору в JSONL, не пользователю (S9); константа — порт Tracer (EVENT_DIAGNOSE_UNAVAILABLE) |
 | `execute.probe` | user_id, tables, counts, verdict | FSM (S14/feat-014): факт COUNT-пробы при 0 строк (state-agent v1.7 — probe не узел, код визита execute_sql, канал agent_ro с капами S13); verdict: lost_join → diagnose_error, empty → compact_result (валидный пустой ответ); БЕЗ SQL-текста (D-022-аналог); константа — порт Tracer (EVENT_EXECUTE_PROBE) |
@@ -164,11 +156,12 @@ best-effort — сбой приёмника не рвёт запрос). Сбо�
 | `degrade.verdict` | cause, has_variant, used_llm, llm_calls | FSM (S15/feat-015): отказ сформулирован (mid + тул report_refusal, одна попытка — ADR-007 v1.3); cause — rights/no_path/generator/technical (верdict-причина собирает код — R8 ARCH-GATE S15); текст отказа в JSONL НЕ дублируется (он в state.final_answer пользователю); константа — порт Tracer (EVENT_DEGRADE_VERDICT) |
 | `degrade.unavailable` | reason | FSM (S15/feat-015): текст модели отклонён санитайзером S9 (чужая тема/подтверждение существования — runtime-гарантия R1) или шлюз/бюджет недоступны — шаблон-fallback (0–1 вызовов); reason — оператору (S9); константа — порт Tracer (EVENT_DEGRADE_UNAVAILABLE) |
 
-S25 (feat-020): mode `agent` — объединённый контур (retrieval + тул run_sql +
-стрим ходов), `tool_loop` — голый тул-контур ДЗ-02 за флагом `--plain`;
-`agent.answer source=agent_stream` — стриминговый ответ объединённого контура.
-Буферные значения retrieval / retrieval_stream упразднены вместе с флагом
-`--retrieve` (новые значения, не новые имена событий — D-021-аналог).
+v1.6 (BL-048/D-041): события `agent.*` и поле `contour` события `validate_sql.*`
+ретирены вместе с тул-контуром CLI (mode agent/tool_loop, `--plain` — контур
+удалён, имена не переиспользуются — строка-памятка в таблице). FSM-сцена
+читается из `graph.node` + узловых вердиктов (S25 «объединённый контур» —
+история feat-020; буферные значения retrieval / retrieval_stream упразднены
+ранее вместе с флагом `--retrieve` — D-021-аналог).
 
 `llm.complete / retry / timeout / reject / breaker_open / budget_stop` — события
 провайдера (включая `text_from_reasoning` и `finish_reason` — D-021; стрим S19
@@ -252,5 +245,5 @@ cause-сигналы — дашборд/тикет, разбор на вехе. 
 
 ## Трассировка
 
-Ревизии: v1.5 · Связанные ADR: ADR-002, ADR-007, **ADR-010** · Канон: hw-01/README.md §6 ·
+Ревизии: v1.6 (BL-048/D-041: agent.*/contour ретирены с тул-контуром) · Связанные ADR: ADR-002, ADR-007, **ADR-010** · Канон: hw-01/README.md §6 ·
 Хранилище бизнес-трейса: er-data-model.md (`query_trace`) · Аудит S8: er-data-model.md (`agent_audit`) · Пороги: prd.md (NFR-1/2/6/8)

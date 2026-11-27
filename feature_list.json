@@ -77,7 +77,7 @@
       "id": "feat-004",
       "name": "State machine на LangGraph",
       "description": "Каркас графа агента: состав 15 узлов hw-01 §2.1 (resolve_access, clarify, plan_joins, build_skeleton, plan_query, generate_sql, generate_step_sql, validate_sql, check_cost, execute_sql, merge_results, compact_result, diagnose_error, interpret_result, degrade) как заглушки, маршрутизация на коде (T1/T2-ветвления, probe COUNT, ветка декомпозиции), два уровня предохранителей: per-node счётчики ≤ 3 (политика M1) + recursion_limit на весь граф (ADR-002 v1.2), CLI-точка входа",
-      "behavior": "`uv run python -m apps.cli \"вопрос\" --fsm` прогоняет вопрос через FSM (LangGraph: 15 узлов-заглушек hw-01 §2.1, happy-path порядок по state-agent v1.5, T1 выключен до feat-017) и печатает порядок обхода + терминальный исход; LLM не может изменить маршрут (route_flags/retry_count пишет только код — тест-инвариант); попытки ограничены двумя уровнями кода (per-node ≤ 3 по M1 + recursion_limit) и глобальными капами (≤ 8 вызовов / ≤ 90 s / ≤ 2 ₽ → budget_stop); все 9 терминальных исходов FSM достижимы и различимы в payload; дефолтный тул-луп (--plain) не изменился",
+      "behavior": "`uv run python -m apps.cli \"вопрос\" --fsm` прогоняет вопрос через FSM (LangGraph: 15 узлов-заглушек hw-01 §2.1, happy-path порядок по state-agent v1.5, T1 выключен до feat-017) и печатает порядок обхода + терминальный исход; LLM не может изменить маршрут (route_flags/retry_count пишет только код — тест-инвариант); попытки ограничены двумя уровнями кода (per-node ≤ 3 по M1 + recursion_limit) и глобальными капами (≤ 8 вызовов / ≤ 90 s / ≤ 2 ₽ → budget_stop); все 9 терминальных исходов FSM достижимы и различимы в payload; контур исполнения один — FSM (тул-контур удалён — BL-048/D-041, S39)",
       "verification": "uv run pytest src/tests/unit/test_graph.py -q",
       "dependencies": [
         "feat-001",
@@ -270,7 +270,7 @@
       "id": "feat-011",
       "name": "validate_sql (AST + ACL)",
       "description": "Главный рубеж безопасности: sqlglot-парсинг (диалект postgres, только SELECT, одна инструкция, запрет SET/COPY/CALL/DO и функций deny-list, обход CTE/UNION/подзапросов/LATERAL, LIMIT к внешнему запросу), таблицы/колонки ∈ правам (вкл. ACL колонок соединения), deny-list схем (pg_catalog, information_schema, служебные схемы графа, agent_*), скелет не изменён (skeleton_hash, mandatory_predicates на месте), джойны ⊆ edge_id плана. Три исхода: ok / галлюцинация (→ diagnose_error, retry) / чужие данные (→ degrade, без retry)",
-      "behavior": "Запрос с DML/DDL, второй инструкцией, запрещённой схемой/таблицей/колонкой, джойном вне edge_id плана, изменённым скелетом или отсутствующим mandatory_predicates не выполняется; несуществующее → retry-ветка, вне прав → degrade без retry; валидный SELECT с LIMIT к внешнему запросу проходит дальше. (S31: behavior описывает FSM-вход — свободный вход тул-контура имеет собственные acceptance-критерии сессии S31/D-033 п.5: общий ACL без скелета + инвариант реестра join_edges.)",
+      "behavior": "Запрос с DML/DDL, второй инструкцией, запрещённой схемой/таблицей/колонкой, джойном вне edge_id плана, изменённым скелетом или отсутствующим mandatory_predicates не выполняется; несуществующее → retry-ветка, вне прав → degrade без retry; валидный SELECT с LIMIT к внешнему запросу проходит дальше. (S39/BL-048/D-041: свободный вход тул-контура удалён вместе с контуром — behavior = FSM-вход; вложенные тела — ACL + «таблицы ⊆ план», BL-051(a).)",
       "verification": "uv run pytest src/tests/unit/test_validate_sql.py -q",
       "dependencies": [
         "feat-005",
@@ -321,9 +321,9 @@
     },
     {
       "id": "feat-013",
-      "name": "SQLExecutor: тул run_sql + узел execute_sql",
-      "description": "Выполнение под read-only ролью agent_ro: LIMIT 1000, statement_timeout 30s. Ошибка SQL → diagnose_error, пустой результат → probe COUNT (state-agent v1.4). Тул run_sql (function calling, ДЗ-02) доступен сразу после БД; в FSM узел подключается после validate_sql (ДЗ-05). Артефакты ДЗ-02 в объёме фичи (hw-plan §2): JSON-схема тулa (аргументы валидируются кодом), function-calling цикл «вопрос → LLM → run_sql → Observation → ответ» в apps.cli, SOP тулa (когда звать / чего не звать / действие при ошибке).",
-      "behavior": "Тул run_sql исполняет SELECT под read-only ролью agent_ro (LIMIT 1000, timeout 30s) ТОЛЬКО после единого рубежа (S31/D-033 п.5, аудит A1/E1): права по verified-identity (PermissionStore на каждый прогон) → validate_free — общий ACL с FSM + инвариант реестра (пара операндов JOIN = ребро активного снимка join_edges); исполнитель получает переписанный ok-текст (LIMIT/звёзды); отказ — ToolGateError: validate_hallucination (issues модели, ретрай оправдан) / acl_denied (стоп без ретрая, фиксированный текст S9) / rights_unavailable, graph_unavailable (стоп); возвращает ошибку модели как Observation (цикл самокоррекции); в FSM узел маршрутизирует SQL-ошибку в diagnose_error, 0 строк — probe COUNT (state-agent v1.4). Read-only проверен попыткой INSERT (рубеж 5 ADR-005); регрессия Critical «SQL чужой таблицы не доходит до исполнителя» — bite RED на до-фиксовом коде.",
+      "name": "SQLExecutor: узел execute_sql (тул run_sql удалён — BL-048/D-041)",
+      "description": "Выполнение под read-only ролью agent_ro: LIMIT 1000, statement_timeout 30s. Ошибка SQL → diagnose_error, пустой результат → probe COUNT (state-agent v1.4). Тул run_sql (function calling, ДЗ-02) и свободный вход удалены (BL-048/D-041, S39) — исполнение пользовательского SQL только узлом execute_sql на ребре FSM после validate_sql. Артефакты ДЗ-02 (JSON-схема тулa, function-calling цикл в apps.cli, SOP) — исторические; воспроизведение — milestone/v2 (якорь ДЗ-03; ДЗ-04 — milestone/v3, D-041).",
+      "behavior": "Узел execute_sql исполняет валидированный SQL под read-only ролью agent_ro (LIMIT 1000, timeout 30s, extended protocol против multi-command — S13); SQL-ошибка маршрутизирует в diagnose_error, 0 строк — probe COUNT (state-agent v1.4); read-only проверен попыткой INSERT (рубеж 5 ADR-005). (S39/BL-048/D-041: тул run_sql за единым рубежом S31 удалён вместе с тул-контуром — валидация всегда FSM-ребро; поведение узла не менялось; регрессия «SQL чужой таблицы не доходит до исполнителя» живёт в FSM-корпусе test_validate_sql.)",
       "verification": "make infra-up && uv run pytest src/tests/integration/test_execute_sql.py -q",
       "dependencies": [
         "feat-002"
@@ -344,7 +344,7 @@
         },
         {
           "label": "layer-3-e2e",
-          "cmd": "uv run python -m apps.cli \"Сколько заказов у клиентов из РФ?\" — LLM сам вызывает run_sql и комментирует результат (ручной прогон, нужен LLM_API_KEY; hw-plan §2)",
+          "cmd": "uv run python -m apps.cli \"Сколько заказов у клиентов из РФ?\" (дефолт = FSM после удаления тул-контура; ручной прогон)",
           "repair": "Fix JSON-схему тулa / function-calling цикл в apps.cli, re-run manually."
         }
       ]
@@ -517,9 +517,9 @@
     },
     {
       "id": "feat-020",
-      "name": "Объединённый контур ДЗ-03: retrieval + тул run_sql + стриминг",
-      "description": "Директива владельца (S24, вариант B): тул-луп ДЗ-02 с retrieval-контекстом и стримингом — агент стримит дельты ходов, вызывает run_sql (тот же канал agent_ro, капы S13), интерпретирует наблюдение стримом (interpret_result-класса ответ, hw-plan §3); голый тул-луп ДЗ-2 сохранён за флагом --plain; --retrieve упразднён. Расширение порта: StreamFinal.tool_calls (canon-check 2026-11-21 — прецедент D-021 «расширение полями»).",
-      "behavior": "Дефолтный прогон CLI: verified-токен обязателен (S31: --token или DEV_TOKEN из .env; без — отказ до LLM) → вопрос → retrieval-блок по правам identity в системный промпт (схема промпта — только разрешённые таблицы/колонки, справочники не фильтруются) → стриминг дельт на stdout → tool_calls исполняются за единым рубежом S31 под agent_ro с капом ходов S13 (denied рубежа — стоп-observation и отказ без ретрая) → финальный ответ с реальным числом стримится; --plain — прежний тул-луп без контекста и стриминга (артефакт ДЗ-02), тот же токен-рубеж.",
+      "name": "Объединённый контур ДЗ-03: retrieval + тул run_sql + стриминг (РЕТИРЕН — BL-048/D-041)",
+      "description": "РЕТИРЕН (S39, BL-048/D-041): объединённый контур ДЗ-03 (retrieval + тул run_sql + стриминг, директива владельца S24 вариант B) удалён вместе с тул-контуром — единственный контур FSM (feat-004). Стриминговая механика порта (StreamFinal.tool_calls, canon-check 2026-11-21, прецедент D-021) живёт в LLMProvider; retrieval-утилиты (format_retrieval_block, RETRIEVAL_TOP_K) сохранены для bench_retrieval/test_hybrid_memory. Воспроизведение ДЗ-03 — milestone/v2 (D-041).",
+      "behavior": "РЕТИРЕН (S39, BL-048/D-041): дефолтный прогон CLI = FSM (_run_fsm); флаг --plain и merged-flow run_agent_flow/run_tool_loop удалены; токен-рубеж S31 сохранён (verify внутри _run_fsm).",
       "verification": "uv run pytest src/tests/unit/test_agent_flow.py -q",
       "dependencies": [
         "feat-003",
