@@ -432,3 +432,41 @@ class TestReviewFixWave2:
             "INNER JOIN order_items oi ON o.order_id = oi.order_id GROUP BY o.order_id"
         )
         assert result.verdict.outcome is ValidationOutcome.HALLUCINATION
+
+
+class TestFanoutEdgeKeyNormalization:
+    """M(re3)-3 pin: bare-нормализация ОБЕИХ сторон (_fanout_edge_key).
+
+    Квалифицированные from_table/to_table не уводят ключ в None (до
+    fix-волны-2 сравнение было односторонним — ветка from/to не пинилась,
+    откат правки ни один тест не ловил)."""
+
+    @staticmethod
+    def _edge(fanout_one_side: str) -> JoinPlanEdge:
+        return JoinPlanEdge(
+            rel_id="e_orders_items",
+            from_table="public.orders",
+            to_table="public.order_items",
+            from_columns=("order_id",),
+            to_columns=("order_id",),
+            join_type="inner",
+            fanout_guard=True,
+            fanout_one_side=fanout_one_side,
+        )
+
+    def test_qualified_tables_bare_one_side(self):
+        from text_to_sql_agent.domain.sql_validation import _fanout_edge_key
+
+        assert _fanout_edge_key(self._edge("orders")) == ("order_id",)
+        assert _fanout_edge_key(self._edge("order_items")) == ("order_id",)
+
+    def test_qualified_tables_qualified_one_side(self):
+        from text_to_sql_agent.domain.sql_validation import _fanout_edge_key
+
+        assert _fanout_edge_key(self._edge("public.orders")) == ("order_id",)
+        assert _fanout_edge_key(self._edge("public.order_items")) == ("order_id",)
+
+    def test_side_outside_edge_is_none(self):
+        from text_to_sql_agent.domain.sql_validation import _fanout_edge_key
+
+        assert _fanout_edge_key(self._edge("customers")) is None
