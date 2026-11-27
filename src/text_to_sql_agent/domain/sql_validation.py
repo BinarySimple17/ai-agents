@@ -160,6 +160,9 @@ class SqlAudit(BaseModel):
     functions: tuple[str, ...] = ()
     # источники скоупа на каждую литеральную «*» проекции (COUNT(*) — не проекция)
     star_sources: tuple[tuple[SqlSource, ...], ...] = ()
+    # BL-055: признак SELECT … INTO (детекция — services: arg «into» корня или
+    # узел exp.Into в любом скоупе); решение принимает domain (_check_into)
+    has_into: bool = False
 
 
 class ValidationVerdict(BaseModel):
@@ -198,12 +201,16 @@ def validate_sql(
     структура джойнов = рёбра JoinPlan, mandatory_predicates в WHERE внешнего
     запроса. Wiring (Task 4): узел FSM ``make_validate_sql_node`` подключён в
     composition — валидатор стоит на ребре generate_sql → executor.
+    BL-055 (S42): deny SELECT … INTO — запись/DDL-класс (Postgres переписывает
+    в CREATE TABLE AS), сигнал безопасности (denied, degrade без retry);
+    детекция — services (``has_into``), решение — здесь.
     """
     if row_limit <= 0:
         raise ValueError(f"row_limit должен быть положительным, получен {row_limit}")
     _check_permissions_contract(permissions)
     issues_denied: list[str] = []
     issues_hallucination: list[str] = []
+    _check_into(audit, issues_denied)
     _check_functions(audit, issues_hallucination)
     _check_tables(audit, permissions, data_catalog, issues_denied, issues_hallucination)
     _check_columns(audit, permissions, data_catalog, issues_denied, issues_hallucination)
@@ -215,6 +222,23 @@ def validate_sql(
         issues=tuple(issues_denied + issues_hallucination),
         enforced_limit=enforced,
     )
+
+
+def _check_into(audit: SqlAudit, issues_denied: list[str]) -> None:
+    """Гейт «запись/DDL вне контура чтения» (BL-055): SELECT … INTO — denied.
+
+    sqlglot парсит INTO как arg ``into`` у ``exp.Select`` — корневые гейты
+    (корень ∈ Select/Union) и deny-поиск Insert/Create его не видят. Детекция —
+    services (ruling R4: механика AST там), политика ЗДЕСЬ: write-попытка —
+    сигнал безопасности (не «несуществующий синтаксис», retry не оправдан) —
+    denied, degrade без retry (канон ADR-005 §4: «существует, но вне прав →
+    degrade»; прецедент классового denied — служебные схемы/agent_*).
+    """
+    if audit.has_into:
+        issues_denied.append(
+            "SELECT … INTO — запись/DDL-класс (Postgres переписывает в "
+            "CREATE TABLE AS), вне контура чтения"
+        )
 
 
 def _check_functions(audit: SqlAudit, issues: list[str]) -> None:

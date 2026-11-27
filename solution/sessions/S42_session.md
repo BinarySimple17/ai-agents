@@ -1,6 +1,6 @@
 # S42 — BL-055: явный запрет SELECT…INTO в domain-валидаторе FSM
 
-Этап: Промежуточная ветка `inter/hw05-hw06` · батч п.1(в) плана ветки (BL-055; окно 28–30.11.2026) | Владелец: агент | Зависимости: S40 (baseline) | Оценка: 0.5 | Статус: [ ] не начата
+Этап: Промежуточная ветка `inter/hw05-hw06` · батч п.1(в) плана ветки (BL-055; окно 28–30.11.2026) | Владелец: агент | Зависимости: S40 (baseline) | Оценка: 0.5 | Статус: ◐ в работе
 Фичи: — (сессия без фичи, states не меняются; затронуты behavior feat-011 — её verification-команда прогоняется, результат в отчёт, прецедент S24)
 Роль по фиче: — (сессия без фичи, states не меняются)
 
@@ -54,10 +54,10 @@ DuckDB/sqlfluff/pglast/EXPLAIN-зонд — не нужны FSM-контуру) 
 
 ## Предусловия
 
-- [ ] S40 закрыта (baseline трека): `grep -n "| S40 |" solution/sessions.md` → ✅
-- [ ] `make check` зелёный (baseline репозитория)
-- [ ] feat-005, feat-011 в state=passing (сверка `feature_list.json`)
-- [ ] Сессия СТАРТУЕТ: статус в шапке переведён в «◐ в работе» и ARCH-GATE резолвлен ДО кода (canon-check architect ✅ либо обоснованный N/A) — старт-гейт (`guard-subagents.sh --phase start`, D-027) проверяет только стартованные (◐) сессии; «[ ] не начата» — план, гейт её скипает
+- [x] S40 закрыта (baseline трека): `grep -n "| S40 |" solution/sessions.md` → ✅ 2026-11-27
+- [x] `make check` зелёный (baseline репозитория): EXIT=0, 838 passed, 7ef7b4d
+- [x] feat-005, feat-011 в state=passing (сверка `feature_list.json`)
+- [x] Сессия СТАРТУЕТ: статус в шапке переведён в «◐ в работе» и ARCH-GATE резолвлен ДО кода (canon-check architect ✅ либо обоснованный N/A) — старт-гейт (`guard-subagents.sh --phase start`, D-027) проверяет только стартованные (◐) сессии; «[ ] не начата» — план, гейт её скипает
 
 ## Задачи
 
@@ -123,7 +123,7 @@ git grep -n "INTO" -- docs/security.md | head -3   # гейт описан
 
 ## Гейты субагентов (заполняется по факту, до закрытия сессии)
 
-- ARCH-GATE: [✅ <verdict: compliant | violations | needs-decision> + <план/файл> | N/A — <причина>]
+- ARCH-GATE: ✅ compliant — canon-check architect 2026-11-27, форма: детекция в services (оба способа правила 2: `args.get("into")` на корне + `find(exp.Into)` на дереве) → IR-флаг `SqlAudit.has_into` → политика в domain (`issues_denied` → DENIED, degrade без retry — канон ADR-005 §4/:173, прецедент классового denied `sql_validation.py:254`); `exp.Into` в whitelist с обязательным комментарием «не тихий allow — явный deny-гейт domain» + строка о сцепке с парсингом sqlglot (митигация — adversarial-тесты §4 п.8, uv.lock). Находки canon-check (закрыты в реализации/отчёте): буква правила 2 «AST в domain» R4-невозможна — осознанное отклонение в отчёт; тесты ассертят outcome=DENIED + наличие INTO-issue, не точный список (цель INTO парсится exp.Table → hallucination-шум в issues, исход не меняет — denied доминирует); предпосылка BL-055 «гейтом не закрыт» неточна — whitelist уже form-reject'ит (hallucination), недоставало явного denied-гейта — формулировку поправить при закрытии; S00/ADR-005 правок не требуют (deny-классов не перечисляют); FSM-рёбра/диагностика не затронуты (error.class общий `acl_denied`, diagnose INTO не видит)
 - REVIEW-GATE: [✅ <Ready to merge? вердикт> + <BASE7>..<HEAD7> | N/A — <причина>]
 
 ## Отчёт по сессии (заполняется по факту)

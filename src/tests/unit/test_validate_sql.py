@@ -319,6 +319,49 @@ class TestStatementForm:
         assert "*" not in result.sql  # внутренняя звезда развёрнута своим скоупом
 
 
+class TestSelectIntoDeny:
+    """BL-055 (S42): явный deny-гейт SELECT … INTO — запись/DDL-класс (denied).
+
+    sqlglot парсит INTO как arg «into» у exp.Select — корневые гейты и
+    deny-поиск Insert/Create его не видят; до BL-055 класс отсекался
+    whitelist-обходом как form-reject (hallucination) — семантика retry
+    «уговорить валидатор» для write-попытки неверна. Ассерты — outcome и
+    наличие INTO-issue, не точный список issues: цель INTO парсится exp.Table
+    и добавляет hallucination-шум (ACL/«вне плана»), исход это не меняет —
+    denied доминирует (_merge_outcome).
+    """
+
+    def test_select_into_root_denied(self):
+        # способ детекции 1: корневой arg «into» (args.get)
+        sql = "SELECT id INTO new_t FROM orders"
+        result = _validate(sql)
+        assert result.verdict.outcome is ValidationOutcome.DENIED
+        assert any("SELECT … INTO" in issue for issue in result.verdict.issues)
+        assert result.sql == sql  # исходный текст не изменён — ничего не исполняется
+
+    def test_select_into_nested_subquery_denied(self):
+        # способ детекции 2: узел exp.Into в теле подзапроса (find) — корневой
+        # arg отсутствует (ловушка 3 плана: sqlglot нормализует иначе)
+        result = _validate("SELECT * FROM (SELECT id INTO new_t FROM orders) sub")
+        assert result.verdict.outcome is ValidationOutcome.DENIED
+        assert any("SELECT … INTO" in issue for issue in result.verdict.issues)
+
+    def test_select_into_cte_denied(self):
+        # вложенность через CTE: тело WITH проверяется теми же правилами
+        result = _validate(
+            "WITH copied AS (SELECT id INTO new_t FROM orders) SELECT id FROM copied"
+        )
+        assert result.verdict.outcome is ValidationOutcome.DENIED
+        assert any("SELECT … INTO" in issue for issue in result.verdict.issues)
+
+    def test_plain_select_without_into_ok(self):
+        # контроль: обычный SELECT без INTO проходит — класс отсекается точечно
+        result = _validate(
+            "SELECT o.id FROM orders o INNER JOIN customers c ON o.customer_id = c.id"
+        )
+        assert result.verdict.outcome is ValidationOutcome.OK
+
+
 class TestFunctionAllowList:
     @pytest.mark.parametrize(
         "fn",

@@ -70,9 +70,20 @@ _ROOT_TYPES: tuple[type[exp.Expression], ...] = (exp.Select, exp.Union, exp.Exce
 # не входят ПО ПОСТРОЕНИЮ — fail-closed на всём незнакомом. INTERVAL — безопасный
 # литерал типового фильтра «за последние N дней» (ревью S11 I4: расширение —
 # осознанное, с тестом).
+#
+# exp.Into — arg синтаксиса SELECT … INTO (BL-055, S42): отдельной инструкцией
+# не является, но входит в whitelist НЕ как «разрешение» — явный deny-гейт в
+# domain по IR-флагу has_into (детекция — _detect_into, вердикт DENIED). Без
+# записи в whitelist дерево с Into отсеялось бы раньше form-reject'ом как
+# «неизвестный узел» — domain-гейт остался бы мёртвым кодом. Сцепка: детекция
+# держится на парсинге sqlglot «INTO → exp.Into»; если будущая версия развернёт
+# INTO в уже-whitelisted узлы — гейт умрёт молча; митигация — adversarial-тесты
+# ADR-005 §4 п.8 (корневая/вложенная формы) обязаны остаться в наборе (версия
+# sqlglot фиксируется uv.lock).
 _NODE_WHITELIST: frozenset[type[exp.Expression]] = frozenset(
     {
         exp.Select,
+        exp.Into,
         exp.From,
         exp.Join,
         exp.Where,
@@ -335,6 +346,7 @@ def _build_audit(tree: exp.Expression) -> SqlAudit:
         outer_limit=_collect_outer_limit(tree),
         functions=_collect_functions(tree),
         star_sources=tuple(star_sources),
+        has_into=_detect_into(tree),
     )
 
 
@@ -664,6 +676,15 @@ def _collect_outer_limit(root: exp.Expression) -> int | None:
     if not isinstance(value, exp.Literal) or not value.is_int:
         raise SqlAuditError("LIMIT — целочисленный литерал (переменные/выражения отвергаются)")
     return int(value.this)
+
+
+def _detect_into(tree: exp.Expression) -> bool:
+    """Детекция SELECT … INTO (BL-055) — оба способа плана S42: корневой arg
+    «into» (sqlglot-контракт парсинга Select) и узел exp.Into в ЛЮБОМ скоупе
+    (вложенные случаи — подзапросы/CTE: там корневой arg отсутствует, узел
+    создаётся в теле). Решение (denied) принимает domain — механика здесь
+    (ruling R4, прецедент-паттерн functions/star_sources)."""
+    return tree.args.get("into") is not None or tree.find(exp.Into) is not None
 
 
 def _collect_functions(tree: exp.Expression) -> tuple[str, ...]:
