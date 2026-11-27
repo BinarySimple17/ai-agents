@@ -92,25 +92,3 @@ class FakePermissionStore:
         if isinstance(self._error, RightsUnavailableError):
             raise self._error
         return self._catalog
-
-
-class FakeSchemaGraphStore:
-    """Двойник `SchemaGraphStore` для тула (S31/R1): активные рёбра парами.
-
-    Дефолт — одна связь customers↔orders (демо-ребро e_customers_orders);
-    ``error`` — SchemaGraphError (graph_unavailable у тула).
-    """
-
-    def __init__(
-        self,
-        edges: frozenset[tuple[str, str]] | None = None,
-        *,
-        error: Exception | None = None,
-    ) -> None:
-        self._edges = edges if edges is not None else frozenset({("customers", "orders")})
-        self._error = error
-
-    def join_edges(self, *, ctx: RunContext) -> frozenset[tuple[str, str]]:
-        if self._error is not None:
-            raise self._error
-        return self._edges

@@ -31,7 +31,6 @@ from text_to_sql_agent.application.services.plan_joins_node import make_plan_joi
 from text_to_sql_agent.application.services.plan_joins_service import PlanJoinsService
 from text_to_sql_agent.application.services.resolve_access_node import make_resolve_access_node
 from text_to_sql_agent.application.services.resolve_access_service import ResolveAccessService
-from text_to_sql_agent.application.services.run_sql_tool import RunSqlTool
 from text_to_sql_agent.application.services.validate_sql_node import make_validate_sql_node
 from text_to_sql_agent.application.services.validate_sql_service import ValidateSqlService
 from text_to_sql_agent.application.use_cases.answer_question import AnswerQuestion
@@ -62,7 +61,6 @@ class Container:
     tracer: Tracer
     budget_guard: BudgetGuard
     executor: PostgresExecutor
-    run_sql_tool: RunSqlTool
     vector_store: PgVectorStore
     graph_store: Neo4jGraphStore
     edge_proposal_store: PgEdgeProposalStore
@@ -199,17 +197,6 @@ def build_container(
     # — BL-009) на каждый запрос, инъекция фейка — юнит-тесты wiring
     if validate_sql_service is None:
         validate_sql_service = ValidateSqlService()
-    # Тул run_sql за ЕДИНЫМ рубежом (S31/D-033 п.5 вариант A — аудит A1/E1):
-    # ТЕ ЖЕ экземпляры, что у FSM-ребра validate_sql (валидатор/права/рёбра
-    # реестра — одна сборка, правило 2 сессии S31 «один валидатор — две политики»);
-    # tracer — события validate_sql.verdict/unavailable с contour="tool_loop" (R3).
-    run_sql_tool = RunSqlTool(
-        executor,
-        validator=validate_sql_service,
-        permission_store=permission_store,
-        graph_store=graph_store,
-        tracer=tracer,
-    )
     # Узел clarify (S08/feat-008): классификация однозначности + interrupt-
     # механика. Шов бюджета — ruling Q7 (переведён на порт BudgetGuard, S15).
     if clarify_service is None:
@@ -293,7 +280,6 @@ def build_container(
         tracer=tracer,
         budget_guard=budget_guard,
         executor=executor,
-        run_sql_tool=run_sql_tool,
         vector_store=vector_store,
         graph_store=graph_store,
         edge_proposal_store=edge_proposal_store,

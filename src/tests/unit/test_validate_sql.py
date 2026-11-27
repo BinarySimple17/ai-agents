@@ -391,6 +391,10 @@ class TestNestedTraversal:
 
     def test_lateral_subquery_checked(self):
         # LATERAL внутри EXISTS: тело (orders) проверено ACL, корень скелета цел
+        # (флип B2/BL-051: свободный вход давал hallucination — смешанный скоуп
+        # несверяем; FSM проверяет тело теми же правилами — pin residual,
+        # усиление «таблицы ⊆ план» отдельным коммитом не трогает этот кейс:
+        # orders в плане)
         result = _validate(
             "SELECT o.id FROM orders o INNER JOIN customers c ON o.customer_id = c.id "
             "WHERE EXISTS (SELECT l.x FROM orders o2, LATERAL (SELECT o2.customer_id AS x) l "
@@ -415,10 +419,53 @@ class TestNestedTraversal:
 
     def test_union_root_structure_change_detected(self):
         # UNION-корень легален парсеру, но противоречит скелету плана — hallucination
+        # (флип B2/BL-051: свободный вход давал ok — контур удалён BL-048)
         result = _validate(
             "SELECT o.id FROM orders o UNION ALL SELECT c.id FROM customers c LIMIT 10"
         )
         assert result.verdict.outcome is ValidationOutcome.HALLUCINATION
+
+
+class TestNestedBodyResidualPins:
+    """BL-051(a) п.2 — pin-тесты residual вложенных тел (S39, коммит удаления).
+
+    Вложенные тела (CTE/подзапросы/LATERAL) FSM-валидатор проверяет только по
+    ACL: таблица вне плана и «выдуманное» условие связи во вложенном теле
+    проходят, если таблица в правах и каталоге. Решение владельца (a):
+    residual принят, формулировка инварианта смягчается (волна ревизий BL-048);
+    усиление «таблицы ⊆ план» — отдельным коммитом после removal — перевернёт
+    оба пина осознанно. Права включают bonuses/campaigns (в дефолтных
+    фикстурах bonuses вне прав — DENIED замаскировал бы residual).
+    """
+
+    _RESIDUAL_PERMS = {
+        "orders": ["id", "customer_id", "campaign_id", "total", "status"],
+        "customers": ["id", "name", "region"],
+        "bonuses": ["employee_id", "amount"],
+        "campaigns": ["campaign_id", "name", "channel"],
+    }
+
+    def test_nested_body_table_outside_plan_passes_acl(self):
+        # EXISTS с таблицей вне плана (bonuses) и выдуманным условием связи
+        # (bonuses↔orders ребра реестра не имеет) — ACL-чист, FSM ok (residual)
+        result = _validate(
+            "SELECT o.id FROM orders o INNER JOIN customers c ON o.customer_id = c.id "
+            "WHERE EXISTS (SELECT 1 FROM bonuses b WHERE b.employee_id = o.customer_id) "
+            "LIMIT 10",
+            permissions=self._RESIDUAL_PERMS,
+        )
+        assert result.verdict.outcome is ValidationOutcome.OK
+
+    def test_nested_body_join_without_edge_passes_acl(self):
+        # вложенный JOIN без ребра (bonuses↔campaigns) — тела проверены ACL,
+        # корень скелета цел — FSM ok (residual)
+        result = _validate(
+            "SELECT o.id FROM orders o INNER JOIN customers c ON o.customer_id = c.id "
+            "WHERE o.id IN (SELECT b.employee_id FROM bonuses b "
+            "JOIN campaigns ca ON b.employee_id = ca.campaign_id) LIMIT 10",
+            permissions=self._RESIDUAL_PERMS,
+        )
+        assert result.verdict.outcome is ValidationOutcome.OK
 
 
 # --- Task 2: ACL — схемы, таблицы, колонки, '*' (ruling R2, BL-014) ---
@@ -859,7 +906,23 @@ class TestAdversarialGallery:
                 "WHERE EXISTS (SELECT 1 FROM customers c2 WHERE c2.region = c.region) LIMIT 10",
                 ValidationOutcome.OK,
             ),
-            # LATERAL — вложенный (корневой LATERAL-джойн = изменённый скелет)
+            # подзапрос с ЧУЖОЙ таблицей в теле — denied (ACL тела; B2 S31 —
+            # контур-независимый кейс, мигрирован при удалении тул-контура BL-048)
+            (
+                "SELECT o.id FROM orders o WHERE o.id IN "
+                "(SELECT employee_id FROM bonuses) LIMIT 10",
+                ValidationOutcome.DENIED,
+            ),
+            # подзапрос в FROM с чужой таблицей: denied (тело) доминирует над
+            # структурой — обе причины в issues (B2 S31 — мигрирован BL-048)
+            (
+                "SELECT o.id FROM orders o JOIN (SELECT employee_id FROM bonuses) b "
+                "ON b.employee_id = o.id LIMIT 10",
+                ValidationOutcome.DENIED,
+            ),
+            # LATERAL — вложенный (корневой LATERAL-джойн = изменённый скелет);
+            # флип B2/BL-051: свободный вход тул-контура давал hallucination
+            # (несверяемый смешанный скоуп) — FSM ok, тело проверено ACL
             (
                 "SELECT o.id FROM orders o INNER JOIN customers c ON o.customer_id = c.id "
                 "WHERE EXISTS (SELECT l.x FROM orders o2, LATERAL (SELECT o2.customer_id AS x) l "
@@ -898,7 +961,9 @@ class TestAdversarialGallery:
                 "INNER JOIN customers c ON o.customer_id = c.id",
                 ValidationOutcome.OK,
             ),
-            # UNION-корень легален парсеру, но это изменённый скелет
+            # UNION-корень легален парсеру, но это изменённый скелет; флип
+            # B2/BL-051: свободный вход тул-контура давал ok (свои таблицы,
+            # тела проверены) — FSM: скелет фиксирован планом
             (
                 "SELECT o.id FROM orders o UNION ALL SELECT c.id FROM customers c LIMIT 10",
                 ValidationOutcome.HALLUCINATION,

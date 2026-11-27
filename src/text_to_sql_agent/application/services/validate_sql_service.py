@@ -46,7 +46,6 @@ from text_to_sql_agent.domain.sql_validation import (
     ValidationOutcome,
     ValidationVerdict,
     star_expansion_columns,
-    validate_free_sql,
     validate_sql,
 )
 
@@ -173,23 +172,6 @@ _STRUCTURAL_FUNCS: tuple[type[exp.Expression], ...] = (
 # USING) — сверка со скелетом равенством даст mismatch: ON фиксирован скелетом.
 _COMPLEX_ON = ("__complex_on__", "__complex_on__")
 
-# Сравнения, в которых живёт коррелированная колонка (равенство/неравенство/IN/
-# BETWEEN/LIKE/IS) — связь утверждается этим сравнением, не всем скоупом
-# (_comparison_local_tables, ревью S31 re-review I3)
-_COMPARISON_TYPES: tuple[type[exp.Expression], ...] = (
-    exp.EQ,
-    exp.NEQ,
-    exp.GT,
-    exp.GTE,
-    exp.LT,
-    exp.LTE,
-    exp.Is,
-    exp.In,
-    exp.Between,
-    exp.Like,
-    exp.ILike,
-)
-
 
 @dataclass(frozen=True, slots=True)
 class _Source:
@@ -267,11 +249,6 @@ def _build_audit(tree: exp.Expression) -> SqlAudit:
 
     columns: list[SqlColumn] = []
     seen_columns: set[tuple[str, tuple[SqlSource, ...], bool]] = set()
-    join_pairs: list[tuple[str, str]] = []
-    seen_join_pairs: set[tuple[str, str]] = set()
-    # корреляция на производном источнике / скоуп без табличных источников
-    # (re-review S31 C1) — флаг копится циклом колонок, сливается с JOIN-флагом
-    correlation_unresolved = False
     for scope in scopes:
         local_sources = sources_by_scope[id(scope)]
         local_refs = {src.ref for src in local_sources}
@@ -319,16 +296,6 @@ def _build_audit(tree: exp.Expression) -> SqlAudit:
             # reference (PG: колонок с таким именем нет → вся строка)
             name_lower = node.name.lower()
             whole_row = False
-            # Корреляция (ревью S31 C1 + re-review C1): кандидат-источник ВНЕШНЕГО
-            # скоупа (ref не среди локальных) — ссылка на внешний алиас:
-            # семантическая связь «внешний источник ↔ таблицы этого скоупа»
-            # (WHERE c.id = o.campaign_id в EXISTS утверждает ту же «придуманную
-            # связь», что и JOIN) — сверяется с реестром как пара. Обёртка связь
-            # НЕ легализует: кандидат-производный источник (CTE/подзапрос внешнего
-            # скоупа) — fail-closed unresolved, та же семантика, что у JOIN-
-            # операндов (ruling «CTE+CTE разрешена» отозван). Ссылки в тела CTE не
-            # тянутся наружу (граница корреляции — CTE, _scope_chain)
-            correlated: list[_Source] = [s for s in candidates if s.ref not in local_refs]
             if not node.table:
                 if name_lower in local_refs:
                     whole_row = True
@@ -336,39 +303,14 @@ def _build_audit(tree: exp.Expression) -> SqlAudit:
                     outer = _resolve_outer_ref(name_lower, maps_by_scope[id(scope)])
                     if outer is not None:
                         # ревью волна-3 (Important): НЕ замена, а ДОПОЛНЕНИЕ
-                        # кандидатов — домен требует '*' на КАЖДОЙ таблице
-                        # (schema-blind: права — единственный прокси существования
-                        # колонки; при коллизии PG читает ЛОКАЛЬНУЮ колонку)
+                        # кандидатов — домен требует '*' на КАЖДОЙ таблице-
+                        # кандидате (schema-blind: права — единственный прокси
+                        # существования колонки; при коллизии PG читает
+                        # ЛОКАЛЬНУЮ колонку)
                         whole_row = True
                         extra = SqlSource(name=outer.name, kind=outer.kind)
                         if all(s != extra for s in sources):
                             sources = (*sources, extra)
-                            correlated.append(outer)
-            if correlated:
-                local_table_names = {s.name for s in local_sources if s.kind == "table"}
-                if not local_table_names:
-                    # связь с скоупом БЕЗ табличных источников (FROM — CTE/
-                    # подзапрос/LATERAL) парой реестра не выражается — fail-closed
-                    correlation_unresolved = True
-                else:
-                    # Пара строится с локальными таблицами ТОГО ЖЕ сравнения
-                    # (ревью re-review I3): корреляция утверждает связь с
-                    # таблицами своего равенства, не со всеми таблицами скоупа
-                    # (иначе локальный JOIN внутри подзапроса даёт ложный отказ).
-                    # Нет сравнения/локальных колонок в нём — откат на все
-                    # таблицы скоупа (консервативно, без false-positive)
-                    predicate_locals = _comparison_local_tables(
-                        node, maps_by_scope[id(scope)], local_refs
-                    )
-                    for src in correlated:
-                        if src.kind != "table":
-                            correlation_unresolved = True
-                            continue
-                        for local_name in predicate_locals or local_table_names:
-                            pair = tuple(sorted((src.name, local_name)))
-                            if pair not in seen_join_pairs:
-                                seen_join_pairs.add(pair)
-                                join_pairs.append(pair)
             key = (name_lower, sources, whole_row)
             if key not in seen_columns:
                 seen_columns.add(key)
@@ -384,9 +326,6 @@ def _build_audit(tree: exp.Expression) -> SqlAudit:
             star_sources.append(tuple(SqlSource(name=s.name, kind=s.kind) for s in sources))
 
     root_maps = maps_by_scope.get(id(root_select), []) if root_select is not None else []
-    unresolved = _collect_join_pairs(
-        scopes, sources_by_scope, maps_by_scope, join_pairs, seen_join_pairs
-    )
     return SqlAudit(
         from_table=_from_table(root_select),
         tables=_collect_tables(tree),
@@ -396,313 +335,7 @@ def _build_audit(tree: exp.Expression) -> SqlAudit:
         outer_limit=_collect_outer_limit(tree),
         functions=_collect_functions(tree),
         star_sources=tuple(star_sources),
-        join_table_pairs=tuple(join_pairs),
-        unresolved_join_scopes=unresolved or correlation_unresolved,
     )
-
-
-def _join_tie_refs(
-    join: exp.Join,
-    maps: list[dict[str, _Source]],
-    joined_ref: str,
-    earlier_refs: set[str],
-) -> tuple[bool, list[set[str]]]:
-    """(Связан ли джойн, ref-множества связывающих равенств ON) — функциональный
-    критерий (re-review fix-волн 3–5): связывающее равенство ЗАДЕВАЕТ
-    присоединяемый источник (``joined_ref`` — sources[idx+1] для joins[idx]) и
-    хотя бы один УЖЕ ПРИСОЕДИНЁННЫЙ (``earlier_refs``) и стоит в конъюнктивном
-    скелете ON. Волна 3 (семантика вместо whitelist'а comma/ON TRUE) закрыла
-    CROSS JOIN/ON 1=1/ON (TRUE)/самосравнение, но пропускала: равенство ЧУЖИХ
-    источников (``JOIN c ON m.id = o.id`` — c не тронут, произведение m×c) и
-    равенство под ``OR``/``CASE`` (``ON c.id = o.id OR TRUE`` — тавтология).
-    Не считается связью: comma/CROSS JOIN (ON нет), ``ON TRUE``/``ON 1=1``,
-    самосравнение (один источник по обе стороны), сравнение со скалярным
-    подзапросом (колонки подзапросов — своего скоупа, не резолвятся), равенство
-    внутри подзапроса ON, обёртка вне конъюнкции (``_under_conjunctive_skeleton``),
-    квалификатор не из скоупа (корреляция). ``JOIN ... USING (колонки)`` — связан
-    (равенство по именованным колонкам утверждено), равенств ON нет — пара по
-    цепочке соседей. NullSafeEQ (IS NOT DISTINCT FROM) не достижим — отбивается
-    whitelist'ом форм раньше (живой прогон). Защитная граница: ``joined_ref``
-    вне скоупа (рассинхрон) — связей нет, fail-closed. Ref-множества потребляет
-    ``_collect_join_pairs`` — пары из операндов ON (волна 5)."""
-    if join.args.get("using"):
-        return True, []
-    on = join.args.get("on")
-    if on is None:
-        return False, []
-    nested = {id(s) for s in on.find_all(exp.Select)}
-    local_map = maps[0]
-    tied = False
-    tie_refs: list[set[str]] = []
-    for eq in on.find_all(exp.EQ):
-        if not _under_conjunctive_skeleton(eq, on) or _inside_nested_select(eq, nested):
-            continue
-        refs = _eq_operand_refs(eq.this, local_map, nested) | _eq_operand_refs(
-            eq.expression, local_map, nested
-        )
-        # связь = равенство ЗАДЕВАЕТ присоединяемый источник и хотя бы один
-        # ранее присоединённый (волна 4: «есть EQ двух источников» ≠ «джойн связан»)
-        if joined_ref in refs and refs & earlier_refs:
-            tied = True
-            tie_refs.append(refs)
-    return tied, tie_refs
-
-
-def _inside_nested_select(node: exp.Expression, nested: set[int]) -> bool:
-    """Среди предков узла — Select из ``nested`` (подзапросы внутри выражения).
-    ``nested`` содержит только Select внутри проверяемого выражения, поэтому
-    подъём выше его корня безопасен (переиспользуется _comparison_local_tables)."""
-    parent = node.parent
-    while parent is not None:
-        if id(parent) in nested:
-            return True
-        parent = parent.parent
-    return False
-
-
-_CONJUNCTIVE_SKELETON = (exp.And, exp.Paren)
-
-
-def _under_conjunctive_skeleton(node: exp.Expression, root: exp.Expression) -> bool:
-    """Равенство стоит в КОНЪЮНКТИВНОМ скелете ON — whitelist предков до корня
-    ВКЛЮЧИТЕЛЬНО (re-review fix-волна 5): только And/Paren. Инверсия блочного
-    списка волны 4 (Or/Xor/Not/Case/If): список пропускал обёртки вне списка —
-    ``ON (c.id = o.id) IS FALSE`` утверждает НЕравенство (связь отрицается),
-    ``ON coalesce(c.id = o.id, FALSE)`` — условную связку; whitelist закрывает
-    любые обёртки одним правилом. Корень проверяется тоже: ``ON x OR TRUE`` —
-    сам ON есть Or (волна 4); равенство-корень (``ON a.id = b.id``) — скелет
-    тривиально конъюнктивный. And и Paren прозрачны — конъюнкция."""
-    if node is root:
-        return True
-    parent = node.parent
-    while parent is not None:
-        if not isinstance(parent, _CONJUNCTIVE_SKELETON):
-            return False
-        if parent is root:
-            return True
-        parent = parent.parent
-    return False
-
-
-def _eq_operand_refs(
-    operand: exp.Expression, local_map: dict[str, _Source], nested: set[int]
-) -> set[str]:
-    """Refs (алиасы) ЛОКАЛЬНЫХ источников скоупа среди колонок операнда равенства.
-    Колонки вложенных подзапросов и t.* не учитываются; unqualified и квалификатор
-    вне скоупа (корреляция) не атрибутируются — консервативно (равенства нет)."""
-    refs: set[str] = set()
-    for col in operand.find_all(exp.Column):
-        if isinstance(col.this, exp.Star) or _inside_nested_select(col, nested):
-            continue
-        qualifier = (col.table or "").lower()
-        if qualifier and qualifier in local_map:
-            refs.add(qualifier)
-    return refs
-
-
-def _comparison_local_tables(
-    column: exp.Column,
-    maps: list[dict[str, _Source]],
-    local_refs: set[str],
-) -> set[str]:
-    """Локальные таблицы сравнения, содержащего коррелированную колонку
-    (ревью S31 re-review I3): связь утверждается «внешняя таблица ↔ таблицы
-    СВОЕГО равенства», не со всеми таблицами скоупа. Подъём от колонки до
-    ближайшего сравнения (And/Or/Not/Case прозрачны); колонки вложенных
-    подзапросов внутри сравнения — своего скоупа, не резолвятся; unqualified —
-    не атрибутируются (неоднозначно). Пустое множество (нет сравнения или в нём
-    нет локальных квалифицированных колонок) — вызывающий откатывается на все
-    таблицы скоупа (консервативно: ложных отказов не добавляет, дыр нет)."""
-    current: exp.Expression | None = column
-    comparison: exp.Expression | None = None
-    while current is not None and type(current) is not exp.Select:
-        if isinstance(current, _COMPARISON_TYPES):
-            comparison = current
-            break
-        current = current.parent
-    if comparison is None:
-        return set()
-    nested = {id(s) for s in comparison.find_all(exp.Select)}
-    tables: set[str] = set()
-    for col in comparison.find_all(exp.Column):
-        if _inside_nested_select(col, nested) or isinstance(col.this, exp.Star):
-            continue
-        qualifier = (col.table or "").lower()
-        if qualifier and qualifier in local_refs:
-            source = maps[0].get(qualifier)
-            if source is not None and source.kind == "table":
-                tables.add(source.name)
-    return tables
-
-
-def _collect_join_pairs(
-    scopes: list[exp.Select],
-    sources_by_scope: dict[int, list[_Source]],
-    maps_by_scope: dict[int, list[dict[str, _Source]]],
-    pairs: list[tuple[str, str]],
-    seen: set[tuple[str, str]],
-) -> bool:
-    """Пары утверждённых связей JOIN по всем скоупам + флаг несверяемых скоупов
-    (S31, R1 ARCH-GATE).
-
-    Цепочка скоупа: FROM → JOIN-секции в порядке появления (cross — тот же
-    Join-узел); пара — из ОПЕРАНДОВ связывающего равенства ON (присоединяемый
-    источник × контрагент; реестр связывает таблицы, не алиасы; re-review
-    fix-волна 5): hub-first звезда «FROM факт JOIN изм1 … JOIN изм2 …»
-    утверждает факт×изм1 и факт×изм2, а соседства изм1×изм2 в SQL нет — пары из
-    соседства цепочки давали ложный отказ легального хаба. Равенство-конъюнкт
-    между УЖЕ СВЯЗАННЫМИ таблицами (есть путь по утверждённым парам скоупа) —
-    фильтр, новую связь не заявляет (канон волны 4: «обе уже на рёбрах через
-    o»). Фолбэк для форм без равенств ON (USING; 2-табличное произведение) —
-    соседние операнды цепочки. Произведение без СВЯЗЫВАЮЩЕГО равенства
-    (``_join_tie_refs`` — функционально: присоединяемый источник не связан
-    равенством колонок с уже присоединёнными в конъюнкции ON; comma / голый
-    JOIN / CROSS JOIN / ON TRUE / 1=1 / самосравнение / OR-скелет / равенство
-    чужих источников) на ≥3 табличных источниках — ``unresolved``: пары
-    произвольны (ревью S31 I1 + re-review fix-волн 3–4); на двух — единственная
-    пара цепочки, сверяется. ЛЮБОЙ не-табличный операнд в паре (CTE/производный/
-    смешанный) — ``unresolved``: обёртка CTE не делает связь легальной —
-    ``WITH x AS (…orders…), y AS (…campaigns…) SELECT * FROM x CROSS JOIN y``
-    соединяет свои таблицы без ребра реестра ровно как прямой джойн (ревью S31
-    C1, живое воспроизведение; прежний ruling «CTE+CTE — алгебра над телами»
-    отозван). FSM-вход поля не читает: структура джойнов там сверяется со
-    скелетом плана (_check_skeleton). Пары корреляций (включая fail-closed на
-    производном операнде) добавляет цикл колонок в ``_build_audit`` (кандидат
-    из внешнего скоупа).
-    """
-    unresolved = False
-    for scope in scopes:
-        sources = sources_by_scope[id(scope)]
-        maps = maps_by_scope[id(scope)]
-        joins = scope.args.get("joins") or []
-        has_cartesian = False
-        tie_refs_by_idx: dict[int, list[set[str]]] = {}
-        for idx, join in enumerate(joins):
-            # sources[0] — FROM, joins[i] — sources[i+1] (порядок _scope_sources);
-            # защитная граница на рассинхрон — вне диапазона refs не совпадёт
-            # ни с одним равенством → джойн несвязан → fail-closed
-            joined_ref = sources[idx + 1].ref if idx + 1 < len(sources) else ""
-            earlier_refs = {s.ref for s in sources[: idx + 1]}
-            if not isinstance(join, exp.Join):
-                continue
-            tied, tie_refs = _join_tie_refs(join, maps, joined_ref, earlier_refs)
-            if not tied:
-                has_cartesian = True
-                break
-            if tie_refs and idx + 1 < len(sources):
-                tie_refs_by_idx[idx] = tie_refs
-        if has_cartesian and sum(1 for s in sources if s.kind == "table") > 2:
-            unresolved = True
-            continue
-        # пары утверждённых связей скоупа (граф связности — для фильтра
-        # равенств-конъюнктов между уже связанными таблицами)
-        asserted: dict[str, set[str]] = {}
-        prev: _Source | None = None
-        for idx, source in enumerate(sources):
-            if prev is not None:
-                tie_refs = tie_refs_by_idx.get(idx - 1)
-                if tie_refs is not None:
-                    if not _assert_tie_pairs(
-                        tie_refs, source, prev, maps[0], asserted, pairs, seen
-                    ):
-                        # не-табличный операнд в связывающем равенстве
-                        # (CTE/подзапрос) — пара реестром не выражается (C1)
-                        unresolved = True
-                elif prev.kind == "table" and source.kind == "table":
-                    # фолбэк: равенств ON нет (USING; 2-табличное произведение) —
-                    # пара по цепочке соседей
-                    _assert_pair(prev.name, source.name, asserted, pairs, seen)
-                else:
-                    # любой операнд не-таблица (cte/sub, в любой комбинации) —
-                    # пара реестром не выражается (C1)
-                    unresolved = True
-            prev = source
-    return unresolved
-
-
-def _assert_tie_pairs(
-    tie_refs: list[set[str]],
-    joined: _Source,
-    prev: _Source | None,
-    local_map: dict[str, _Source],
-    asserted: dict[str, set[str]],
-    pairs: list[tuple[str, str]],
-    seen: set[tuple[str, str]],
-) -> bool:
-    """Пары связывающих равенств джойна: присоединяемый источник × контрагент
-    (``_collect_join_pairs``). False = связывающее равенство держится на
-    не-табличном операнде (CTE/подзапрос — операнды резолвятся ключами
-    ``local_map``) или сам присоединяемый источник не таблица — пара реестром
-    не выражается. Порядок обработки СТРУКТУРНЫЙ, не документный (re-review
-    fix-волна 6, I-2): первична пара с непосредственным предшественником
-    цепочки (``prev`` — sources[idx-1]) — прочие равенства-конъюнкты после неё
-    отфильтровываются связностью как уже утверждённые; исход не зависит от
-    порядка конъюнктов в ON. Итерация по sorted(refs)/сортированный список
-    кандидатов — вердикт детерминирован (I-1: обход ``set`` зависел от
-    PYTHONHASHSEED при равенстве с 3+ источниками; порядок пар = порядок
-    issues для сигнала ретрая M1)."""
-    if joined.kind != "table":
-        return False
-    candidates: list[tuple[str, str]] = []
-    for refs in tie_refs:
-        for ref in sorted(refs):
-            if ref == joined.ref:
-                continue
-            other = local_map[ref]  # refs — ключи local_map (_eq_operand_refs)
-            if other.kind != "table":
-                return False
-            pair = (joined.name, other.name)
-            if pair not in candidates:
-                candidates.append(pair)
-    prev_name = prev.name if prev is not None and prev.kind == "table" else None
-    candidates.sort(key=lambda pair: (pair[1] != prev_name, pair[0], pair[1]))
-    for joined_name, other_name in candidates:
-        _assert_pair(joined_name, other_name, asserted, pairs, seen)
-    return True
-
-
-def _assert_pair(
-    a: str,
-    b: str,
-    asserted: dict[str, set[str]],
-    pairs: list[tuple[str, str]],
-    seen: set[tuple[str, str]],
-) -> None:
-    """Утверждение связи a↔b: в граф связности скоупа и в список сверки.
-    Self-join (a==b) пары не даёт — реестр связь таблицы с собой не утверждает
-    (skip на проверке пар, волны 1–2). Путь по утверждённым парам уже есть —
-    равенство-конъюнкт фильтрует, новой связи не заявляет (канон волн 4–6:
-    конъюнкт между связанными таблицами — предикат фильтрации; порядок
-    обработки пар задаёт _assert_tie_pairs — первичная пара с предшественником
-    цепочки первой)."""
-    if a == b or _names_connected(asserted, a, b):
-        return
-    pair = tuple(sorted((a, b)))
-    asserted.setdefault(a, set()).add(b)
-    asserted.setdefault(b, set()).add(a)
-    if pair not in seen:
-        seen.add(pair)
-        pairs.append(pair)
-
-
-def _names_connected(asserted: dict[str, set[str]], a: str, b: str) -> bool:
-    """Есть ли путь a → … → b по утверждённым парам скоупа (BFS по именам
-    таблиц; размер графа — источники одного SELECT, десятки узлов максимум)."""
-    if a == b:
-        return True
-    visited = {a}
-    frontier = [a]
-    while frontier:
-        nxt: list[str] = []
-        for name in frontier:
-            for neighbour in asserted.get(name, ()):
-                if neighbour == b:
-                    return True
-                if neighbour not in visited:
-                    visited.add(neighbour)
-                    nxt.append(neighbour)
-        frontier = nxt
-    return False
 
 
 def _resolve_outer_ref(name: str, maps: list[dict[str, _Source]]) -> _Source | None:
@@ -1169,34 +802,5 @@ class ValidateSqlService:
             permissions=permissions,
             data_catalog=data_catalog,
             row_limit=row_limit,
-        )
-        return _result_with_rewrites(sql, tree, verdict, permissions)
-
-    def validate_free(
-        self,
-        sql: str,
-        *,
-        permissions: Mapping[str, Sequence[str]],
-        data_catalog: frozenset[str] | set[str],
-        row_limit: int,
-        join_edges: frozenset[tuple[str, str]],
-    ) -> ValidateSqlResult:
-        """Свободный вход тул-контура (S31/D-033 п.5 вариант A): тот же парсинг,
-        обход и ok-перепись (звёзды/LIMIT — к исполнителю уходит только проверенный
-        текст), политика — ``validate_free_sql`` (общий ACL + инвариант реестра
-        вместо скелета). Рёбра реестра читает вызывающий контур на каждый прогон
-        (``SchemaGraphStore.join_edges``); форм-отказ — тот же вердикт
-        hallucination с исходным SQL без изменений."""
-        try:
-            tree = _parse_tree(sql)
-            audit = _build_audit(tree)
-        except SqlAuditError as exc:
-            return _form_reject(sql, exc.reason, row_limit)
-        verdict = validate_free_sql(
-            audit,
-            permissions=permissions,
-            data_catalog=data_catalog,
-            row_limit=row_limit,
-            join_edges=join_edges,
         )
         return _result_with_rewrites(sql, tree, verdict, permissions)

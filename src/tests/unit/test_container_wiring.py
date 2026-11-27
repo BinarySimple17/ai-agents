@@ -467,13 +467,3 @@ def test_budget_stop_guard_sets_incomplete_in_state(tmp_path) -> None:
     result = container.fsm_runner.run(state)
     assert result["outcome"] == "budget_stop"
     assert result["incomplete"] is True
-
-
-def test_run_sql_tool_wired_behind_single_gate(tmp_path) -> None:
-    # S31 (аудит A1/E1, R1–R3): тул собран за ЕДИНЫМ рубежом — ТЕ ЖЕ экземпляры,
-    # что у FSM-ребра validate_sql (один валидатор/права/граф, не копии)
-    container = build_container(_settings(tmp_path), checkpointer=_mem_ckpt())
-    assert container.run_sql_tool._validator is container.validate_sql_service  # noqa: SLF001
-    assert container.run_sql_tool._graph_store is container.graph_store  # noqa: SLF001
-    assert container.run_sql_tool._tracer is container.tracer  # noqa: SLF001
-    assert container.run_sql_tool._permission_store is container.resolve_access_service._store  # noqa: SLF001
