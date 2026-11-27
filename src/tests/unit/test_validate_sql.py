@@ -342,17 +342,19 @@ class TestSelectIntoDeny:
     def test_select_into_nested_subquery_denied(self):
         # способ детекции 2: узел exp.Into в теле подзапроса (find) — корневой
         # arg отсутствует (ловушка 3 плана: sqlglot нормализует иначе)
-        result = _validate("SELECT * FROM (SELECT id INTO new_t FROM orders) sub")
+        sql = "SELECT * FROM (SELECT id INTO new_t FROM orders) sub"
+        result = _validate(sql)
         assert result.verdict.outcome is ValidationOutcome.DENIED
         assert any("SELECT … INTO" in issue for issue in result.verdict.issues)
+        assert result.sql == sql  # исходный текст не изменён — ничего не исполняется
 
     def test_select_into_cte_denied(self):
         # вложенность через CTE: тело WITH проверяется теми же правилами
-        result = _validate(
-            "WITH copied AS (SELECT id INTO new_t FROM orders) SELECT id FROM copied"
-        )
+        sql = "WITH copied AS (SELECT id INTO new_t FROM orders) SELECT id FROM copied"
+        result = _validate(sql)
         assert result.verdict.outcome is ValidationOutcome.DENIED
         assert any("SELECT … INTO" in issue for issue in result.verdict.issues)
+        assert result.sql == sql  # исходный текст не изменён — ничего не исполняется
 
     def test_plain_select_without_into_ok(self):
         # контроль: обычный SELECT без INTO проходит — класс отсекается точечно
@@ -1026,6 +1028,18 @@ class TestAdversarialGallery:
             (
                 "SELECT o.id FROM orders o UNION ALL SELECT c.id FROM customers c LIMIT 10",
                 ValidationOutcome.HALLUCINATION,
+            ),
+            # SELECT … INTO — запись/DDL-класс (BL-055, S42): явный deny-гейт
+            # domain (arg «into» у exp.Select deny-поиск Insert/Create не видит);
+            # обе формы — корневая и вложенная (расширение whitelist на exp.Into —
+            # поверхность парсера выросла, корпус §4 п.8 обязан её покрыть)
+            (
+                "SELECT id INTO new_t FROM orders",
+                ValidationOutcome.DENIED,
+            ),
+            (
+                "SELECT * FROM (SELECT id INTO new_t FROM orders) sub",
+                ValidationOutcome.DENIED,
             ),
         ],
     )

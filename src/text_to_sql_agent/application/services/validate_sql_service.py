@@ -682,7 +682,10 @@ def _detect_into(tree: exp.Expression) -> bool:
     """Детекция SELECT … INTO (BL-055) — оба способа плана S42: корневой arg
     «into» (sqlglot-контракт парсинга Select) и узел exp.Into в ЛЮБОМ скоупе
     (вложенные случаи — подзапросы/CTE: там корневой arg отсутствует, узел
-    создаётся в теле). Решение (denied) принимает domain — механика здесь
+    создаётся в теле). Оба способа не дубль: сегодня arg «into» — это всегда
+    exp.Into (find покрывает корень), но ветка оставлена страховкой — если
+    будущий sqlglot положит в arg значение не-Into, find его не увидит.
+    Решение (denied) принимает domain — механика здесь
     (ruling R4, прецедент-паттерн functions/star_sources)."""
     return tree.args.get("into") is not None or tree.find(exp.Into) is not None
 
