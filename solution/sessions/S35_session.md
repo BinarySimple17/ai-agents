@@ -31,7 +31,7 @@
 
 ### Правила для исполнителя
 
-1. Ветка `harness/rls-scope-graph-sync` от `milestone/v4`; merge — в `milestone/v4` (D-031).
+1. Ветка `harness/rls-scope-graph-sync` от `inter/hw05-hw06`; merge — в `inter/hw05-hw06` (трек пред ДЗ-06; `milestone/v4` — неприкосновенная точка сдачи ДЗ-05; поправка S41/п.1(в) плана ветки — было «от `milestone/v4`, merge — в `milestone/v4` (D-031)»).
 2. **Миграция — новый файл 0011.** `ENABLE ROW LEVEL SECURITY` на 7 бизнес-таблицах; одна политика
    на таблицу: `FOR SELECT TO agent_ro USING ('<таблица>' = ANY(string_to_array(current_setting('app.allowed_tables', true), ',')))`.
    Политика 0004 снимается и заменяется: PERMISSIVE-политики складываются через ИЛИ, вторая

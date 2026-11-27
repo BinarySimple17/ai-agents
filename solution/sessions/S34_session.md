@@ -26,7 +26,7 @@
 
 ### Правила для исполнителя
 
-1. Ветка `harness/replan-edge` от `milestone/v4`; merge — в `milestone/v4` (D-031).
+1. Ветка `harness/replan-edge` от `inter/hw05-hw06`; merge — в `inter/hw05-hw06` (трек пред ДЗ-06; `milestone/v4` — неприкосновенная точка сдачи ДЗ-05; поправка S41/п.1(в) плана ветки — было «от `milestone/v4`, merge — в `milestone/v4` (D-031)»).
 2. **Ребро назначает код.** `diagnose_error` ставит `FLAG_RETRY_PLAN_JOINS` только по
    детерминированному правилу; модель имя узла не возвращает.
 3. Правило v1 (уточнить на ARCH-GATE). Перепланирование, если генератор исчерпал попытки (fuse) и
