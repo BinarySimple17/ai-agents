@@ -81,6 +81,7 @@ class FakePermissionStore:
         self._known = known
         self._error = error
         self.calls: list[str] = []
+        self.columns_calls: list[frozenset[str]] = []  # шов columns_catalog (S33 R2-пины)
 
     def settings_versions(self) -> dict[str, int]:
         return {"permissions": 1, "user_roles": 1}
@@ -103,6 +104,7 @@ class FakePermissionStore:
         return self._catalog
 
     def columns_catalog(self, tables: frozenset[str]) -> dict[str, frozenset[str]]:
+        self.columns_calls.append(frozenset(tables))
         if isinstance(self._error, RightsUnavailableError):
             raise self._error
         requested = {str(t).strip().lower() for t in tables}

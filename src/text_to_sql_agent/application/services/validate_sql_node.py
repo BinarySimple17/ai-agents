@@ -31,11 +31,12 @@ from text_to_sql_agent.application.ports.tracer import (
     EVENT_VALIDATE_SQL_VERDICT,
     Tracer,
 )
+from text_to_sql_agent.application.services.s9_messages import ACL_DENIED_MESSAGE
 from text_to_sql_agent.application.services.validate_sql_service import ValidateSqlService
 from text_to_sql_agent.domain.entities import Trace
 from text_to_sql_agent.domain.join_plan import JoinPlan
 from text_to_sql_agent.domain.skeleton import Skeleton
-from text_to_sql_agent.domain.sql_validation import ValidationOutcome
+from text_to_sql_agent.domain.sql_validation import ColumnsCatalogMissError, ValidationOutcome
 
 # application не импортирует orchestration — имена флагов дублируются из
 # routing.FLAG_*; совпадение строк гвардит parity-тест (прецедент
@@ -44,8 +45,10 @@ VALIDATE_HALLUCINATION_FLAG = "validate_hallucination"
 ACL_DENIED_FLAG = "acl_denied"
 
 # Фиксированные сообщения дефектов (S9-политика: без деталей инфраструктуры;
-# детали — оператору в трейс через validate_sql.unavailable)
-_DEFECT_MESSAGE = "часть данных по этому вопросу вам недоступна — повторите позже"
+# детали — оператору в трейс через validate_sql.unavailable). Текст общий с
+# execute_sql_node — один источник в s9_messages (ревью S33 M-4: формулировки
+# не разъезжаются)
+_DEFECT_MESSAGE = ACL_DENIED_MESSAGE
 _IDENTITY_MISSING_MESSAGE = "идентификация не пройдена — запрос отклонён (fail-closed)"
 
 State = dict[str, Any]
@@ -124,6 +127,11 @@ def make_validate_sql_node(
                 row_limit=ROW_LIMIT,
                 columns_catalog=columns_catalog,
             )
+        except ColumnsCatalogMissError as exc:
+            # R1 S33: GRANT-дрейф ('*'-право без записи в каталоге) — дефект
+            # стыка, не нарушение контракта прав: отдельный класс для триажа
+            # оператором (ревью S33 M-1), маршрут тот же — degrade без retry
+            return _defect(flags, "columns_catalog_miss", _DEFECT_MESSAGE, tracer, detail=str(exc))
         except ValueError as exc:
             # Нарушение контракта стыка (BL-014: CSV-строка в правах) — дефект
             # wiring, честный fail-closed, не «пропустили»

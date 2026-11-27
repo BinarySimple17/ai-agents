@@ -155,9 +155,12 @@ class AgentState(TypedDict, total=False):
     error             diagnose_error / узлы, поймавшие сбой; кодовое поле — читается
                       ребром execute_sql (SQL-ошибка → diagnose_error, routing),
                       успешный execute_sql ОБЯЗАН очищать его (ревью S04 M2);
-                      опциональный внутренний ключ "probe" (execute_sql S14) —
-                      факты COUNT-пробы для контекста diagnose_error (S9: CLI
-                      печатает только message, message фиксированный)
+                      опциональные внутренние ключи (S9: CLI печатает только
+                      message, message фиксированный): "probe" (execute_sql S14)
+                      — факты COUNT-пробы для контекста diagnose_error; "detail"
+                      (execute_sql S33) — сырой текст БД: пишет execute_sql,
+                      читают diagnose_error (подсказка semantics) и generate_sql
+                      (retry-контекст сеет detail, не message — ревью S33 I-2)
     diagnosis         diagnose_error (S14): {error_class, hint, retry_futile} —
                       внутренний контекст ретрая M1 (подсказка регенерации,
                       D-016); читает generate_sql при FSM-ретрае; пользовательский
@@ -217,7 +220,7 @@ class AgentState(TypedDict, total=False):
     row_count: int | None
     compact: dict[str, Any] | None  # ResultCompact (pydantic — S15/ADR-008)
     final_answer: dict[str, Any] | None  # {text, sql, assumptions, usage_notes, флаги, cost} — S15
-    error: dict[str, Any] | None  # {class, message, probe? — факты пробы (S14, внутренний)}
+    error: dict[str, Any] | None  # {class, message; probe?/detail? — внутренние каналы (S9/S33)}
     diagnosis: dict[str, Any] | None  # {error_class, hint, retry_futile} — S14
     retry_count: int
     budget_used: dict[str, Any] | None  # {llm_calls: int, rub: float}

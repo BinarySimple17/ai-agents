@@ -10,6 +10,7 @@ orchestration (прецедент GENERATE_SQL_FAILED_FLAG S10).
 
 import pytest
 
+from tests.unit.fakes import FakePermissionStore
 from text_to_sql_agent.application.ports.permission_store import RightsUnavailableError
 from text_to_sql_agent.application.ports.sql_executor import ROW_LIMIT
 from text_to_sql_agent.application.ports.tracer import (
@@ -201,6 +202,65 @@ class TestFailClosedDefects:
         update = _node()(_state(permissions={"orders": "id,total", "customers": ["*"]}))
         assert update["error"]["class"] == "permissions_contract"
         assert update["validation"]["outcome"] == "denied"
+
+
+class TestColumnsCatalogRulings:
+    """Рулинги ARCH-GATE S33 на уровне узла (ревью S33 I-3): R1 — GRANT-дрейф
+    ('*'-право без записи каталога) → дефект fail-closed, не цикл; R2 — шов
+    каталога читается ТОЛЬКО при '*'-правах (ценовой инвариант). Стор —
+    FakePermissionStore (шов порта, не лямбды)."""
+
+    def test_r1_star_grant_without_catalog_is_fail_closed_defect(self):
+        # R1: каталог колонок не покрывает '*'-таблицу (GRANT-дрейф: стор без
+        # видимых планировщику колонок) → ColumnsCatalogMissError →
+        # columns_catalog_miss → degrade БЕЗ retry
+        store = FakePermissionStore(tables={"orders": ("*",)}, catalog=CATALOG, columns={})
+        node = make_validate_sql_node(
+            _SERVICE,
+            catalog_provider=store.data_catalog,
+            columns_catalog_provider=store.columns_catalog,
+        )
+        update = node(_state(permissions={"orders": ["*"]}))
+        assert store.columns_calls == [frozenset({"orders"})]  # R2-условие: 1 вызов, только '*'
+        assert update["error"]["class"] == "columns_catalog_miss"  # не permissions_contract (M-1)
+        assert update["validation"]["outcome"] == "denied"
+        assert update["route_flags"][ACL_DENIED_FLAG] is True
+        merged = {**_state(permissions={"orders": ["*"]}), **update}
+        assert routing.route_validate_sql(merged) == "degrade"  # без retry-флага
+
+    def test_r1_defect_details_to_operator_trace(self):
+        events: list = []
+
+        class _Tracer:
+            def record(self, trace) -> None:
+                events.append(trace)
+
+        node = make_validate_sql_node(
+            _SERVICE,
+            catalog_provider=lambda: CATALOG,
+            columns_catalog_provider=lambda tables: {},
+            tracer=_Tracer(),
+        )
+        node(_state(permissions={"orders": ["*"]}))
+        unavailable = [e for e in events if e.event == EVENT_VALIDATE_SQL_UNAVAILABLE]
+        assert len(unavailable) == 1
+        assert unavailable[0].payload["class"] == "columns_catalog_miss"
+        assert "orders" in unavailable[0].payload["detail"]  # деталь стыка — оператору (S9)
+
+    def test_r2_provider_not_called_for_explicit_column_lists(self):
+        # R2: соединение планировщика — ноль, когда '*'-прав нет (ценовой
+        # инвариант: шов читается только при '*' в правах)
+        store = FakePermissionStore(
+            tables={t: tuple(cols) for t, cols in PERMISSIONS.items()}, catalog=CATALOG
+        )
+        node = make_validate_sql_node(
+            _SERVICE,
+            catalog_provider=store.data_catalog,
+            columns_catalog_provider=store.columns_catalog,
+        )
+        update = node(_state())  # PERMISSIONS — явные списки колонок
+        assert store.columns_calls == []
+        assert update["validation"]["outcome"] == "ok"
 
 
 class TestParityFlagsRouting:

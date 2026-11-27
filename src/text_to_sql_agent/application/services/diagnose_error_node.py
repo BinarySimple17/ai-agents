@@ -18,6 +18,7 @@
 его: ошибку очищает успешный generate_sql (карта владения AgentState).
 """
 
+from collections.abc import Mapping
 from typing import Any
 
 from text_to_sql_agent.application.ports.tracer import (
@@ -121,11 +122,16 @@ def make_diagnose_error_node(
                 str(raw_error["probe"]) if isinstance(raw_error.get("probe"), str) else None
             ),
             # S33: сырой текст БД (error["detail"] — внутренний канал execute_sql)
-            # и таблицы плана — факты для код-подсказки semantics (без LLM)
+            # и таблицы плана — факты для код-подсказки semantics (без LLM);
+            # права пользователя — грант-фильтр раздела «доступные колонки»
+            # (ревью S33 I-1: имена вне гранта во внешний LLM не отдаются)
             error_detail=(
                 str(raw_error["detail"]) if isinstance(raw_error.get("detail"), str) else None
             ),
             plan_tables=_plan_tables(state),
+            permissions=(
+                state["permissions"] if isinstance(state.get("permissions"), Mapping) else None
+            ),
         )
         budget = dict(state.get("budget_used") or {})
         budget["llm_calls"] = (budget.get("llm_calls") or 0) + result.llm_calls

@@ -39,6 +39,7 @@ from text_to_sql_agent.application.ports.tracer import (
     EVENT_EXECUTE_UNAVAILABLE,
     Tracer,
 )
+from text_to_sql_agent.application.services.s9_messages import ACL_DENIED_MESSAGE, NO_MATCH_MESSAGE
 from text_to_sql_agent.domain.entities import RunContext, Trace
 from text_to_sql_agent.domain.skeleton import Skeleton
 
@@ -68,18 +69,12 @@ _MISSING_SQL_MESSAGE = "в state нет SQL для исполнения"
 # печатает message. Ключи — SQLFailureClass.value; словарь покрывает весь enum —
 # новый член без текста получает общий текст (fail-closed к «без деталей»).
 _SQL_ERROR_MESSAGES: dict[str, str] = {
-    SQLFailureClass.SEMANTICS.value: (
-        "по этому вопросу данных не нашлось — проверим условия выборки и повторим"
-    ),
+    SQLFailureClass.SEMANTICS.value: NO_MATCH_MESSAGE,
     SQLFailureClass.SYNTAX.value: (
         "не удалось обработать запрос — попробуйте переформулировать вопрос"
     ),
-    SQLFailureClass.PERMISSION_DENIED.value: (
-        "часть данных по этому вопросу вам недоступна — повторите позже"
-    ),
-    SQLFailureClass.READ_ONLY.value: (
-        "часть данных по этому вопросу вам недоступна — повторите позже"
-    ),
+    SQLFailureClass.PERMISSION_DENIED.value: ACL_DENIED_MESSAGE,
+    SQLFailureClass.READ_ONLY.value: ACL_DENIED_MESSAGE,
     SQLFailureClass.TIMEOUT.value: "запрос оказался слишком тяжёлым — попробуйте сузить вопрос",
     SQLFailureClass.CONNECTION.value: "хранилище временно недоступно — повторите запрос позже",
     SQLFailureClass.UNKNOWN.value: "не удалось обработать запрос — попробуйте позже",
@@ -89,11 +84,10 @@ _GENERIC_SQL_ERROR_MESSAGE = _SQL_ERROR_MESSAGES[SQLFailureClass.UNKNOWN.value]
 # Фиксированные сообщения дефектов/пробы (S9-политика: пользовательский текст —
 # фиксированный; факты пробы с именами/счётчиками — внутренний ключ error["probe"]
 # (ревью S14 Important-1 — прецедент state.validation.issues S11: CLI печатает
-# только message, внутренний контекст читает diagnose_error)
-_DEFECT_MESSAGE = "часть данных по этому вопросу вам недоступна — повторите позже"
-_PROBE_LOST_JOIN_MESSAGE = (
-    "по этому вопросу данных не нашлось — проверим условия выборки и повторим"
-)
+# только message, внутренний контекст читает diagnose_error). Тексты общие с
+# validate_sql_node — один источник в s9_messages (ревью S33 M-4)
+_DEFECT_MESSAGE = ACL_DENIED_MESSAGE
+_PROBE_LOST_JOIN_MESSAGE = NO_MATCH_MESSAGE
 
 
 def _drop_stale_result(state: dict[str, Any]) -> dict[str, Any]:

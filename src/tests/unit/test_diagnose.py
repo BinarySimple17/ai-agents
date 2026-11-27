@@ -160,6 +160,7 @@ def test_semantics_hint_built_from_db_detail_and_catalog_no_llm() -> None:
         error_message="по этому вопросу данных не нашлось — проверим условия выборки и повторим",
         error_detail="column orders.client_id does not exist",
         plan_tables=frozenset({"orders", "customers"}),
+        permissions={"orders": ["*"], "customers": ["*"]},
         sql="SELECT orders.client_id FROM orders",
     )
     assert result.verdict is not None
@@ -172,9 +173,67 @@ def test_semantics_hint_built_from_db_detail_and_catalog_no_llm() -> None:
     assert "customer_id" in hint  # доступные колонки из каталога (мир пользователя)
 
 
+def test_semantics_hint_respects_column_grant_no_leak() -> None:
+    """Ревью S33 I-1 (ловушка 1): раздел «доступные колонки» строится из ГРАНТОВ,
+    не из сырого каталога — при явном списке колонок имена вне гранта (в т.ч.
+    PII) во внешний LLM не отдаются. На до-фиксовом коде hint содержит
+    client_id из каталога (bite)."""
+    llm = ScriptedLLM([])
+    service = DiagnoseService(
+        llm=llm,
+        columns_catalog=lambda tables: {"orders": ("id", "total", "client_id", "email")},
+    )
+    result = service.diagnose(
+        error_class="semantics",
+        error_message="фиксированный текст",
+        error_detail="column orders.region does not exist",
+        plan_tables=frozenset({"orders"}),
+        permissions={"orders": ["id", "total"]},  # явный список: client_id/email вне гранта
+    )
+    hint = result.verdict.regeneration_hint
+    assert "client_id" not in hint
+    assert "email" not in hint
+    assert "total" in hint  # грант виден
+    assert "region" in hint  # сырой текст БД — имя из SQL самого пользователя
+    assert result.llm_calls == 0
+
+
+def test_node_semantics_hint_hides_tables_outside_permissions() -> None:
+    """Ревью S33 I-1 (node-уровень): таблица в skeleton вне прав пользователя —
+    её колонки в hint не попадают (defense-in-depth против дрейфа skeleton).
+    На до-фиксовом коде hint содержит колонки secrets (bite)."""
+    llm = ScriptedLLM([])
+    service = DiagnoseService(
+        llm=llm,
+        columns_catalog=lambda tables: {
+            "orders": ("id", "total"),
+            "secrets": ("salary", "ssn"),
+        },
+    )
+    node = make_diagnose_error_node(service)
+    updated = node(
+        _base_state(
+            error={
+                "class": "semantics",
+                "message": "по этому вопросу данных не нашлось",
+                "detail": "column orders.region does not exist",
+            },
+            skeleton={"tables": ["orders", "secrets"]},
+            permissions={"orders": ["*"]},
+        )
+    )
+    hint = updated["diagnosis"]["hint"]
+    assert "salary" not in hint
+    assert "ssn" not in hint
+    assert "secrets" not in hint
+    assert "total" in hint  # грант '*' — каталог видимой таблицы
+    assert llm.calls == []  # semantics — код-контур, LLM не тратится
+
+
 def test_semantics_hint_from_validator_issues_only() -> None:
     """validate_hallucination: факты валидатора уже несут реальные имена —
-    каталог не читается, LLM не тратится (контур 2, S33)."""
+    каталог не читается даже при наличии plan_tables (специфичность источников,
+    ревью S33 I-1), LLM не тратится (контур 2, S33)."""
     llm = ScriptedLLM([])
     catalog_calls: list[frozenset[str]] = []
 
@@ -189,6 +248,8 @@ def test_semantics_hint_from_validator_issues_only() -> None:
         validation_issues=(
             "колонка client_id отсутствует в мире агента — у orders доступные: id, total",
         ),
+        plan_tables=frozenset({"orders"}),
+        permissions={"orders": ["*"]},
     )
     assert result.verdict is not None
     assert result.verdict.error_class is DiagnoseClass.SEMANTICS
@@ -211,6 +272,7 @@ def test_semantics_hint_survives_catalog_failure() -> None:
         error_message="фиксированный текст",
         error_detail="column orders.client_id does not exist",
         plan_tables=frozenset({"orders"}),
+        permissions={"orders": ["*"]},
     )
     assert result.verdict is not None
     hint = result.verdict.regeneration_hint

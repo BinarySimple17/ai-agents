@@ -112,6 +112,16 @@ class ValidationOutcome(StrEnum):
     DENIED = "denied"
 
 
+class ColumnsCatalogMissError(ValueError):
+    """Дефект стыка/грантов (ruling R1 S33): '*'-право без записи в каталоге
+    колонок — GRANT-дрейф, fail-closed.
+
+    Выделенный подкласс ValueError: узел маршрутизирует его отдельным классом
+    дефекта (columns_catalog_miss), не смешивая с нарушением контракта прав
+    BL-014 (permissions_contract) — триаж по классу оператору.
+    """
+
+
 class SqlSource(BaseModel):
     """Источник скоупа в IR: bare-имя сущности + природа источника.
 
@@ -433,7 +443,7 @@ def _check_columns(
             if "*" in permitted:
                 available = (columns_catalog or {}).get(c.name)
                 if not available:
-                    raise ValueError(
+                    raise ColumnsCatalogMissError(
                         f"каталог колонок не покрывает таблицу {c.name} ('*'-право) — "
                         "дефект стыка/грантов, fail-closed (ruling R1 S33)"
                     )

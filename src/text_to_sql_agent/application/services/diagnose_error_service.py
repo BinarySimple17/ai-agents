@@ -32,7 +32,7 @@ S09 — тот же, что plan_joins/clarify/generate_sql). Шлюз недо�
 """
 
 import json
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from enum import StrEnum
 from typing import Protocol
 
@@ -122,7 +122,31 @@ _SEMANTICS_HINT_TEMPLATE = (
 class _ColumnsCatalogCallable(Protocol):
     """Шов каталога колонок (S33 A4/R2): bound-метод PermissionStore.columns_catalog."""
 
-    def __call__(self, tables: frozenset[str]) -> Mapping[str, Sequence[str]]: ...
+    def __call__(self, tables: frozenset[str]) -> Mapping[str, Collection[str]]: ...
+
+
+def _is_star_grant(permissions: Mapping[str, Sequence[str]], table: str) -> bool:
+    grant = permissions.get(table)
+    return grant is not None and "*" in grant
+
+
+def _granted_columns(
+    permissions: Mapping[str, Sequence[str]],
+    table: str,
+    catalog: Mapping[str, Collection[str]],
+) -> tuple[str, ...]:
+    """Колонки таблицы, видимые ЭТОМУ пользователю (ревью S33 I-1, ловушка 1).
+
+    '*' → каталог (пользователь видит таблицу целиком); явный список → сам
+    список (уже сужение гранта, каталог не читается); таблицы нет в правах →
+    пусто — имена за пределами гранта во внешний LLM не отдаются
+    (defense-in-depth против дрейфа skeleton).
+    """
+    if table not in permissions:
+        return ()
+    if _is_star_grant(permissions, table):
+        return tuple(catalog.get(table) or ())
+    return tuple(permissions[table])
 
 
 def _semantics_hint(
@@ -130,33 +154,45 @@ def _semantics_hint(
     error_detail: str | None,
     plan_tables: frozenset[str] | None,
     columns_catalog: _ColumnsCatalogCallable | None,
+    permissions: Mapping[str, Sequence[str]] | None = None,
 ) -> str:
     """Подсказка semantics — КОД из фактов (A4/S33, ловушка 2: подсказка несёт
     то, чего модель не видела).
 
-    Источники фактов, по убыванию специфичности: нарушения валидатора (уже
-    содержат фактические колонки мира — каталог при их построении читал
-    validate_sql); сырой текст БД (error["detail"] — реальные имена из
-    сообщения СУБД); каталог колонок таблиц плана (R2 S33 — тот же стык, что
-    у validate_sql; сбой чтения не роняет разбор — подсказка без раздела
-    «доступные колонки», честный fallback). Имена — только из мира
-    пользователя (ловушка 1: каталог читает только таблицы плана — они
-    разрешены resolve_access).
+    Источники фактов, по убыванию специфичности (ревью S33 I-1 — порядок
+    соблюдается, не конъюнкция): нарушения валидатора (уже содержат фактические
+    колонки мира — каталог при их построении читал validate_sql) — при их
+    наличии остальные источники не подключаются; сырой текст БД
+    (error["detail"] — реальные имена из сообщения СУБД); каталог колонок
+    таблиц плана (R2 S33 — тот же стык, что у validate_sql) — fallback без
+    более специфичных фактов, сбои чтения не роняют разбор (подсказка без
+    раздела «доступные колонки», честный fallback). Имена — ТОЛЬКО из мира
+    пользователя (ловушка 1, ревью I-1): раздел «доступные колонки» строится
+    из прав — '*' показывает каталог, явный список показывает сам себя,
+    таблицы вне прав не показываются вовсе.
     """
     parts: list[str] = []
     parts.extend(str(issue) for issue in validation_issues)
-    if error_detail:
-        parts.append(f"текст БД: {error_detail}")
-    if columns_catalog is not None and plan_tables:
-        try:
-            catalog = columns_catalog(frozenset(plan_tables))
-        except RightsUnavailableError:
-            catalog = {}
-        listed = "; ".join(
-            f"{table}: {', '.join(sorted(cols))}" for table, cols in sorted(catalog.items()) if cols
-        )
-        if listed:
-            parts.append(f"доступные колонки таблиц плана — {listed}")
+    if not validation_issues:
+        # Специфичность: issues уже несут имена мира — каталог не дублирует их
+        # (одно соединение вместо каждого semantics-разбора, ревью I-1)
+        if error_detail:
+            parts.append(f"текст БД: {error_detail}")
+        if plan_tables and permissions is not None:
+            star_tables = frozenset(t for t in plan_tables if _is_star_grant(permissions, t))
+            catalog: Mapping[str, Collection[str]] = {}
+            if star_tables and columns_catalog is not None:
+                try:
+                    catalog = columns_catalog(star_tables)
+                except RightsUnavailableError:
+                    catalog = {}
+            listed = "; ".join(
+                f"{table}: {', '.join(sorted(_granted_columns(permissions, table, catalog)))}"
+                for table in sorted(plan_tables)
+                if _granted_columns(permissions, table, catalog)
+            )
+            if listed:
+                parts.append(f"доступные колонки таблиц плана — {listed}")
     return _SEMANTICS_HINT_TEMPLATE.format(facts="; ".join(parts) or "уточните имена объектов")
 
 
@@ -311,6 +347,7 @@ class DiagnoseService:
         probe_context: str | None = None,
         error_detail: str | None = None,
         plan_tables: frozenset[str] | None = None,
+        permissions: Mapping[str, Sequence[str]] | None = None,
     ) -> DiagnoseResult:
         """Разобрать сбой: futile/semantics — без LLM, иначе cheap-LLM с ретраями M1.
 
@@ -321,7 +358,10 @@ class DiagnoseService:
         S9: пользовательский message фиксированный, факты — внутренний канал);
         ``error_detail`` — сырой текст БД из error["detail"] (S33: внутренний
         канал execute_sql, модель видит фактические имена); ``plan_tables`` —
-        таблицы плана (skeleton) для раздела «доступные колонки» подсказки.
+        таблицы плана (skeleton) для раздела «доступные колонки» подсказки;
+        ``permissions`` — права пользователя (гранты таблицы → колонки, ревью
+        S33 I-1: раздел «доступные колонки» строится только из грантов —
+        ловушка 1, колонки вне гранта во внешний LLM не отдаются).
         """
         mapped = _DETERMINISTIC_MAP.get(error_class)
         if mapped in _FUTILE_CLASSES:
@@ -339,7 +379,11 @@ class DiagnoseService:
                 verdict=DiagnoseVerdict(
                     error_class=mapped,
                     regeneration_hint=_semantics_hint(
-                        validation_issues, error_detail, plan_tables, self._columns_catalog
+                        validation_issues,
+                        error_detail,
+                        plan_tables,
+                        self._columns_catalog,
+                        permissions,
                     ),
                     retry_futile=False,  # ретрай оправдан: переписать по фактическим именам
                 )
