@@ -1,6 +1,6 @@
 # S42 — BL-055: явный запрет SELECT…INTO в domain-валидаторе FSM
 
-Этап: Промежуточная ветка `inter/hw05-hw06` · батч п.1(в) плана ветки (BL-055; окно 28–30.11.2026) | Владелец: агент | Зависимости: S40 (baseline) | Оценка: 0.5 | Статус: ◐ в работе
+Этап: Промежуточная ветка `inter/hw05-hw06` · батч п.1(в) плана ветки (BL-055; окно 28–30.11.2026) | Владелец: агент | Зависимости: S40 (baseline) | Оценка: 0.5 | Статус: ✅ 2026-11-27
 Фичи: — (сессия без фичи, states не меняются; затронуты behavior feat-011 — её verification-команда прогоняется, результат в отчёт, прецедент S24)
 Роль по фиче: — (сессия без фичи, states не меняются)
 
@@ -102,10 +102,10 @@ git grep -n "INTO" -- docs/security.md | head -3   # гейт описан
 
 ## Критерии приёмки
 
-- [ ] `SELECT id INTO t FROM orders` (и вложенные варианты) → отказ валидатора до исполнителя; обычный SELECT проходит; bite-свидетельство в отчёте
-- [ ] Корпус `test_validate_sql.py` и `make check` зелёные (EXIT=0); verification feat-011 прогнана (результат в отчёте)
-- [ ] `docs/security.md`/S00 синхронны (в том же коммите); BL-055 закрыт (файл + реестр)
-- [ ] Вердикт ARCH-GATE записан до кода; states `feature_list.json` не менялись
+- [x] `SELECT id INTO t FROM orders` (и вложенные варианты) → отказ валидатора до исполнителя: корень/подзапрос/CTE → **DENIED** (degrade без retry), обычный SELECT проходит; bite-свидетельство в отчёте (stash: 3 denied-теста падают на до-правочном коде)
+- [x] Корпус `test_validate_sql.py` и `make check` зелёные (EXIT=0, **844 passed**); verification feat-011 прогнана (**126 passed**, результат в отчёте; states не менялись)
+- [x] `docs/security.md` v2.1 синхронен (§3 AST-whitelist +INTO, в коммите волны); S00/ADR-005 правок не требуют (deny-классов не перечисляют — вердикт architect + подтверждено ревью); BL-055 закрыт (файл + реестр; архивация — при закрытии сессии)
+- [x] Вердикт ARCH-GATE записан до кода (canon-check **compliant**); states `feature_list.json` не менялись
 
 ## Ловушки
 
@@ -124,13 +124,19 @@ git grep -n "INTO" -- docs/security.md | head -3   # гейт описан
 ## Гейты субагентов (заполняется по факту, до закрытия сессии)
 
 - ARCH-GATE: ✅ compliant — canon-check architect 2026-11-27, форма: детекция в services (оба способа правила 2: `args.get("into")` на корне + `find(exp.Into)` на дереве) → IR-флаг `SqlAudit.has_into` → политика в domain (`issues_denied` → DENIED, degrade без retry — канон ADR-005 §4/:173, прецедент классового denied `sql_validation.py:254`); `exp.Into` в whitelist с обязательным комментарием «не тихий allow — явный deny-гейт domain» + строка о сцепке с парсингом sqlglot (митигация — adversarial-тесты §4 п.8, uv.lock). Находки canon-check (закрыты в реализации/отчёте): буква правила 2 «AST в domain» R4-невозможна — осознанное отклонение в отчёт; тесты ассертят outcome=DENIED + наличие INTO-issue, не точный список (цель INTO парсится exp.Table → hallucination-шум в issues, исход не меняет — denied доминирует); предпосылка BL-055 «гейтом не закрыт» неточна — whitelist уже form-reject'ит (hallucination), недоставало явного denied-гейта — формулировку поправить при закрытии; S00/ADR-005 правок не требуют (deny-классов не перечисляют); FSM-рёбра/диагностика не затронуты (error.class общий `acl_denied`, diagnose INTO не видит)
-- REVIEW-GATE: [✅ <Ready to merge? вердикт> + <BASE7>..<HEAD7> | N/A — <причина>]
+- REVIEW-GATE: ✅ Ready to merge: Yes — цепочка двух ревью и двух fix-волн: ревью-1 `7ef7b4d..ed9047d` («Ready to merge: Yes», 0C/0I/3M: M-1 INTO-кейсов нет в TestAdversarialGallery при ссылке из whitelist-комментария, M-2 дубль детекции без объяснения, M-3 неоднородные ассерты «ничего не исполняется») → fix-волна `1a2ac0f` (все три закрыты: +2 INTO-кейса в галерею — ревьюер независимо подтвердил bite обоих новых кейсов через отключение гейта; докстринг-страховка; однородные ассерты) → re-review-2 `ed9047d..1a2ac0f` («Ready to merge: Yes», 0C/0I/1M: точность комментария «deny-поиск Insert/Create» — механизм из формулировки записи, в коде нет) → fix-волна-2 `05bbbc6` (только комментарии, все 3 вхождения — дословно предписанный ревьюером reword «fix all three or none»; правка санкционирована самим ревью, отдельный цикл не заводился). Итоговый диапазон `7ef7b4d..05bbbc6`; make check EXIT=0, 844 passed
 
 ## Отчёт по сессии (заполняется по факту)
 
 - Сделано:
-  - [Task: что реально сделано, коммиты, число тестов/ассертов, live-прогон]
+  - BL-055 исполнен тремя коммитами ветки `feat-validator-deny-into` (от `inter/hw05-hw06`): **ed9047d** — волна (код+тесты+docs+BL-055+журналы старта), **1a2ac0f** — fix-волна-1 по ревью (0C/0I/3M), **05bbbc6** — fix-волна-2 по re-review (комментарии). Сообщение волны амендовано до пуша (опечатка «третийпояс», локальная ветка).
+  - Реализация (форма по canon-check — compliant, ruling R4): services `_detect_into` (`validate_sql_service.py`) — оба способа правила 2: корневой `args.get("into")` + `find(exp.Into)` на всём дереве (подзапросы/CTE); IR-флаг `SqlAudit.has_into` (domain без sqlglot); domain `_check_into` (`sql_validation.py`) — `issues_denied` «SELECT … INTO — запись/DDL-класс (Postgres переписывает в CREATE TABLE AS), вне контура чтения» → **DENIED**, degrade без retry (route_validate_sql: FLAG_ACL_DENIED → degrade до hallucination-ветки — diagnose INTO не видит, error.class общий `acl_denied`); `exp.Into` добавлен в `_NODE_WHITELIST` с комментарием «не тихий allow — передача на явный domain-гейт» + сцепка с парсингом sqlglot. Адресат ловушек: _check_functions/ACL/_collect_tables не тронуты (подтверждено ревью — diff-гигиена).
+  - Тесты: `TestSelectIntoDeny` 4 (корень/подзапрос/CTE → DENIED + наличие INTO-issue; контроль обычный SELECT OK; ассерты `result.sql == sql` во всех denied) + 2 INTO-кейса в `TestAdversarialGallery` (§4 п.8) = **844 passed** total (838 baseline + 6); test_validate_sql.py — 128. **Bite-свидетельство** (Task 2): stash правок валидатора → на до-правочном коде 3 denied-теста падают (HALLUCINATION ≠ DENIED — form-reject whitelist'а), контроль проходит → pop; ревьюер подтвердил независимо (вторая половина: отключение `_detect_into` тоже роняет корпус — тесты держат обе половины фикса).
+  - Документы: `docs/security.md` **v2.1** (§3 AST-whitelist-строка + INTO-гейт, версионная строка); S00/ADR-005 не тронуты (deny-классов не перечисляют — условие правила 4 «если перечислены» не наступило; вердикт architect, подтверждён ревью grep'ом); quality-document.md — строка домена дополнена S42-нотой; BL-055 закрыт (файл + строка реестра; make archive перенесёт файл при закрытии).
+  - Верификация: `make check` EXIT=0 (прогон после волны, после каждой fix-волны — 842→844→844); **verification feat-011** (`uv run pytest src/tests/unit/test_validate_sql.py -q`) — **126 passed**, прогнана по правилу 4 файла сессии (states не менялись — сессия без фичи, ловушка 5).
 - Отклонения от плана:
-  - [что сделали не так, как в задаче, и почему; каждое отклонение — осознанное]
+  - **Правило 2 (буква) → форма R4**: план предписывал AST-инспекцию (`ast.args.get("into")` + `ast.find(exp.Into)`) в domain-валидаторе, но domain видит только нейтральный IR (ruling R4: sql_validation.py не импортирует sqlglot). Интент сохранён полностью — оба способа детекции живут в services (`_detect_into`) и доставляются IR-флагом `has_into`, решение (DENIED) принимает domain. Canon-check architect: **compliant**, зафиксировано в ARCH-GATE до кода.
+  - **Фактура против предпосылки записи**: BL-055 утверждал «гейтом в валидаторе закрыт НЕ является» — пробой показал: whitelist-обход `_parse_tree` уже form-reject'ил ОБЕ формы (exp.Into вне whitelist'а) как hallucination. Работа превратилась из «закрыть дыру» в «явный denied-гейт с верной классификацией» (write-попытка — сигнал безопасности, не «несуществующий синтаксис» с оправданным ретраем); для этого `exp.Into` включён в whitelist — иначе domain-гейт был бы мёртвым кодом за form-reject'ом. Формулировка уточнена при закрытии записи (предписание architect).
+  - Осознанное UX-следствие (Set aside ревью, принято): запрос с INTO больше не даёт hallucination→diagnose→retry, а DENIED→degrade без retry — требование BL-055, не дефект.
 - Перенесено в другие сессии:
-  - [ID сессии — что перенесено и почему; если в беклог — BL-NN-файл в solution/backlog/ (см. backlog/README.md)]
+  - Ничего. Осознанно НЕ заводится запись: асимметрия классификации (корневые INSERT/MERGE/DDL — form-reject hallucination+retry против INTO — denied) — opinion архитектора «кандидат в backlog при первом кейсе» (прецедент отложенного residual BL-051); скоуп сессии («БЕЗ изменений FSM-рёбер») это не затрагивает.
