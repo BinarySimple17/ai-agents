@@ -112,8 +112,8 @@ session + periodic (weekly) full sweep for structural drift.
 ```
 <Старт|Продолжение> <S-ID> — <название>. AGENTS.md действует полностью, границы шага:
 1. [старт] полный стартовый ритуал, ARCH-GATE до кода.
-   [продолжение] доки не перечитывать: файл сессии, progress.md → Current State +
-   Notes for Next Session, git log --oneline -5.
+   [продолжение] доки не перечитывать: файл сессии, progress.md целиком (после
+   ужатия D-043), git log --oneline -5.
 2. Одна волна → зелёный make check → коммит. Волна по файлу сессии и REVIEW-GATE:
    код · ревью + фиксы · закрытие (make close-session S=<S-ID> MSG=…).
 3. После коммита закончи: следующая волна — в новом чате (правило продолжения).
