@@ -198,12 +198,12 @@ check_recommended "Single-command dev server target exists (make dev)" \
 header "Subsystem 4: State"
 
 check_critical "PROGRESS.md exists at repo root" "$(file_exists "PROGRESS.md")" \
-  "Create PROGRESS.md at the repo root with sections: Current State (commit hash + test status), In Progress, Next Steps, and Blockers."
+  "Create PROGRESS.md at the repo root with sections: Current State (commit hash + test status), Blockers / Risks, and Notes for Next Session."
 
 if [[ "$(file_exists "PROGRESS.md")" == "pass" ]]; then
   check_recommended "PROGRESS.md references current task / in-progress work" \
     "$(contains_pattern "PROGRESS.md" "(in.progress|current|task|next step|blocker|completed)")" \
-    "Add an '## In Progress' section to PROGRESS.md describing the current task."
+    "Describe the current task in the '## Current State' section of PROGRESS.md."
 fi
 
 decisions_result="$(any_file_match "DECISIONS.md" "docs/decisions")"
@@ -265,9 +265,9 @@ check_recommended "Commit message guidance (explain why, not just what) present"
   "$(contains_pattern "$ipath_l05" "(commit.*why|why.*commit|explain why|not just what)")" \
   "Add commit guidance to $ipath_l05: 'Write commit messages that explain WHY the change was made, not just what changed.'"
 
-check_recommended "PROGRESS.md Next Steps section exists with specific actions" \
-  "$(contains_pattern "PROGRESS.md" "(next step|next action)")" \
-  "Add a '## Next Steps' section to PROGRESS.md listing specific, actionable items so the next session can start immediately."
+check_recommended "PROGRESS.md continuation notes exist with specific actions" \
+  "$(contains_pattern "PROGRESS.md" "(notes for next session|next step|next action)")" \
+  "Add a '## Notes for Next Session' section to PROGRESS.md listing specific, actionable items so the next session can start immediately."
 
 # ── L03: Repository as System of Record ───────────────────────────────────────
 header "L03: Repository as System of Record"

@@ -51,7 +51,7 @@
 
 ## Next Session Startup
 
-1. Read `AGENTS.md`, `progress.md` (Next Steps), реестр `solution/sessions.md`
+1. Read `AGENTS.md`, `progress.md` (Current State, Notes for Next Session), реестр `solution/sessions.md`
 2. Следующая по графу — **S31** (единый рубеж исполнения, вариант A по A1/D-033 п.5): файл существует, `make new-session` не нужен; старт-ритуал: статус ◐, ARCH-GATE до кода, `./init.sh`
 3. Сеть и CI в порядке (живой прогон зелёный 45635720765); BL-035/038 (gitleaks, SHA-пины/permissions) — по желанию, после первого зелёного прогона они уже не блокеры
 

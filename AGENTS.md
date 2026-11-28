@@ -26,13 +26,15 @@ OpenAI-совместимый шлюз (облако routerai.ru или лока
 
 Before writing code (session start / clock-in):
 
+**Продолжение в новом чате (D-043):** стартованная (◐) сессия продолжается в новом чате без полного ритуала — в ZCode AGENTS.md уже прикреплён к контексту (шаг 2 пропускается), доки шага 3 не перечитываются; читаются только файл сессии (`solution/sessions/`), `git log --oneline -5` и шаг 7 (progress.md — ≈13 КБ после ужатия D-043); фичи — из шапки файла сессии, `feature_list.json` перечитывается только при закрытии фичи. Один чат = одна волна работ (старт / содержательная волна / закрытие), между волнами — новый чат по этому правилу. Шаблоны диспетчера/исполнителя — [docs/AGENT-OPERATIONS.md](docs/AGENT-OPERATIONS.md), раздел «Гигиена контекста».
+
 1. Confirm working directory with `pwd`
 2. Read this file completely
 3. Read project docs if present: [архитектурный пакет](docs/arch-package.md) (порядок чтения и матрица «вопрос → документ»), [Architecture](docs/ARCHITECTURE.md), [Product](docs/PRODUCT.md), канон — [solution/sessions/S00_session.md](solution/sessions/S00_session.md)
 4. Create/verify the session file first — механика: `make new-session S=<ID> TITLE="..." F=<feat-XXX> [ROLE=продолжает]` (копия `TEMPLATE_session.md` под ID + строка в реестре `solution/sessions.md`, per `solution/README.md` lifecycle; нарратив — предусловия/задачи/ловушки — заполняет агент), then run `./init.sh` to verify the environment is healthy — it includes the session-start gate (`scripts/guard-subagents.sh --phase start`, D-023/D-027): the gate bites only the session you START (header status flipped to `◐ в работе`; planned `[ ] не начата` sessions are skipped), auto-adds missing checkboxes (`[FIX]`), and `make check` stays RED until that session's ARCH-GATE line is `✅ + evidence` or a genuine `N/A — reason` (`N/A — сессия не начата` does not pass for a started session)
 5. Read `feature_list.json` to see current feature state
 6. Review recent commits with `git log --oneline -5`
-7. Read `progress.md` and `session-handoff.md` if present
+7. Read `progress.md` (≈13 КБ после D-043: Current State + Blockers/Risks + Decisions Made + Notes for Next Session; дубли файлов сессий/git-истории/feature_list.json упразднены в S43) — and `session-handoff.md` if present
 8. Architectural gate (ARCH-GATE) — ритуал старта сессии, до любого кода:
    - **Отметь старт в файле сессии**: статус шапки → «◐ в работе» и чекбокс старта в «Предусловиях» — именно это включает гейт (запланированные «[ ] не начата» он скипает);
    - **canon-check**: сессия трогает архитектуру (границы модулей, новая зависимость, схема/ER, нерешённый дизайн-вопрос) → диспетчеризуй `architect` в режиме `canon-check` по плану сессии; компактная диспетчеризация (путь плана + вопрос + канон-указатели, без простыней — он читает по требованию);
@@ -50,6 +52,7 @@ If baseline verification is failing, repair that first — do not add new scope 
 - **Stay in scope**: do not modify files unrelated to the current feature
 - **Принципы кода**: SOLID/DRY/KISS — разумно, не в ущерб простоте и здравому смыслу (ясность важнее модности паттернов; преждевременная абстракция — не лучше дубля). Магические цифры и литералы в логике — именованные константы или Settings с комментарием «почему такое значение»; пороги, таймауты, лимиты, повторяющиеся литералы (ключи, URL, имена событий) — обязательно. why: код правится после того, как контекст сессии забыт, — имя и комментарий несут смысл, голое число нет; литерал в двух местах разъедется при правке.
 - **Leave clean state**: the repo must remain restartable — next session runs `./init.sh` immediately
+- **Гигиена контекста (D-043)**: расход лимита токенов ≈ (шаги × размер контекста) — каждый шаг агентного цикла переотправляет всю историю чата. Правила: один чат = одна волна (продолжение — по правилу Startup Workflow); правки батчами (непересекающиеся Edit'ы одного файла и правки разных файлов — одним сообщением), независимые read-only вызовы — одним блоком; целевые чтения (grep перед чтением, offset/limit) вместо целых файлов, не перечитывать файл после Edit; длинный вывод команд усекать (`pytest -q`, `> log 2>&1 && tail -n 20`); диспетчеризация сабагентов — пути+вопрос, итог ≤10 строк. why: на хвосте чата с ~300k контекста даже Edit на 70 токенов стоит ~300k input (аудит 2026-11-28: 37.1M input за день при 148k output); полный объём и шаблоны — [docs/AGENT-OPERATIONS.md](docs/AGENT-OPERATIONS.md) («Гигиена контекста»)
 
 ## Branch Hygiene
 
@@ -98,7 +101,7 @@ If baseline verification is failing, repair that first — do not add new scope 
 - Skipping states is not allowed.
 - Never set `state: passing` directly — run `make verify-feature F=<id>` (or `bash scripts/verify-feature.sh <id>`); the script runs the feature's verification command and records evidence.
 - A feature should be completable in one session; a large feature may span several sessions: exactly one final session closes it via `make verify-feature F=<id>`, intermediate sessions leave it `active` with a documented continuation (clean-check allowlist) and record progress in `progress.md`
-- Record evidence (command and output) in `feature_list.json` and `progress.md`.
+- Record evidence (command and output) in `feature_list.json` and the session file report («Отчёт по сессии»).
 
 ## Definition of Done
 
@@ -113,7 +116,7 @@ Do not proceed to the next layer if the previous one fails. Done checklist:
 - [ ] Target behavior implemented
 - [ ] Required verification actually ran (tests / lint / type-check)
 - [ ] Code review by the `code-reviewer` subagent passed — Critical/Important findings fixed or parked with a ruling
-- [ ] Evidence recorded in `feature_list.json` and `progress.md`
+- [ ] Evidence recorded in `feature_list.json` and the session file report
 - [ ] Repository remains restartable from the standard startup path (`./init.sh`)
 - [ ] App reaches ready state, side effects are correct, no debug artifacts remain
 
@@ -167,14 +170,14 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) и ADR-реестр ([docs/adr/
 ## Observability
 
 - Before each feature, agree on scope via a sprint contract: [templates/sprint-contract.md](templates/sprint-contract.md)
-- Record verification runtime signals (command and output) in `progress.md` → Evidence of Completion
+- Record verification runtime signals (command and output) in `feature_list.json` (evidence) and the session file report
 - Score completed work against [templates/evaluator-rubric.md](templates/evaluator-rubric.md) — every dimension must reach B or above
 
 ## End of Session
 
 Before ending a session (session end / clock-out) — нарратив делает агент, механику делает скрипт:
 
-1. Нарратив: обнови `progress.md` (Current State, Next Steps), `feature_list.json` (state + evidence: фича-«закрывает» — `make verify-feature F=<id>`; промежуточная — фича остаётся `active`), `docs/quality-document.md`, отчёт в файле сессии («Отчёт по сессии» + строка REVIEW-GATE: вердикт ревью + диапазон `BASE7..HEAD7`). Диспетчеризация `code-reviewer` — после зелёного `make check` по диапазону (BASE = merge-base с `main` или последний отревьюенный коммит); каждый Critical закрывается регрессионным тестом (падает на до-фиксовом коде и остаётся в наборе), Minor → `solution/backlog/`; отчёт ревью — по формату из определения агента (`~/.zcode/agents/code-reviewer.md`, вне репо).
+1. Нарратив: обнови `progress.md` (Current State, Notes for Next Session), `feature_list.json` (state + evidence: фича-«закрывает» — `make verify-feature F=<id>`; промежуточная — фича остаётся `active`), `docs/quality-document.md`, отчёт в файле сессии («Отчёт по сессии» + строка REVIEW-GATE: вердикт ревью + диапазон `BASE7..HEAD7`). Диспетчеризация `code-reviewer` — после зелёного `make check` по диапазону (BASE = merge-base с `main` или последний отревьюенный коммит); каждый Critical закрывается регрессионным тестом (падает на до-фиксовом коде и остаётся в наборе), Minor → `solution/backlog/`; отчёт ревью — по формату из определения агента (`~/.zcode/agents/code-reviewer.md`, вне репо).
 2. Риски/блокеры → `progress.md` и `DECISIONS.md`; вне скоупа → `solution/backlog/` (BL-NN files)
 3. Механика: запусти `make close-session S=<ID> MSG=<файл-сообщение-коммита>` — скрипт проверит гейты, отчёт, фичи и чистоту дерева вне allowlist (весь КОД закоммичен до запуска; грязь = отказ), перевернёт статус шапки `◐ → ✅ дата`, обновит строку реестра и «Текущее состояние» (только последняя закрытая сессия, одна строка), прогонит clean-state protocol + `make archive` и закоммитит из MSG-файла
 4. Leave the repo clean and restartable: next session runs `./init.sh` immediately
